@@ -10,6 +10,7 @@ from .settings import Settings
 from .subscription import Subscription
 from .transaction import Transaction
 from .user import User
+from .user_merge_audit import UserMergeAudit
 
 __all__ = [
     "AdLink",
@@ -29,4 +30,5 @@ __all__ = [
     "Subscription",
     "Transaction",
     "User",
+    "UserMergeAudit",
 ]

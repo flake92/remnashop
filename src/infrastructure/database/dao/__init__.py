@@ -9,6 +9,7 @@ from .settings import SettingsDaoImpl
 from .subscription import SubscriptionDaoImpl
 from .transaction import TransactionDaoImpl
 from .user import UserDaoImpl
+from .user_merge import UserMergeDaoImpl
 from .waitlist import WaitlistDaoImpl
 from .webhook import WebhookDaoImpl
 
@@ -24,6 +25,7 @@ __all__ = [
     "SubscriptionDaoImpl",
     "TransactionDaoImpl",
     "UserDaoImpl",
+    "UserMergeDaoImpl",
     "WaitlistDaoImpl",
     "WebhookDaoImpl",
 ]
