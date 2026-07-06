@@ -1,3 +1,4 @@
+from .admin import MergeUsersRequest, MergeUsersResponse, MergeUsersTargetResponse
 from .auth import (
     AuthResponse,
     ChangeEmailRequest,
@@ -50,6 +51,10 @@ from .subscription import (
 )
 
 __all__ = [
+    # admin
+    "MergeUsersRequest",
+    "MergeUsersResponse",
+    "MergeUsersTargetResponse",
     # health
     "DatabaseStatusSchema",
     "HealthChecks",

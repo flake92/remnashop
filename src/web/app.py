@@ -11,6 +11,7 @@ from src.core.config import AppConfig
 from src.lifespan import lifespan
 
 from .endpoints import (
+    admin_router,
     TelegramWebhookEndpoint,
     health_router,
     payments_router,
@@ -49,6 +50,7 @@ def get_app(config: AppConfig, dispatcher: Dispatcher) -> FastAPI:
     app.include_router(remnawave_router)
     if config.web_enabled:
         app.include_router(public_router)
+        app.include_router(admin_router)
 
     if config.swagger_enabled:
 
