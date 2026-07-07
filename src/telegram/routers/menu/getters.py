@@ -1,4 +1,5 @@
 from typing import Any
+from urllib.parse import urlparse, urlunparse
 
 from aiogram_dialog import DialogManager
 from dishka import FromDishka
@@ -19,6 +20,23 @@ from src.core.utils.i18n_helpers import (
 from src.core.utils.time import get_traffic_reset_delta
 
 
+CLEAN_PAY_TELEGRAM_WEBAPP_PATH = "/auth/telegram/webapp"
+
+
+def get_web_cabinet_url(raw_url: str) -> str:
+    url = raw_url.strip()
+    if not url:
+        return ""
+
+    parsed = urlparse(url)
+    if parsed.path.rstrip("/") == CLEAN_PAY_TELEGRAM_WEBAPP_PATH:
+        return url
+
+    return urlunparse(
+        parsed._replace(path=CLEAN_PAY_TELEGRAM_WEBAPP_PATH, query="", fragment="")
+    )
+
+
 @inject
 async def menu_getter(
     dialog_manager: DialogManager,
@@ -34,7 +52,7 @@ async def menu_getter(
         menu_data = await get_menu_data(user)
         settings = await settings_dao.get()
         support_url = bot_service.get_support_url(text=i18n.get("message.help"))
-        web_cabinet_url = config.web_cabinet_url.strip()
+        web_cabinet_url = get_web_cabinet_url(config.web_cabinet_url)
 
         purchase_discount = user.purchase_discount or 0
         personal_discount = user.personal_discount or 0
