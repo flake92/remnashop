@@ -13,6 +13,7 @@ from src.application.common.dao import (
     SubscriptionDao,
     TransactionDao,
     UserDao,
+    UserMergeDao,
     UserOAuthProviderDao,
     WaitlistDao,
     WebhookDao,
@@ -28,6 +29,7 @@ from src.infrastructure.database.dao import (
     SubscriptionDaoImpl,
     TransactionDaoImpl,
     UserDaoImpl,
+    UserMergeDaoImpl,
     UserOAuthProviderDaoImpl,
     WaitlistDaoImpl,
     WebhookDaoImpl,
@@ -49,6 +51,7 @@ class DaoProvider(Provider):
     subscription = provide(source=SubscriptionDaoImpl, provides=SubscriptionDao)
     transaction = provide(source=TransactionDaoImpl, provides=TransactionDao)
     user = provide(source=UserDaoImpl, provides=UserDao)
+    user_merge = provide(source=UserMergeDaoImpl, provides=UserMergeDao)
     oauth_provider = provide(source=UserOAuthProviderDaoImpl, provides=UserOAuthProviderDao)
 
     webhook = provide(source=WebhookDaoImpl, provides=WebhookDao, scope=Scope.APP)

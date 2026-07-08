@@ -84,6 +84,21 @@ class PaymentInitResponse(BaseModel):
     currency: str
 
 
+class PaymentTransactionResponse(BaseModel):
+    payment_id: str
+    purchase_type: str
+    status: str
+    gateway_type: PaymentGatewayType
+    final_amount: str
+    currency: str
+    plan_name: Optional[str] = None
+    duration_days: Optional[int] = None
+    device_limit: Optional[int] = None
+    traffic_limit: Optional[int] = None
+    created_at: datetime
+    updated_at: datetime
+
+
 class GatewayOfferResponse(BaseModel):
     gateway_type: PaymentGatewayType
     currency: str
