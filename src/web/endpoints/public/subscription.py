@@ -10,6 +10,7 @@ from src.application.common.dao import (
     PaymentGatewayDao,
     SettingsDao,
     SubscriptionDao,
+    TransactionDao,
 )
 from src.application.dto import PlanDto, PlanSnapshotDto, UserDto
 from src.application.services import PricingService
@@ -58,6 +59,7 @@ from src.web.schemas import (
     ExtendRequest,
     GatewayOfferResponse,
     PaymentInitResponse,
+    PaymentTransactionResponse,
     PlanOfferResponse,
     PromocodeActivateRequest,
     PromocodeActivateResponse,
@@ -99,6 +101,23 @@ def _assert_web_purchase_email_verified(user: UserDto) -> None:
     raise HTTPException(
         status_code=status.HTTP_409_CONFLICT,
         detail="Email must be verified before purchasing or extending a subscription",
+    )
+
+
+def _to_payment_transaction_response(transaction) -> PaymentTransactionResponse:
+    return PaymentTransactionResponse(
+        payment_id=str(transaction.payment_id),
+        purchase_type=transaction.purchase_type.value,
+        status=transaction.status.value,
+        gateway_type=transaction.gateway_type,
+        final_amount=str(transaction.pricing.final_amount),
+        currency=transaction.currency.symbol,
+        plan_name=transaction.plan_snapshot.name,
+        duration_days=transaction.plan_snapshot.duration,
+        device_limit=transaction.plan_snapshot.device_limit,
+        traffic_limit=transaction.plan_snapshot.traffic_limit,
+        created_at=transaction.created_at,
+        updated_at=transaction.updated_at,
     )
 
 
@@ -159,6 +178,16 @@ async def get_current_subscription(
         lifetime_used_traffic_bytes=remna_user.lifetime_used_traffic_bytes if remna_user else None,
         online_at=remna_user.online_at if remna_user else None,
     )
+
+
+@router.get("/transactions", response_model=list[PaymentTransactionResponse])
+@inject
+async def get_payment_transactions(
+    user: CurrentUser,
+    transaction_dao: FromDishka[TransactionDao],
+) -> list[PaymentTransactionResponse]:
+    transactions = await transaction_dao.get_by_user(user.id)
+    return [_to_payment_transaction_response(transaction) for transaction in transactions[:20]]
 
 
 @router.get("/devices", response_model=DevicesResponse)
