@@ -83,16 +83,16 @@ class UserMergeDaoImpl(UserMergeDao):
 
     def _validate(self, source: User, target: User) -> list[str]:
         conflicts: list[str] = []
-        if not source.email:
-            conflicts.append("Source user has no email")
-        if not source.is_email_verified:
-            conflicts.append("Source user email is not verified")
-        if target.telegram_id is None:
-            conflicts.append("Target user has no Telegram account")
-        if source.telegram_id is not None and source.telegram_id != target.telegram_id:
-            conflicts.append("Source user is linked to a different Telegram account")
         if target.email and source.email and target.email != source.email:
-            conflicts.append("Target user already has a different email")
+            conflicts.append("Both users have different emails")
+        if (
+            target.telegram_id is not None
+            and source.telegram_id is not None
+            and target.telegram_id != source.telegram_id
+        ):
+            conflicts.append("Both users have different Telegram accounts")
+        if target.current_subscription_id and source.current_subscription_id:
+            conflicts.append("Both users have current subscriptions")
         return conflicts
 
     async def _collect_moved_counts(
@@ -162,7 +162,9 @@ class UserMergeDaoImpl(UserMergeDao):
 
     async def _merge_records(self, source: User, target: User, moved: dict[str, int]) -> None:
         source_email = source.email
+        source_email_verified = source.is_email_verified
         source_password_hash = source.password_hash
+        source_telegram_id = source.telegram_id
         source_subscription_id = source.current_subscription_id
         target_subscription_id = target.current_subscription_id or source_subscription_id
 
@@ -188,9 +190,10 @@ class UserMergeDaoImpl(UserMergeDao):
         await self._move_promocode_activations(source.id, target.id)
         await self._move_oauth_providers(source.id, target.id)
 
-        target.email = source_email
-        target.password_hash = source_password_hash
-        target.is_email_verified = True
+        target.email = target.email or source_email
+        target.password_hash = target.password_hash or source_password_hash
+        target.is_email_verified = target.is_email_verified or source_email_verified
+        target.telegram_id = target.telegram_id or source_telegram_id
         target.pending_email = None
         target.email_verification_code_hash = None
         target.email_verification_expires_at = None
