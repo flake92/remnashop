@@ -3,6 +3,7 @@ from .base import BaseSql
 from .broadcast import Broadcast, BroadcastMessage
 from .oauth_provider import UserOAuthProvider
 from .payment_gateway import PaymentGateway
+from .payment_operation import PaymentOperation
 from .plan import Plan, PlanDuration, PlanPrice
 from .promocode import Promocode, PromocodeActivation
 from .referral import Referral, ReferralReward
@@ -21,6 +22,7 @@ __all__ = [
     "BroadcastMessage",
     "UserOAuthProvider",
     "PaymentGateway",
+    "PaymentOperation",
     "Plan",
     "PlanDuration",
     "PlanPrice",

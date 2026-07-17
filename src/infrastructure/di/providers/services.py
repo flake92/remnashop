@@ -17,6 +17,7 @@ from src.application.common import (
     XuiDbReader,
 )
 from src.application.services import (
+    PaymentIdempotencyService,
     PricingService,
     RemnaWebhookService,
 )
@@ -53,6 +54,7 @@ class ServicesProvider(Provider):
     http_client = provide(source=AiohttpClient, provides=HttpClient)
     redirect = provide(source=RedirectImpl, provides=Redirect)
     pricing = provide(source=PricingService)
+    payment_idempotency = provide(source=PaymentIdempotencyService, scope=Scope.REQUEST)
     event_bus = provide(EventBusImpl)
     publisher = alias(source=EventBusImpl, provides=EventPublisher)
     subscriber = alias(source=EventBusImpl, provides=EventSubscriber)

@@ -1,8 +1,13 @@
+import hashlib
+import json
+import re
 from typing import Optional
 
 from dishka import FromDishka
 from dishka.integrations.fastapi import inject
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Header, HTTPException, status
+from loguru import logger
+from pydantic import ValidationError
 from remnapy.models.hwid import HwidDeviceDto
 
 from src.application.common import Remnawave
@@ -13,7 +18,13 @@ from src.application.common.dao import (
     TransactionDao,
 )
 from src.application.dto import PlanDto, PlanSnapshotDto, TransactionDto, UserDto
-from src.application.services import PricingService
+from src.application.services import PaymentIdempotencyService, PricingService
+from src.application.services.payment_idempotency import (
+    PaymentOperationConflictError,
+    PaymentOperationInProgressError,
+    PaymentOperationOutcomeUnknownError,
+    PaymentOperationStart,
+)
 from src.application.use_cases.gateways.commands.payment import (
     CreatePayment,
     CreatePaymentDto,
@@ -74,6 +85,128 @@ from src.web.schemas import (
 from ._common import CurrentUser
 
 router = APIRouter(prefix="/subscription", tags=["Public - Subscription"])
+
+_IDEMPOTENCY_KEY_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:~-]{15,127}$")
+_PURCHASE_OPERATION = "PURCHASE"
+_EXTEND_OPERATION = "EXTEND"
+_PAYMENT_OUTCOME_UNKNOWN_DETAIL = (
+    "The payment outcome is unknown; do not create another payment "
+    "until this operation is reconciled"
+)
+
+
+def _validate_idempotency_key(idempotency_key: Optional[str]) -> Optional[str]:
+    if idempotency_key is None:
+        return None
+    if not _IDEMPOTENCY_KEY_PATTERN.fullmatch(idempotency_key):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Idempotency-Key must be 16-128 characters and contain only "
+                "letters, digits, '.', '_', ':', '~', or '-'"
+            ),
+        )
+    return idempotency_key
+
+
+def _payment_request_hash(
+    operation: str,
+    body: PurchaseRequest | ExtendRequest,
+) -> str:
+    canonical = json.dumps(
+        {"operation": operation, "request": body.model_dump(mode="json")},
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+async def _start_payment_operation(
+    *,
+    idempotency_key: Optional[str],
+    operation: str,
+    body: PurchaseRequest | ExtendRequest,
+    user: UserDto,
+    idempotency: PaymentIdempotencyService,
+) -> tuple[Optional[PaymentOperationStart], Optional[PaymentInitResponse]]:
+    key = _validate_idempotency_key(idempotency_key)
+    if key is None:
+        return None, None
+
+    try:
+        payment_operation = await idempotency.start(
+            user_id=user.id,
+            operation=operation,
+            idempotency_key=key,
+            request_hash=_payment_request_hash(operation, body),
+        )
+    except PaymentOperationConflictError as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Idempotency-Key was already used with a different request",
+        ) from e
+    except PaymentOperationInProgressError as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A request with this Idempotency-Key is already in progress",
+            headers={"Retry-After": "2"},
+        ) from e
+    except PaymentOperationOutcomeUnknownError as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=_PAYMENT_OUTCOME_UNKNOWN_DETAIL,
+        ) from e
+
+    if payment_operation.replay_response is None:
+        return payment_operation, None
+
+    try:
+        replay = PaymentInitResponse.model_validate(payment_operation.replay_response)
+    except ValidationError as e:
+        logger.exception(
+            "Stored idempotency response is invalid for operation '{}'",
+            payment_operation.operation_id,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="The stored payment result cannot be replayed safely",
+        ) from e
+    return payment_operation, replay
+
+
+async def _record_payment_operation_failure(
+    *,
+    idempotency: PaymentIdempotencyService,
+    payment_operation: Optional[PaymentOperationStart],
+    side_effect_started: bool,
+) -> None:
+    if payment_operation is None:
+        return
+    try:
+        if side_effect_started:
+            await idempotency.mark_unknown(payment_operation.operation_id)
+        else:
+            await idempotency.abandon(payment_operation.operation_id)
+    except Exception:
+        # Never replace the original payment exception. A CLAIMED/PROCESSING row
+        # remains fail-closed and prevents a duplicate external side effect.
+        logger.exception(
+            "Failed to record terminal state for payment operation '{}'",
+            payment_operation.operation_id,
+        )
+
+
+def _raise_unknown_outcome_if_needed(
+    payment_operation: Optional[PaymentOperationStart],
+    side_effect_started: bool,
+    error: BaseException,
+) -> None:
+    if payment_operation is not None and side_effect_started and isinstance(error, Exception):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=_PAYMENT_OUTCOME_UNKNOWN_DETAIL,
+        ) from error
 
 
 def _to_device_response(device: HwidDeviceDto) -> DeviceResponse:
@@ -425,64 +558,99 @@ async def purchase_subscription(
     get_available_plans: FromDishka[GetAvailablePlans],
     create_payment: FromDishka[CreatePayment],
     process_payment: FromDishka[ProcessPayment],
+    idempotency: FromDishka[PaymentIdempotencyService],
+    idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
 ) -> PaymentInitResponse:
-    _assert_web_purchase_email_verified(user)
-    await _validate_gateway_for_web(body.gateway_type, payment_gateway_dao)
+    payment_operation, replay = await _start_payment_operation(
+        idempotency_key=idempotency_key,
+        operation=_PURCHASE_OPERATION,
+        body=body,
+        user=user,
+        idempotency=idempotency,
+    )
+    if replay is not None:
+        return replay
 
-    plan = await _get_available_plan_by_code(user, body.plan_code, get_available_plans)
-    if not plan:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Plan not found")
+    side_effect_started = False
+    try:
+        _assert_web_purchase_email_verified(user)
+        await _validate_gateway_for_web(body.gateway_type, payment_gateway_dao)
 
-    duration = plan.get_duration(body.duration_days)
-    if not duration:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Plan duration not found",
+        plan = await _get_available_plan_by_code(user, body.plan_code, get_available_plans)
+        if not plan:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Plan not found")
+
+        duration = plan.get_duration(body.duration_days)
+        if not duration:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Plan duration not found",
+            )
+
+        gateway = await payment_gateway_dao.get_by_type(body.gateway_type)
+        if not gateway:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Gateway not found")
+
+        current_subscription = await subscription_dao.get_current(user.id)
+        purchase_type = PurchaseType.CHANGE if current_subscription else PurchaseType.NEW
+        plan_snapshot = PlanSnapshotDto.from_plan(plan, duration.days)
+        pricing = pricing_service.calculate(
+            user,
+            duration.get_price(gateway.currency),
+            gateway.currency,
         )
 
-    gateway = await payment_gateway_dao.get_by_type(body.gateway_type)
-    if not gateway:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Gateway not found")
+        if payment_operation is not None:
+            await idempotency.mark_processing(payment_operation.operation_id)
+            side_effect_started = True
 
-    current_subscription = await subscription_dao.get_current(user.id)
-    purchase_type = PurchaseType.CHANGE if current_subscription else PurchaseType.NEW
-    plan_snapshot = PlanSnapshotDto.from_plan(plan, duration.days)
-    pricing = pricing_service.calculate(
-        user,
-        duration.get_price(gateway.currency),
-        gateway.currency,
-    )
-
-    payment = await create_payment(
-        user,
-        CreatePaymentDto(
-            plan_snapshot=plan_snapshot,
-            pricing=pricing,
-            purchase_type=purchase_type,
-            gateway_type=body.gateway_type,
-        ),
-    )
-
-    tx_status = TransactionStatus.PENDING
-    if pricing.is_free:
-        await process_payment.system(
-            ProcessPaymentDto(
-                payment_id=payment.id,
-                new_transaction_status=TransactionStatus.COMPLETED,
+        payment = await create_payment(
+            user,
+            CreatePaymentDto(
+                plan_snapshot=plan_snapshot,
+                pricing=pricing,
+                purchase_type=purchase_type,
                 gateway_type=body.gateway_type,
+                provider_idempotency_key=(
+                    payment_operation.provider_key if payment_operation is not None else None
+                ),
             ),
         )
-        tx_status = TransactionStatus.COMPLETED
 
-    return PaymentInitResponse(
-        payment_id=str(payment.id),
-        payment_url=payment.url,
-        purchase_type=purchase_type.value,
-        status=tx_status.value,
-        is_free=pricing.is_free,
-        final_amount=str(pricing.final_amount),
-        currency=gateway.currency.symbol,
-    )
+        tx_status = TransactionStatus.PENDING
+        if pricing.is_free:
+            await process_payment.system(
+                ProcessPaymentDto(
+                    payment_id=payment.id,
+                    new_transaction_status=TransactionStatus.COMPLETED,
+                    gateway_type=body.gateway_type,
+                ),
+            )
+            tx_status = TransactionStatus.COMPLETED
+
+        response = PaymentInitResponse(
+            payment_id=str(payment.id),
+            payment_url=payment.url,
+            purchase_type=purchase_type.value,
+            status=tx_status.value,
+            is_free=pricing.is_free,
+            final_amount=str(pricing.final_amount),
+            currency=gateway.currency.symbol,
+        )
+        if payment_operation is not None:
+            await idempotency.complete(
+                payment_operation.operation_id,
+                response.model_dump(mode="json"),
+            )
+        return response
+    except BaseException as e:
+        await _record_payment_operation_failure(
+            idempotency=idempotency,
+            payment_operation=payment_operation,
+            side_effect_started=side_effect_started,
+        )
+        _raise_unknown_outcome_if_needed(payment_operation, side_effect_started, e)
+        raise
 
 
 @router.post("/extend", response_model=PaymentInitResponse)
@@ -497,71 +665,110 @@ async def extend_subscription(
     match_plan: FromDishka[MatchPlan],
     create_payment: FromDishka[CreatePayment],
     process_payment: FromDishka[ProcessPayment],
+    idempotency: FromDishka[PaymentIdempotencyService],
+    idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
 ) -> PaymentInitResponse:
-    _assert_web_purchase_email_verified(user)
-    await _validate_gateway_for_web(body.gateway_type, payment_gateway_dao)
-
-    current_subscription = await subscription_dao.get_current(user.id)
-    if not current_subscription:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Subscription not found")
-
-    available_plans = await get_available_plans.system(user)
-    matched_plan = await match_plan.system(
-        MatchPlanDto(plan_snapshot=current_subscription.plan_snapshot, plans=available_plans)
+    payment_operation, replay = await _start_payment_operation(
+        idempotency_key=idempotency_key,
+        operation=_EXTEND_OPERATION,
+        body=body,
+        user=user,
+        idempotency=idempotency,
     )
-    if not matched_plan:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Matching plan for renewal is not available",
+    if replay is not None:
+        return replay
+
+    side_effect_started = False
+    try:
+        _assert_web_purchase_email_verified(user)
+        await _validate_gateway_for_web(body.gateway_type, payment_gateway_dao)
+
+        current_subscription = await subscription_dao.get_current(user.id)
+        if not current_subscription:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Subscription not found",
+            )
+
+        available_plans = await get_available_plans.system(user)
+        matched_plan = await match_plan.system(
+            MatchPlanDto(plan_snapshot=current_subscription.plan_snapshot, plans=available_plans)
         )
+        if not matched_plan:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Matching plan for renewal is not available",
+            )
 
-    duration = matched_plan.get_duration(body.duration_days)
-    if not duration:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Plan duration not found",
+        duration = matched_plan.get_duration(body.duration_days)
+        if not duration:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Plan duration not found",
+            )
+
+        gateway = await payment_gateway_dao.get_by_type(body.gateway_type)
+        if not gateway:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Gateway not found")
+
+        pricing = pricing_service.calculate(
+            user,
+            duration.get_price(gateway.currency),
+            gateway.currency,
         )
+        plan_snapshot = PlanSnapshotDto.from_plan(matched_plan, duration.days)
 
-    gateway = await payment_gateway_dao.get_by_type(body.gateway_type)
-    if not gateway:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Gateway not found")
+        if payment_operation is not None:
+            await idempotency.mark_processing(payment_operation.operation_id)
+            side_effect_started = True
 
-    pricing = pricing_service.calculate(
-        user,
-        duration.get_price(gateway.currency),
-        gateway.currency,
-    )
-    plan_snapshot = PlanSnapshotDto.from_plan(matched_plan, duration.days)
-    payment = await create_payment(
-        user,
-        CreatePaymentDto(
-            plan_snapshot=plan_snapshot,
-            pricing=pricing,
-            purchase_type=PurchaseType.RENEW,
-            gateway_type=body.gateway_type,
-        ),
-    )
-
-    tx_status = TransactionStatus.PENDING
-    if pricing.is_free:
-        await process_payment.system(
-            ProcessPaymentDto(
-                payment_id=payment.id,
-                new_transaction_status=TransactionStatus.COMPLETED,
+        payment = await create_payment(
+            user,
+            CreatePaymentDto(
+                plan_snapshot=plan_snapshot,
+                pricing=pricing,
+                purchase_type=PurchaseType.RENEW,
                 gateway_type=body.gateway_type,
+                provider_idempotency_key=(
+                    payment_operation.provider_key if payment_operation is not None else None
+                ),
             ),
         )
-        tx_status = TransactionStatus.COMPLETED
 
-    return PaymentInitResponse(
-        payment_id=str(payment.id),
-        payment_url=payment.url,
-        purchase_type=PurchaseType.RENEW.value,
-        status=tx_status.value,
-        is_free=pricing.is_free,
-        final_amount=str(pricing.final_amount),
-        currency=gateway.currency.symbol,
-    )
+        tx_status = TransactionStatus.PENDING
+        if pricing.is_free:
+            await process_payment.system(
+                ProcessPaymentDto(
+                    payment_id=payment.id,
+                    new_transaction_status=TransactionStatus.COMPLETED,
+                    gateway_type=body.gateway_type,
+                ),
+            )
+            tx_status = TransactionStatus.COMPLETED
+
+        response = PaymentInitResponse(
+            payment_id=str(payment.id),
+            payment_url=payment.url,
+            purchase_type=PurchaseType.RENEW.value,
+            status=tx_status.value,
+            is_free=pricing.is_free,
+            final_amount=str(pricing.final_amount),
+            currency=gateway.currency.symbol,
+        )
+        if payment_operation is not None:
+            await idempotency.complete(
+                payment_operation.operation_id,
+                response.model_dump(mode="json"),
+            )
+        return response
+    except BaseException as e:
+        await _record_payment_operation_failure(
+            idempotency=idempotency,
+            payment_operation=payment_operation,
+            side_effect_started=side_effect_started,
+        )
+        _raise_unknown_outcome_if_needed(payment_operation, side_effect_started, e)
+        raise
 
 
 @router.get("/offers", response_model=SubscriptionOffersResponse)
