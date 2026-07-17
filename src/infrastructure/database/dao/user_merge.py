@@ -1,9 +1,11 @@
 from datetime import timezone
 from typing import Any
 
-from sqlalchemy import ColumnElement, delete, func, select, text, update
+from sqlalchemy import ColumnElement, Text, case, cast, delete, func, or_, select, text, update
+from sqlalchemy.dialects.postgresql import ARRAY, array
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.application.common.dao.payment_operation import PaymentOperationStatus
 from src.application.common.dao.user_merge import (
     UserMergeDao,
     UserMergeNotFoundError,
@@ -12,6 +14,7 @@ from src.application.common.dao.user_merge import (
     UserMergeTargetSnapshot,
 )
 from src.application.dto import UserDto
+from src.core.enums import TransactionFulfillmentStatus
 from src.core.utils.time import datetime_now
 from src.infrastructure.database.models import (
     PaymentOperation,
@@ -31,6 +34,7 @@ class UserMergeDaoImpl(UserMergeDao):
 
     async def plan(self, source_user_id: int, target_user_id: int) -> UserMergePlan:
         source, target = await self._lock_users(source_user_id, target_user_id)
+        await self._normalize_stale_payment_work(source.id, target.id)
         moved = await self._collect_moved_counts(source.id, target.id)
         return UserMergePlan(
             source_user_id=source_user_id,
@@ -41,6 +45,8 @@ class UserMergeDaoImpl(UserMergeDao):
                 source,
                 target,
                 payment_operation_duplicates=moved["payment_operation_duplicates"],
+                active_payment_operations=moved.get("active_payment_operations", 0),
+                fulfillment_processing=moved.get("fulfillment_processing", 0),
             ),
         )
 
@@ -53,6 +59,8 @@ class UserMergeDaoImpl(UserMergeDao):
         reason: str,
     ) -> UserMergePlan:
         source, target = await self._lock_users(source_user_id, target_user_id)
+        await self._normalize_stale_payment_work(source.id, target.id)
+        await self._assert_no_active_payment_work(source.id, target.id)
         await self._assert_no_payment_operation_collisions(source.id, target.id)
         moved = await self._collect_moved_counts(source.id, target.id)
         await self._merge_records(source, target, moved)
@@ -95,6 +103,8 @@ class UserMergeDaoImpl(UserMergeDao):
         target: User,
         *,
         payment_operation_duplicates: int = 0,
+        active_payment_operations: int = 0,
+        fulfillment_processing: int = 0,
     ) -> list[str]:
         conflicts: list[str] = []
         if target.email and source.email and target.email != source.email:
@@ -112,6 +122,16 @@ class UserMergeDaoImpl(UserMergeDao):
                 "Payment idempotency key collision between source and target "
                 f"({payment_operation_duplicates})"
             )
+        if active_payment_operations:
+            conflicts.append(
+                "Source user has active payment operations "
+                f"({active_payment_operations})"
+            )
+        if fulfillment_processing:
+            conflicts.append(
+                "Source user has payment fulfillment in progress "
+                f"({fulfillment_processing})"
+            )
         return conflicts
 
     async def _collect_moved_counts(
@@ -127,6 +147,28 @@ class UserMergeDaoImpl(UserMergeDao):
             ),
             "payment_operation_duplicates": await self._count_payment_operation_duplicates(
                 source_user_id, target_user_id
+            ),
+            "active_payment_operations": await self._count(
+                PaymentOperation,
+                PaymentOperation.user_id.in_((source_user_id, target_user_id)),
+                or_(
+                    PaymentOperation.status.in_(
+                        (
+                            PaymentOperationStatus.CLAIMED.value,
+                            PaymentOperationStatus.PROCESSING.value,
+                        )
+                    ),
+                    PaymentOperation.reconcile_token_hash.is_not(None),
+                ),
+            ),
+            "fulfillment_processing": await self._count(
+                Transaction,
+                Transaction.user_id.in_((source_user_id, target_user_id)),
+                or_(
+                    Transaction.fulfillment_status
+                    == TransactionFulfillmentStatus.PROCESSING,
+                    Transaction.fulfillment_token_hash.is_not(None),
+                ),
             ),
             "referrals_as_referrer": await self._count(
                 Referral, Referral.referrer_id == source_user_id
@@ -215,8 +257,85 @@ class UserMergeDaoImpl(UserMergeDao):
         )
         if duplicates:
             raise UserMergePaymentOperationConflictError(
-                "Payment idempotency key collision between source and target "
-                f"({duplicates})"
+                f"Payment idempotency key collision between source and target ({duplicates})"
+            )
+
+    async def _normalize_stale_payment_work(self, *user_ids: int) -> None:
+        now = func.clock_timestamp()
+        await self.session.execute(
+            delete(PaymentOperation).where(
+                PaymentOperation.user_id.in_(user_ids),
+                PaymentOperation.status == PaymentOperationStatus.CLAIMED.value,
+                PaymentOperation.lease_expires_at <= now,
+            )
+        )
+        await self.session.execute(
+            update(PaymentOperation)
+            .where(
+                PaymentOperation.user_id.in_(user_ids),
+                PaymentOperation.status == PaymentOperationStatus.PROCESSING.value,
+                PaymentOperation.lease_expires_at <= now,
+            )
+            .values(
+                status=PaymentOperationStatus.UNKNOWN.value,
+                lease_expires_at=None,
+            )
+        )
+        await self.session.execute(
+            update(PaymentOperation)
+            .where(
+                PaymentOperation.user_id.in_(user_ids),
+                PaymentOperation.reconcile_token_hash.is_not(None),
+                PaymentOperation.reconcile_lease_expires_at <= now,
+            )
+            .values(
+                status=PaymentOperationStatus.MANUAL_REQUIRED.value,
+                reconcile_next_attempt_at=None,
+                reconcile_last_error="RECONCILIATION_LEASE_EXPIRED_DURING_MERGE",
+            )
+        )
+        await self.session.execute(
+            update(Transaction)
+            .where(
+                Transaction.user_id.in_(user_ids),
+                Transaction.fulfillment_status
+                == TransactionFulfillmentStatus.PROCESSING,
+                Transaction.fulfillment_lease_expires_at <= now,
+            )
+            .values(
+                fulfillment_status=TransactionFulfillmentStatus.MANUAL_REQUIRED,
+                fulfillment_lease_expires_at=None,
+                fulfillment_last_error="FULFILLMENT_LEASE_EXPIRED_DURING_MERGE",
+            )
+        )
+
+    async def _assert_no_active_payment_work(self, *user_ids: int) -> None:
+        active_operations = await self._count(
+            PaymentOperation,
+            PaymentOperation.user_id.in_(user_ids),
+            or_(
+                PaymentOperation.status.in_(
+                    (
+                        PaymentOperationStatus.CLAIMED.value,
+                        PaymentOperationStatus.PROCESSING.value,
+                    )
+                ),
+                PaymentOperation.reconcile_token_hash.is_not(None),
+            ),
+        )
+        processing_fulfillments = await self._count(
+            Transaction,
+            Transaction.user_id.in_(user_ids),
+            or_(
+                Transaction.fulfillment_status
+                == TransactionFulfillmentStatus.PROCESSING,
+                Transaction.fulfillment_token_hash.is_not(None),
+            ),
+        )
+        if active_operations or processing_fulfillments:
+            raise UserMergePaymentOperationConflictError(
+                "Source user has active payment work "
+                f"(operations={active_operations}, fulfillments={processing_fulfillments})"
             )
 
     async def _merge_records(self, source: User, target: User, moved: dict[str, int]) -> None:
@@ -273,10 +392,28 @@ class UserMergeDaoImpl(UserMergeDao):
         target_user_id: int,
         moved: dict[str, int],
     ) -> None:
-        moved["payment_operations"] = await self._move_simple_fk(
-            PaymentOperation,
-            source_user_id,
-            target_user_id,
+        snapshot = PaymentOperation.resolved_payment_snapshot
+        stmt = (
+            update(PaymentOperation)
+            .where(PaymentOperation.user_id == source_user_id)
+            .values(
+                user_id=target_user_id,
+                resolved_payment_snapshot=case(
+                    (
+                        snapshot.is_not(None),
+                        func.jsonb_set(
+                            snapshot,
+                            cast(array(["user_id"]), ARRAY(Text())),
+                            func.to_jsonb(target_user_id),
+                            True,
+                        ),
+                    ),
+                    else_=snapshot,
+                ),
+            )
+        )
+        moved["payment_operations"] = int(
+            getattr(await self.session.execute(stmt), "rowcount", 0) or 0
         )
 
     async def _move_simple_fk(
@@ -298,9 +435,7 @@ class UserMergeDaoImpl(UserMergeDao):
             deleted = await self.session.execute(
                 delete(Referral).where(Referral.referred_id == source_user_id)
             )
-            moved["referrals_as_referred_dropped"] = int(
-                getattr(deleted, "rowcount", 0) or 0
-            )
+            moved["referrals_as_referred_dropped"] = int(getattr(deleted, "rowcount", 0) or 0)
         else:
             await self.session.execute(
                 update(Referral)

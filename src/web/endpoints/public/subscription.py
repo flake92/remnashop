@@ -2,10 +2,11 @@ import hashlib
 import json
 import re
 from typing import Optional
+from uuid import UUID
 
 from dishka import FromDishka
 from dishka.integrations.fastapi import inject
-from fastapi import APIRouter, Header, HTTPException, status
+from fastapi import APIRouter, Header, HTTPException, Query, Response, status
 from loguru import logger
 from pydantic import ValidationError
 from remnapy.models.hwid import HwidDeviceDto
@@ -20,11 +21,21 @@ from src.application.common.dao import (
 from src.application.common.dao.payment_operation import PaymentOperationOwnerMergedError
 from src.application.dto import PlanDto, PlanSnapshotDto, TransactionDto, UserDto
 from src.application.services import PaymentIdempotencyService, PricingService
+from src.application.services.payment_cursor import (
+    InvalidPaymentCursorError,
+    PaymentCursorCodec,
+)
 from src.application.services.payment_idempotency import (
     PaymentOperationConflictError,
     PaymentOperationInProgressError,
     PaymentOperationOutcomeUnknownError,
     PaymentOperationStart,
+)
+from src.application.services.payment_reconciliation import (
+    PaymentOperationNotFoundError,
+    PaymentOperationPublicState,
+    PaymentOperationView,
+    PaymentReconciliationService,
 )
 from src.application.use_cases.gateways.commands.payment import (
     CreatePayment,
@@ -71,12 +82,15 @@ from src.web.schemas import (
     ExtendRequest,
     GatewayOfferResponse,
     PaymentInitResponse,
+    PaymentOperationResponse,
     PaymentTransactionResponse,
+    PaymentTransactionsPageResponse,
     PlanOfferResponse,
     PromocodeActivateRequest,
     PromocodeActivateResponse,
     PurchaseRequest,
     ReissueResponse,
+    SubscriptionCapabilitiesResponse,
     SubscriptionInfoResponse,
     SubscriptionOffersResponse,
     TrialActivateResponse,
@@ -108,6 +122,26 @@ def _validate_idempotency_key(idempotency_key: Optional[str]) -> Optional[str]:
             ),
         )
     return idempotency_key
+
+
+def _required_idempotency_key(idempotency_key: Optional[str]) -> str:
+    key = _validate_idempotency_key(idempotency_key)
+    if key is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Idempotency-Key header is required",
+        )
+    return key
+
+
+def _payment_operation_name(operation: str) -> str:
+    normalized = operation.upper()
+    if normalized not in {_PURCHASE_OPERATION, _EXTEND_OPERATION}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Unsupported payment operation",
+        )
+    return normalized
 
 
 def _payment_request_hash(
@@ -260,6 +294,34 @@ def _to_payment_transaction_response(transaction: TransactionDto) -> PaymentTran
     )
 
 
+def _to_payment_operation_response(view: PaymentOperationView) -> PaymentOperationResponse:
+    try:
+        payment = PaymentInitResponse.model_validate(view.payment) if view.payment else None
+    except ValidationError as exc:
+        logger.error("Stored payment operation response validation failed")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Stored payment state is invalid",
+        ) from exc
+    return PaymentOperationResponse(
+        operation=view.operation,
+        state=view.state.value,
+        payment=payment,
+        transaction=(
+            _to_payment_transaction_response(view.transaction) if view.transaction else None
+        ),
+        retry_after_seconds=view.retry_after_seconds,
+    )
+
+
+def _set_operation_http_status(response: Response, view: PaymentOperationView) -> None:
+    if view.state == PaymentOperationPublicState.SUCCEEDED:
+        return
+    response.status_code = status.HTTP_202_ACCEPTED
+    if view.retry_after_seconds is not None:
+        response.headers["Retry-After"] = str(view.retry_after_seconds)
+
+
 async def _get_available_plan_by_code(
     user: UserDto,
     plan_code: str,
@@ -327,6 +389,143 @@ async def get_payment_transactions(
 ) -> list[PaymentTransactionResponse]:
     transactions = await transaction_dao.get_by_user(user.id)
     return [_to_payment_transaction_response(transaction) for transaction in transactions[:20]]
+
+
+@router.get("/capabilities", response_model=SubscriptionCapabilitiesResponse)
+async def get_subscription_capabilities() -> SubscriptionCapabilitiesResponse:
+    return SubscriptionCapabilitiesResponse()
+
+
+@router.get("/transactions/page", response_model=PaymentTransactionsPageResponse)
+@inject
+async def get_payment_transactions_page(
+    user: CurrentUser,
+    transaction_dao: FromDishka[TransactionDao],
+    cursor_codec: FromDishka[PaymentCursorCodec],
+    limit: int = Query(default=50, ge=1, le=100),
+    cursor: Optional[str] = Query(default=None, min_length=1, max_length=2048),
+) -> PaymentTransactionsPageResponse:
+    before_created_at = None
+    before_id = None
+    if cursor is not None:
+        try:
+            decoded = cursor_codec.decode(cursor, expected_user_id=user.id)
+        except InvalidPaymentCursorError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(exc),
+            ) from exc
+        before_created_at = decoded.created_at
+        before_id = decoded.transaction_id
+
+    transactions = await transaction_dao.get_page_by_user(
+        user.id,
+        limit=limit + 1,
+        before_created_at=before_created_at,
+        before_id=before_id,
+    )
+    has_more = len(transactions) > limit
+    page = transactions[:limit]
+    next_cursor = None
+    if has_more and page:
+        last = page[-1]
+        if last.created_at is None or last.id <= 0:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Transaction cursor data is unavailable",
+            )
+        next_cursor = cursor_codec.encode(
+            user_id=user.id,
+            created_at=last.created_at,
+            transaction_id=last.id,
+        )
+    return PaymentTransactionsPageResponse(
+        items=[_to_payment_transaction_response(item) for item in page],
+        next_cursor=next_cursor,
+    )
+
+
+@router.get(
+    "/transactions/by-id/{payment_id}",
+    response_model=PaymentTransactionResponse,
+)
+@inject
+async def get_payment_transaction_by_id(
+    payment_id: UUID,
+    user: CurrentUser,
+    transaction_dao: FromDishka[TransactionDao],
+) -> PaymentTransactionResponse:
+    transaction = await transaction_dao.get_by_payment_id_for_user(user.id, payment_id)
+    if transaction is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Payment transaction not found",
+        )
+    return _to_payment_transaction_response(transaction)
+
+
+@router.get(
+    "/payment-operations/{operation}",
+    response_model=PaymentOperationResponse,
+)
+@inject
+async def get_payment_operation(
+    operation: str,
+    response: Response,
+    user: CurrentUser,
+    reconciliation: FromDishka[PaymentReconciliationService],
+    idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
+) -> PaymentOperationResponse:
+    try:
+        view = await reconciliation.lookup(
+            user_id=user.id,
+            operation=_payment_operation_name(operation),
+            idempotency_key=_required_idempotency_key(idempotency_key),
+        )
+    except PaymentOperationNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Payment operation not found",
+        ) from exc
+    except PaymentOperationOwnerMergedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Payment operation owner changed; retry with a fresh session",
+        ) from exc
+    _set_operation_http_status(response, view)
+    return _to_payment_operation_response(view)
+
+
+@router.post(
+    "/payment-operations/{operation}",
+    response_model=PaymentOperationResponse,
+)
+@inject
+async def reconcile_payment_operation(
+    operation: str,
+    response: Response,
+    user: CurrentUser,
+    reconciliation: FromDishka[PaymentReconciliationService],
+    idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
+) -> PaymentOperationResponse:
+    try:
+        view = await reconciliation.reconcile(
+            user_id=user.id,
+            operation=_payment_operation_name(operation),
+            idempotency_key=_required_idempotency_key(idempotency_key),
+        )
+    except PaymentOperationNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Payment operation not found",
+        ) from exc
+    except PaymentOperationOwnerMergedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Payment operation owner changed; retry with a fresh session",
+        ) from exc
+    _set_operation_http_status(response, view)
+    return _to_payment_operation_response(view)
 
 
 @router.get("/devices", response_model=DevicesResponse)
@@ -607,7 +806,8 @@ async def purchase_subscription(
         )
 
         if payment_operation is not None:
-            await idempotency.mark_processing(payment_operation.operation_id)
+            # CreatePayment persists all recovery snapshots and crosses the provider
+            # boundary. From this point failures are reported fail-closed.
             side_effect_started = True
 
         payment = await create_payment(
@@ -619,6 +819,9 @@ async def purchase_subscription(
                 gateway_type=body.gateway_type,
                 provider_idempotency_key=(
                     payment_operation.provider_key if payment_operation is not None else None
+                ),
+                payment_operation_id=(
+                    payment_operation.operation_id if payment_operation is not None else None
                 ),
             ),
         )
@@ -643,7 +846,7 @@ async def purchase_subscription(
             final_amount=str(pricing.final_amount),
             currency=gateway.currency.symbol,
         )
-        if payment_operation is not None:
+        if payment_operation is not None and pricing.is_free:
             await idempotency.complete(
                 payment_operation.operation_id,
                 response.model_dump(mode="json"),
@@ -725,7 +928,6 @@ async def extend_subscription(
         plan_snapshot = PlanSnapshotDto.from_plan(matched_plan, duration.days)
 
         if payment_operation is not None:
-            await idempotency.mark_processing(payment_operation.operation_id)
             side_effect_started = True
 
         payment = await create_payment(
@@ -737,6 +939,9 @@ async def extend_subscription(
                 gateway_type=body.gateway_type,
                 provider_idempotency_key=(
                     payment_operation.provider_key if payment_operation is not None else None
+                ),
+                payment_operation_id=(
+                    payment_operation.operation_id if payment_operation is not None else None
                 ),
             ),
         )
@@ -761,7 +966,7 @@ async def extend_subscription(
             final_amount=str(pricing.final_amount),
             currency=gateway.currency.symbol,
         )
-        if payment_operation is not None:
+        if payment_operation is not None and pricing.is_free:
             await idempotency.complete(
                 payment_operation.operation_id,
                 response.model_dump(mode="json"),

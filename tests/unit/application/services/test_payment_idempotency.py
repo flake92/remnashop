@@ -7,6 +7,7 @@ import pytest
 
 from src.application.common.dao.payment_operation import (
     PaymentOperationRecord,
+    PaymentOperationRecoveryMode,
     PaymentOperationStatus,
 )
 from src.application.services.payment_idempotency import (
@@ -67,6 +68,25 @@ class FakePaymentOperationDao:
             provider_key=provider_key,
             response=None,
             lease_expires_at=datetime_now() + lease_for,
+            transaction_id=None,
+            gateway_type=None,
+            resolved_payment_snapshot=None,
+            provider_request_snapshot=None,
+            provider_owner_hash=None,
+            provider_result_snapshot=None,
+            recovery_mode=PaymentOperationRecoveryMode.MANUAL_REQUIRED,
+            provider_replay_expires_at=None,
+            reconcile_token_hash=None,
+            reconcile_lease_expires_at=None,
+            reconcile_attempt_count=0,
+            reconcile_next_attempt_at=None,
+            reconcile_last_attempt_at=None,
+            reconcile_last_error=None,
+            reconcile_alerted_at=None,
+            reconcile_alert_token_hash=None,
+            reconcile_alert_lease_expires_at=None,
+            reconcile_alert_attempt_count=0,
+            reconcile_alert_next_attempt_at=None,
             created_at=datetime_now(),
             updated_at=datetime_now(),
         )
@@ -105,6 +125,12 @@ class FakePaymentOperationDao:
         operation_id: int,
         *,
         lease_for: timedelta,
+        gateway_type: str,
+        resolved_payment_snapshot: dict[str, Any],
+        provider_request_snapshot: dict[str, Any],
+        provider_owner_hash: Optional[str],
+        recovery_mode: PaymentOperationRecoveryMode,
+        provider_replay_for: Optional[timedelta],
     ) -> bool:
         identity, record = self._find(operation_id)
         if record.status != PaymentOperationStatus.CLAIMED:
@@ -113,6 +139,16 @@ class FakePaymentOperationDao:
             record,
             status=PaymentOperationStatus.PROCESSING,
             lease_expires_at=datetime_now() + lease_for,
+            gateway_type=gateway_type,
+            resolved_payment_snapshot=resolved_payment_snapshot,
+            provider_request_snapshot=provider_request_snapshot,
+            provider_owner_hash=provider_owner_hash,
+            recovery_mode=recovery_mode,
+            provider_replay_expires_at=(
+                datetime_now() + provider_replay_for
+                if provider_replay_for is not None
+                else None
+            ),
             updated_at=datetime_now(),
         )
         return True
@@ -173,6 +209,18 @@ def make_service(
     return PaymentIdempotencyService(FakeUnitOfWork(), operation_dao), operation_dao  # type: ignore[arg-type]
 
 
+async def mark_processing(service: PaymentIdempotencyService, operation_id: int) -> None:
+    await service.mark_processing(
+        operation_id,
+        gateway_type="YOOKASSA",
+        resolved_payment_snapshot={"version": 1},
+        provider_request_snapshot={"amount": {"value": "10", "currency": "RUB"}},
+        provider_owner_hash="a" * 64,
+        recovery_mode=PaymentOperationRecoveryMode.YOOKASSA_REPLAY,
+            provider_replay_for=timedelta(hours=23),
+    )
+
+
 @pytest.mark.asyncio
 async def test_completed_operation_replays_same_response_and_provider_key() -> None:
     service, _ = make_service()
@@ -182,7 +230,7 @@ async def test_completed_operation_replays_same_response_and_provider_key() -> N
         idempotency_key="request-key-0001",
         request_hash="a" * 64,
     )
-    await service.mark_processing(started.operation_id)
+    await mark_processing(service, started.operation_id)
     response = {"payment_id": "payment-1", "status": "PENDING"}
     await service.complete(started.operation_id, response)
 
@@ -267,8 +315,8 @@ async def test_stale_claimed_operation_is_reclaimed_with_single_cas_winner() -> 
     assert reclaimed.provider_key == started.provider_key
 
     transitions = await asyncio.gather(
-        first.mark_processing(started.operation_id),
-        second.mark_processing(reclaimed.operation_id),
+        mark_processing(first, started.operation_id),
+        mark_processing(second, reclaimed.operation_id),
         return_exceptions=True,
     )
     assert sum(result is None for result in transitions) == 1
@@ -285,7 +333,7 @@ async def test_stale_processing_operation_becomes_unknown_without_retry() -> Non
         idempotency_key="request-key-processing-crash",
         request_hash="f" * 64,
     )
-    await first.mark_processing(started.operation_id)
+    await mark_processing(first, started.operation_id)
     identity, record = dao._find(started.operation_id)
     dao.records[identity] = replace(
         record,
@@ -313,7 +361,7 @@ async def test_unknown_outcome_never_restarts_side_effect() -> None:
         idempotency_key="request-key-0004",
         request_hash="d" * 64,
     )
-    await service.mark_processing(started.operation_id)
+    await mark_processing(service, started.operation_id)
     await service.mark_unknown(started.operation_id)
 
     with pytest.raises(PaymentOperationOutcomeUnknownError):

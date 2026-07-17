@@ -14,6 +14,7 @@ class FakeResponse:
         self.content = orjson.dumps(
             {
                 "id": payment_id,
+                "status": "pending",
                 "confirmation": {"confirmation_url": "https://payment.example/confirm"},
             }
         )
