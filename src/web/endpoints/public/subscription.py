@@ -17,6 +17,7 @@ from src.application.common.dao import (
     SubscriptionDao,
     TransactionDao,
 )
+from src.application.common.dao.payment_operation import PaymentOperationOwnerMergedError
 from src.application.dto import PlanDto, PlanSnapshotDto, TransactionDto, UserDto
 from src.application.services import PaymentIdempotencyService, PricingService
 from src.application.services.payment_idempotency import (
@@ -156,6 +157,11 @@ async def _start_payment_operation(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=_PAYMENT_OUTCOME_UNKNOWN_DETAIL,
+        ) from e
+    except PaymentOperationOwnerMergedError as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="User account was merged; sign in again before creating a payment",
         ) from e
 
     if payment_operation.replay_response is None:

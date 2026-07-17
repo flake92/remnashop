@@ -7,12 +7,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.application.common.dao.user_merge import (
     UserMergeDao,
     UserMergeNotFoundError,
+    UserMergePaymentOperationConflictError,
     UserMergePlan,
     UserMergeTargetSnapshot,
 )
 from src.application.dto import UserDto
 from src.core.utils.time import datetime_now
 from src.infrastructure.database.models import (
+    PaymentOperation,
     Referral,
     ReferralReward,
     Subscription,
@@ -29,12 +31,17 @@ class UserMergeDaoImpl(UserMergeDao):
 
     async def plan(self, source_user_id: int, target_user_id: int) -> UserMergePlan:
         source, target = await self._lock_users(source_user_id, target_user_id)
+        moved = await self._collect_moved_counts(source.id, target.id)
         return UserMergePlan(
             source_user_id=source_user_id,
             target_user_id=target_user_id,
             target=self._target_snapshot(target),
-            moved=await self._collect_moved_counts(source.id, target.id),
-            conflicts=self._validate(source, target),
+            moved=moved,
+            conflicts=self._validate(
+                source,
+                target,
+                payment_operation_duplicates=moved["payment_operation_duplicates"],
+            ),
         )
 
     async def merge(
@@ -46,6 +53,7 @@ class UserMergeDaoImpl(UserMergeDao):
         reason: str,
     ) -> UserMergePlan:
         source, target = await self._lock_users(source_user_id, target_user_id)
+        await self._assert_no_payment_operation_collisions(source.id, target.id)
         moved = await self._collect_moved_counts(source.id, target.id)
         await self._merge_records(source, target, moved)
         self.session.add(
@@ -81,7 +89,13 @@ class UserMergeDaoImpl(UserMergeDao):
             raise UserMergeNotFoundError(f"Target user '{target_user_id}' not found")
         return source, target
 
-    def _validate(self, source: User, target: User) -> list[str]:
+    def _validate(
+        self,
+        source: User,
+        target: User,
+        *,
+        payment_operation_duplicates: int = 0,
+    ) -> list[str]:
         conflicts: list[str] = []
         if target.email and source.email and target.email != source.email:
             conflicts.append("Both users have different emails")
@@ -93,6 +107,11 @@ class UserMergeDaoImpl(UserMergeDao):
             conflicts.append("Both users have different Telegram accounts")
         if target.current_subscription_id and source.current_subscription_id:
             conflicts.append("Both users have current subscriptions")
+        if payment_operation_duplicates:
+            conflicts.append(
+                "Payment idempotency key collision between source and target "
+                f"({payment_operation_duplicates})"
+            )
         return conflicts
 
     async def _collect_moved_counts(
@@ -103,6 +122,12 @@ class UserMergeDaoImpl(UserMergeDao):
                 Subscription, Subscription.user_id == source_user_id
             ),
             "transactions": await self._count(Transaction, Transaction.user_id == source_user_id),
+            "payment_operations": await self._count(
+                PaymentOperation, PaymentOperation.user_id == source_user_id
+            ),
+            "payment_operation_duplicates": await self._count_payment_operation_duplicates(
+                source_user_id, target_user_id
+            ),
             "referrals_as_referrer": await self._count(
                 Referral, Referral.referrer_id == source_user_id
             ),
@@ -160,6 +185,40 @@ class UserMergeDaoImpl(UserMergeDao):
         params = {"source_user_id": source_user_id, "target_user_id": target_user_id}
         return int(await self.session.scalar(stmt, params) or 0)
 
+    async def _count_payment_operation_duplicates(
+        self,
+        source_user_id: int,
+        target_user_id: int,
+    ) -> int:
+        stmt = text(
+            """
+            select count(*)
+            from payment_operations source
+            join payment_operations target
+              on target.operation = source.operation
+             and target.idempotency_key = source.idempotency_key
+             and target.user_id = :target_user_id
+            where source.user_id = :source_user_id
+            """
+        )
+        params = {"source_user_id": source_user_id, "target_user_id": target_user_id}
+        return int(await self.session.scalar(stmt, params) or 0)
+
+    async def _assert_no_payment_operation_collisions(
+        self,
+        source_user_id: int,
+        target_user_id: int,
+    ) -> None:
+        duplicates = await self._count_payment_operation_duplicates(
+            source_user_id,
+            target_user_id,
+        )
+        if duplicates:
+            raise UserMergePaymentOperationConflictError(
+                "Payment idempotency key collision between source and target "
+                f"({duplicates})"
+            )
+
     async def _merge_records(self, source: User, target: User, moved: dict[str, int]) -> None:
         source_email = source.email
         source_email_verified = source.is_email_verified
@@ -180,15 +239,20 @@ class UserMergeDaoImpl(UserMergeDao):
         source.current_subscription_id = None
         source.token_version += 1
         source.is_blocked = True
-        source.merged_into_user_id = target.id
-        source.merged_at = datetime_now().astimezone(timezone.utc)
         await self.session.flush()
 
         await self._move_simple_fk(Subscription, source.id, target.id)
         await self._move_simple_fk(Transaction, source.id, target.id)
+        await self._move_payment_operations(source.id, target.id, moved)
         await self._move_referrals(source.id, target.id, moved)
         await self._move_promocode_activations(source.id, target.id)
         await self._move_oauth_providers(source.id, target.id)
+
+        # The database rejects marking a source as merged while it still owns
+        # payment operations. Keep this assignment after the atomic transfer so
+        # both current and rolling-deploy application versions preserve them.
+        source.merged_into_user_id = target.id
+        source.merged_at = datetime_now().astimezone(timezone.utc)
 
         target.email = target.email or source_email
         target.password_hash = target.password_hash or source_password_hash
@@ -202,6 +266,18 @@ class UserMergeDaoImpl(UserMergeDao):
         target.current_subscription_id = target_subscription_id
         target.token_version += 1
         await self.session.flush()
+
+    async def _move_payment_operations(
+        self,
+        source_user_id: int,
+        target_user_id: int,
+        moved: dict[str, int],
+    ) -> None:
+        moved["payment_operations"] = await self._move_simple_fk(
+            PaymentOperation,
+            source_user_id,
+            target_user_id,
+        )
 
     async def _move_simple_fk(
         self, model: type[object], source_user_id: int, target_user_id: int

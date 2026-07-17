@@ -1,7 +1,12 @@
 from dataclasses import dataclass
 
 from src.application.common import Interactor
-from src.application.common.dao import UserMergeDao, UserMergeNotFoundError, UserMergePlan
+from src.application.common.dao import (
+    UserMergeDao,
+    UserMergeNotFoundError,
+    UserMergePaymentOperationConflictError,
+    UserMergePlan,
+)
 from src.application.common.dao.user_merge import UserMergeTargetSnapshot
 from src.application.common.policy import Permission
 from src.application.common.uow import UnitOfWork
@@ -66,12 +71,15 @@ class MergeUsers(Interactor[MergeUsersDto, MergeUsersResultDto]):
             if plan.conflicts:
                 raise MergeUsersConflictError("; ".join(plan.conflicts))
 
-            merged = await self.user_merge_dao.merge(
-                actor=actor,
-                source_user_id=data.source_user_id,
-                target_user_id=data.target_user_id,
-                reason=reason,
-            )
+            try:
+                merged = await self.user_merge_dao.merge(
+                    actor=actor,
+                    source_user_id=data.source_user_id,
+                    target_user_id=data.target_user_id,
+                    reason=reason,
+                )
+            except UserMergePaymentOperationConflictError as exc:
+                raise MergeUsersConflictError(str(exc)) from exc
             await self.uow.commit()
             return self._result(data, merged)
 

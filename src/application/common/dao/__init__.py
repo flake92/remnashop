@@ -12,7 +12,13 @@ from .settings import SettingsDao
 from .subscription import SubscriptionDao
 from .transaction import TransactionDao
 from .user import UserDao
-from .user_merge import UserMergeDao, UserMergeNotFoundError, UserMergePlan, UserMergeTargetSnapshot
+from .user_merge import (
+    UserMergeDao,
+    UserMergeNotFoundError,
+    UserMergePaymentOperationConflictError,
+    UserMergePlan,
+    UserMergeTargetSnapshot,
+)
 from .waitlist import WaitlistDao
 from .webhook import WebhookDao
 
@@ -33,6 +39,7 @@ __all__ = [
     "UserDao",
     "UserMergeDao",
     "UserMergeNotFoundError",
+    "UserMergePaymentOperationConflictError",
     "UserMergePlan",
     "UserMergeTargetSnapshot",
     "WaitlistDao",
