@@ -4,6 +4,7 @@ from .auth import AuthSessionDao
 from .broadcast import BroadcastDao
 from .oauth_provider import UserOAuthProviderDao
 from .payment_gateway import PaymentGatewayDao
+from .payment_operation import PaymentOperationDao
 from .plan import PlanDao
 from .promocode import PromocodeDao
 from .referral import ReferralDao
@@ -22,6 +23,7 @@ __all__ = [
     "BroadcastDao",
     "UserOAuthProviderDao",
     "PaymentGatewayDao",
+    "PaymentOperationDao",
     "PlanDao",
     "PromocodeDao",
     "ReferralDao",

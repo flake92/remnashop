@@ -1,5 +1,6 @@
 import uuid
 from dataclasses import dataclass
+from typing import Optional
 from uuid import UUID
 
 from loguru import logger
@@ -140,6 +141,7 @@ class CreatePaymentDto:
     pricing: PriceDetailsDto
     purchase_type: PurchaseType
     gateway_type: PaymentGatewayType
+    provider_idempotency_key: Optional[str] = None
 
 
 class CreatePayment(Interactor[CreatePaymentDto, PaymentResultDto]):
@@ -221,9 +223,10 @@ class CreatePayment(Interactor[CreatePaymentDto, PaymentResultDto]):
         )
 
         async with self.uow:
-            payment: PaymentResultDto = await gateway_instance.handle_create_payment(
+            payment: PaymentResultDto = await gateway_instance.create_payment(
                 amount=data.pricing.final_amount,
                 details=details,
+                idempotency_key=data.provider_idempotency_key,
             )
 
             transaction.payment_id = payment.id

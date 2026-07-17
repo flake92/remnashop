@@ -63,8 +63,16 @@ class YookassaGateway(BasePaymentGateway):
         )
 
     async def handle_create_payment(self, amount: Decimal, details: str) -> PaymentResultDto:
+        return await self.create_payment(amount, details)
+
+    async def create_payment(
+        self,
+        amount: Decimal,
+        details: str,
+        idempotency_key: str | None = None,
+    ) -> PaymentResultDto:
         payload = await self._create_payment_payload(str(amount), details)
-        headers = {"Idempotence-Key": str(uuid.uuid4())}
+        headers = {"Idempotence-Key": idempotency_key or str(uuid.uuid4())}
         logger.debug(f"Creating payment payload: {payload}")
 
         last_connect_error: ConnectError | None = None

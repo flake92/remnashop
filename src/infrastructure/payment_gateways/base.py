@@ -40,6 +40,17 @@ class BasePaymentGateway(ABC):
     @abstractmethod
     async def handle_create_payment(self, amount: Decimal, details: str) -> PaymentResultDto: ...
 
+    async def create_payment(
+        self,
+        amount: Decimal,
+        details: str,
+        idempotency_key: Optional[str] = None,
+    ) -> PaymentResultDto:
+        # Most providers do not expose an idempotency primitive. Keeping this
+        # adapter-level wrapper preserves their existing implementations while
+        # allowing capable providers to bind a durable operation to a stable key.
+        return await self.handle_create_payment(amount, details)
+
     @abstractmethod
     async def handle_webhook(
         self,
