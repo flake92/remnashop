@@ -5,6 +5,7 @@ from src.application.common.dao import (
     AuthSessionDao,
     BroadcastDao,
     PaymentGatewayDao,
+    PaymentOperationDao,
     PlanDao,
     PromocodeDao,
     RecentActivityDao,
@@ -13,6 +14,7 @@ from src.application.common.dao import (
     SubscriptionDao,
     TransactionDao,
     UserDao,
+    UserMergeDao,
     UserOAuthProviderDao,
     WaitlistDao,
     WebhookDao,
@@ -21,6 +23,7 @@ from src.infrastructure.database.dao import (
     AdLinkDaoImpl,
     BroadcastDaoImpl,
     PaymentGatewayDaoImpl,
+    PaymentOperationDaoImpl,
     PlanDaoImpl,
     PromocodeDaoImpl,
     ReferralDaoImpl,
@@ -28,6 +31,7 @@ from src.infrastructure.database.dao import (
     SubscriptionDaoImpl,
     TransactionDaoImpl,
     UserDaoImpl,
+    UserMergeDaoImpl,
     UserOAuthProviderDaoImpl,
     WaitlistDaoImpl,
     WebhookDaoImpl,
@@ -42,6 +46,7 @@ class DaoProvider(Provider):
     ad_link = provide(source=AdLinkDaoImpl, provides=AdLinkDao)
     broadcast = provide(source=BroadcastDaoImpl, provides=BroadcastDao)
     payment_gateway = provide(source=PaymentGatewayDaoImpl, provides=PaymentGatewayDao)
+    payment_operation = provide(source=PaymentOperationDaoImpl, provides=PaymentOperationDao)
     plan = provide(source=PlanDaoImpl, provides=PlanDao)
     promocode = provide(source=PromocodeDaoImpl, provides=PromocodeDao)
     referral = provide(source=ReferralDaoImpl, provides=ReferralDao)
@@ -49,6 +54,7 @@ class DaoProvider(Provider):
     subscription = provide(source=SubscriptionDaoImpl, provides=SubscriptionDao)
     transaction = provide(source=TransactionDaoImpl, provides=TransactionDao)
     user = provide(source=UserDaoImpl, provides=UserDao)
+    user_merge = provide(source=UserMergeDaoImpl, provides=UserMergeDao)
     oauth_provider = provide(source=UserOAuthProviderDaoImpl, provides=UserOAuthProviderDao)
 
     webhook = provide(source=WebhookDaoImpl, provides=WebhookDao, scope=Scope.APP)

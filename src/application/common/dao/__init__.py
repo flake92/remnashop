@@ -4,6 +4,7 @@ from .auth import AuthSessionDao
 from .broadcast import BroadcastDao
 from .oauth_provider import UserOAuthProviderDao
 from .payment_gateway import PaymentGatewayDao
+from .payment_operation import PaymentOperationDao
 from .plan import PlanDao
 from .promocode import PromocodeDao
 from .referral import ReferralDao
@@ -11,6 +12,13 @@ from .settings import SettingsDao
 from .subscription import SubscriptionDao
 from .transaction import TransactionDao
 from .user import UserDao
+from .user_merge import (
+    UserMergeDao,
+    UserMergeNotFoundError,
+    UserMergePaymentOperationConflictError,
+    UserMergePlan,
+    UserMergeTargetSnapshot,
+)
 from .waitlist import WaitlistDao
 from .webhook import WebhookDao
 
@@ -21,6 +29,7 @@ __all__ = [
     "BroadcastDao",
     "UserOAuthProviderDao",
     "PaymentGatewayDao",
+    "PaymentOperationDao",
     "PlanDao",
     "PromocodeDao",
     "ReferralDao",
@@ -28,6 +37,11 @@ __all__ = [
     "SubscriptionDao",
     "TransactionDao",
     "UserDao",
+    "UserMergeDao",
+    "UserMergeNotFoundError",
+    "UserMergePaymentOperationConflictError",
+    "UserMergePlan",
+    "UserMergeTargetSnapshot",
     "WaitlistDao",
     "WebhookDao",
 ]

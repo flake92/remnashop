@@ -1,7 +1,7 @@
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from src.core.enums import PaymentGatewayType
 
@@ -82,6 +82,76 @@ class PaymentInitResponse(BaseModel):
     is_free: bool
     final_amount: str
     currency: str
+
+
+class PaymentTransactionResponse(BaseModel):
+    payment_id: str
+    purchase_type: str
+    status: str
+    gateway_type: PaymentGatewayType
+    final_amount: str
+    currency: str
+    plan_name: Optional[str] = None
+    duration_days: Optional[int] = None
+    device_limit: Optional[int] = None
+    traffic_limit: Optional[int] = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class PaymentTransactionsPageResponse(BaseModel):
+    items: list[PaymentTransactionResponse]
+    next_cursor: Optional[str] = None
+
+
+class PaymentOperationResponse(BaseModel):
+    operation: Literal["PURCHASE", "EXTEND"]
+    state: Literal["SUCCEEDED", "IN_PROGRESS", "UNKNOWN", "MANUAL_REQUIRED"]
+    payment: Optional[PaymentInitResponse] = None
+    transaction: Optional[PaymentTransactionResponse] = None
+    retry_after_seconds: Optional[int] = Field(default=None, ge=1, le=300)
+
+    @model_validator(mode="after")
+    def validate_state_payload(self) -> "PaymentOperationResponse":
+        if self.state == "SUCCEEDED":
+            if self.payment is None or self.transaction is None:
+                raise ValueError("SUCCEEDED requires payment and transaction responses")
+            if self.retry_after_seconds is not None:
+                raise ValueError("SUCCEEDED cannot include a retry delay")
+            return self
+
+        if self.payment is not None or self.transaction is not None:
+            raise ValueError("Non-success states cannot expose payment data")
+        if self.state in {"IN_PROGRESS", "UNKNOWN"}:
+            if self.retry_after_seconds is None:
+                raise ValueError(f"{self.state} requires a retry delay")
+        elif self.retry_after_seconds is not None:
+            raise ValueError("MANUAL_REQUIRED cannot include a retry delay")
+        return self
+
+
+class TransactionCapabilitiesResponse(BaseModel):
+    keyset_pagination: Literal[True] = True
+    exact_lookup: Literal[True] = True
+    max_page_size: Literal[100] = 100
+
+
+class PaymentReconciliationCapabilitiesResponse(BaseModel):
+    operation_lookup: Literal[True] = True
+    user_reconcile: Literal[True] = True
+    admin_reconcile: Literal[True] = True
+    states: list[str] = ["SUCCEEDED", "IN_PROGRESS", "UNKNOWN", "MANUAL_REQUIRED"]
+    auto_replay_gateways: list[PaymentGatewayType] = [PaymentGatewayType.YOOKASSA]
+
+
+class SubscriptionCapabilitiesResponse(BaseModel):
+    contract_version: Literal[1] = 1
+    transactions: TransactionCapabilitiesResponse = Field(
+        default_factory=TransactionCapabilitiesResponse
+    )
+    payment_reconciliation: PaymentReconciliationCapabilitiesResponse = Field(
+        default_factory=PaymentReconciliationCapabilitiesResponse
+    )
 
 
 class GatewayOfferResponse(BaseModel):

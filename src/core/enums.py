@@ -112,6 +112,13 @@ class TransactionStatus(UpperStrEnum):
     FAILED = auto()
 
 
+class TransactionFulfillmentStatus(UpperStrEnum):
+    NOT_STARTED = auto()
+    PROCESSING = auto()
+    SUCCEEDED = auto()
+    MANUAL_REQUIRED = auto()
+
+
 class SubscriptionStatus(UpperStrEnum):
     ACTIVE = auto()
     DISABLED = auto()

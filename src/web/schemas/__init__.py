@@ -1,3 +1,4 @@
+from .admin import MergeUsersRequest, MergeUsersResponse, MergeUsersTargetResponse
 from .auth import (
     AuthResponse,
     ChangeEmailRequest,
@@ -38,11 +39,15 @@ from .subscription import (
     ExtendRequest,
     GatewayOfferResponse,
     PaymentInitResponse,
+    PaymentOperationResponse,
+    PaymentTransactionResponse,
+    PaymentTransactionsPageResponse,
     PlanOfferResponse,
     PromocodeActivateRequest,
     PromocodeActivateResponse,
     PurchaseRequest,
     ReissueResponse,
+    SubscriptionCapabilitiesResponse,
     SubscriptionInfoResponse,
     SubscriptionOffersResponse,
     TrialActivateResponse,
@@ -50,6 +55,10 @@ from .subscription import (
 )
 
 __all__ = [
+    # admin
+    "MergeUsersRequest",
+    "MergeUsersResponse",
+    "MergeUsersTargetResponse",
     # health
     "DatabaseStatusSchema",
     "HealthChecks",
@@ -92,12 +101,16 @@ __all__ = [
     "ExtendRequest",
     "GatewayOfferResponse",
     "PaymentInitResponse",
+    "PaymentOperationResponse",
+    "PaymentTransactionResponse",
+    "PaymentTransactionsPageResponse",
     "PlanOfferResponse",
     "PromocodeActivateRequest",
     "PromocodeActivateResponse",
     "PurchaseRequest",
     "ReissueResponse",
     "SubscriptionInfoResponse",
+    "SubscriptionCapabilitiesResponse",
     "SubscriptionOffersResponse",
     "TrialActivateResponse",
     "TrialPurchaseRequest",

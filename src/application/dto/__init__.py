@@ -41,7 +41,7 @@ from .statistics import (
     UserStatisticsDto,
 )
 from .subscription import RemnaSubscriptionDto, SquadInfoDto, SubscriptionDto
-from .transaction import PriceDetailsDto, TransactionDto
+from .transaction import PaymentWebhookEventDto, PriceDetailsDto, TransactionDto
 from .user import TelegramUserDto, TempUserDto, UserDto, UserOAuthProviderDto
 
 __all__ = [
@@ -96,6 +96,7 @@ __all__ = [
     "SquadInfoDto",
     "SubscriptionDto",
     "PriceDetailsDto",
+    "PaymentWebhookEventDto",
     "TransactionDto",
     "TelegramUserDto",
     "TempUserDto",
