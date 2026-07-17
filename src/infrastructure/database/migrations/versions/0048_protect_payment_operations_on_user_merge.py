@@ -2,8 +2,8 @@ from typing import Sequence, Union
 
 from alembic import op
 
-revision: str = "0044"
-down_revision: Union[str, None] = "0043"
+revision: str = "0048"
+down_revision: Union[str, None] = "0047"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
@@ -110,7 +110,7 @@ def upgrade() -> None:
 
             IF stranded_count > 0 THEN
                 RAISE EXCEPTION
-                    'migration 0044 blocked: % payment operations belong to merged users',
+                    'migration 0048 blocked: % payment operations belong to merged users',
                     stranded_count
                     USING ERRCODE = '23514',
                           HINT = 'Move payment_operations to active targets, then retry',

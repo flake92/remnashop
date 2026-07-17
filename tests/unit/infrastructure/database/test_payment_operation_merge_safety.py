@@ -107,7 +107,7 @@ def test_migration_installs_restrict_fk_and_serializing_trigger(
 ) -> None:
     migration = importlib.import_module(
         "src.infrastructure.database.migrations.versions."
-        "0044_protect_payment_operations_on_user_merge"
+        "0048_protect_payment_operations_on_user_merge"
     )
     calls = _record_operation_calls(monkeypatch, migration)
 
@@ -129,7 +129,7 @@ def test_migration_installs_restrict_fk_and_serializing_trigger(
     assert "BEFORE UPDATE OF MERGED_INTO_USER_ID ON USERS" in executed_sql
     assert "PAYMENT OPERATIONS STILL REFERENCE THE SOURCE" in executed_sql
     assert "CK_MERGED_USERS_HAVE_NO_PAYMENT_OPERATIONS" in executed_sql
-    assert "MIGRATION 0044 BLOCKED" in executed_sql
+    assert "MIGRATION 0048 BLOCKED" in executed_sql
     assert "BELONG TO MERGED USERS" in executed_sql
 
     statements = [str(call[1]).upper() for call in calls if call[0] == "execute"]
@@ -141,7 +141,7 @@ def test_migration_installs_restrict_fk_and_serializing_trigger(
     preexisting_data_check_index = next(
         index
         for index, statement in enumerate(statements)
-        if "MIGRATION 0044 BLOCKED" in statement
+        if "MIGRATION 0048 BLOCKED" in statement
     )
     assert user_trigger_index < preexisting_data_check_index
 
@@ -149,7 +149,7 @@ def test_migration_installs_restrict_fk_and_serializing_trigger(
 def test_migration_downgrade_restores_cascade_fk(monkeypatch: pytest.MonkeyPatch) -> None:
     migration = importlib.import_module(
         "src.infrastructure.database.migrations.versions."
-        "0044_protect_payment_operations_on_user_merge"
+        "0048_protect_payment_operations_on_user_merge"
     )
     calls = _record_operation_calls(monkeypatch, migration)
 

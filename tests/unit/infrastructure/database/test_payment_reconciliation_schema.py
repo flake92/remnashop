@@ -41,18 +41,18 @@ def _capture_migration(monkeypatch: pytest.MonkeyPatch, migration: Any) -> list[
     return calls
 
 
-def test_0045_installs_owner_fence_and_exact_only_backfill(
+def test_0049_installs_owner_fence_and_exact_only_backfill(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     migration = importlib.import_module(
-        "src.infrastructure.database.migrations.versions.0045_add_payment_reconciliation"
+        "src.infrastructure.database.migrations.versions.0049_add_payment_reconciliation"
     )
     calls = _capture_migration(monkeypatch, migration)
 
     migration.upgrade()
 
-    assert migration.revision == "0045"
-    assert migration.down_revision == "0044"
+    assert migration.revision == "0049"
+    assert migration.down_revision == "0048"
     owner_fk = next(
         call
         for call in calls
@@ -75,6 +75,13 @@ def test_0045_installs_owner_fence_and_exact_only_backfill(
         "ck_payment_operations_reconcile_lease",
         "ck_payment_operations_reconcile_attempt_count",
     } <= check_names
+    gateway_check = next(
+        str(call[1][2])
+        for call in calls
+        if call[0] == "create_check_constraint"
+        and call[1][0] == "ck_payment_operations_gateway_type"
+    )
+    assert "'ROLLYPAY'" in gateway_check
 
     executed = "\n".join(str(call[1][0]) for call in calls if call[0] == "execute").upper()
     assert "T.PAYMENT_ID::TEXT = PO.RESPONSE ->> 'PAYMENT_ID'" in executed

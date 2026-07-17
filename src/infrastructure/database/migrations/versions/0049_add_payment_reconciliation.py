@@ -4,8 +4,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision: str = "0045"
-down_revision: Union[str, None] = "0044"
+revision: str = "0049"
+down_revision: Union[str, None] = "0048"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
@@ -179,7 +179,8 @@ def upgrade() -> None:
         EXECUTE FUNCTION guard_transaction_owner_move_during_fulfillment()
         """
     )
-    # During a rolling deploy, 0044 workers still write only the legacy status columns.
+    # During a rolling deploy, pre-reconciliation workers still write only the legacy
+    # status columns.
     # Normalize those writes into an explicit ambiguous state instead of rejecting the
     # transaction after the old worker may already have acknowledged the webhook.
     op.execute(
@@ -522,7 +523,7 @@ def upgrade() -> None:
         "gateway_type IS NULL OR gateway_type IN ("
         "'TELEGRAM_STARS', 'YOOKASSA', 'YOOMONEY', 'VALUTIX', 'CRYPTOMUS', "
         "'HELEKET', 'CRYPTOPAY', 'FREEKASSA', 'MULENPAY', 'PAYMASTER', "
-        "'PLATEGA', 'ROBOKASSA', 'URLPAY', 'WATA')",
+        "'PLATEGA', 'ROBOKASSA', 'ROLLYPAY', 'URLPAY', 'WATA')",
     )
     op.create_check_constraint(
         "ck_payment_operations_reconcile_lease",
@@ -675,7 +676,8 @@ def upgrade() -> None:
         """
     )
 
-    # 0044 workers do not know transaction_id. Preserve rolling compatibility by
+    # Pre-reconciliation workers do not know transaction_id. Preserve rolling
+    # compatibility by
     # deriving it only from the exact stable response payment id and owner. An
     # unprovable or duplicate link fails the old status update instead of publishing
     # a success that the new API cannot safely replay.
@@ -845,7 +847,8 @@ def downgrade() -> None:
         "payment_operations",
         type_="check",
     )
-    # MANUAL_REQUIRED cannot be represented by 0044. Conservatively retain its ambiguity.
+    # MANUAL_REQUIRED cannot be represented before this migration. Conservatively retain
+    # its ambiguity.
     op.execute("UPDATE payment_operations SET status = 'UNKNOWN' WHERE status = 'MANUAL_REQUIRED'")
     op.create_check_constraint(
         "ck_payment_operations_lease",
