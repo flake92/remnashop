@@ -37,7 +37,11 @@ class PaymentOperation(BaseSql, TimestampMixin):
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(
         Integer,
-        ForeignKey("users.id", ondelete="CASCADE"),
+        ForeignKey(
+            "users.id",
+            name="fk_payment_operations_user_id_users",
+            ondelete="RESTRICT",
+        ),
         index=True,
     )
     operation: Mapped[str] = mapped_column(String(16))

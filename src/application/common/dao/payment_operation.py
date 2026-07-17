@@ -11,6 +11,9 @@ class PaymentOperationStatus(StrEnum):
     UNKNOWN = "UNKNOWN"
 
 
+class PaymentOperationOwnerMergedError(Exception): ...
+
+
 @dataclass(frozen=True)
 class PaymentOperationRecord:
     id: int

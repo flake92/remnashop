@@ -4,13 +4,15 @@ from typing import Any, Optional, cast
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql import Select
 
 from src.application.common.dao.payment_operation import (
     PaymentOperationDao,
+    PaymentOperationOwnerMergedError,
     PaymentOperationRecord,
     PaymentOperationStatus,
 )
-from src.infrastructure.database.models import PaymentOperation
+from src.infrastructure.database.models import PaymentOperation, User
 
 
 class PaymentOperationDaoImpl(PaymentOperationDao):
@@ -33,6 +35,19 @@ class PaymentOperationDaoImpl(PaymentOperationDao):
             updated_at=operation.updated_at,
         )
 
+    @staticmethod
+    def _owner_lock_stmt(user_id: int) -> Select[tuple[int, Optional[int]]]:
+        return (
+            select(User.id, User.merged_into_user_id)
+            .where(User.id == user_id)
+            .with_for_update(read=True, key_share=True)
+        )
+
+    async def _lock_active_owner(self, user_id: int) -> None:
+        owner = (await self.session.execute(self._owner_lock_stmt(user_id))).one_or_none()
+        if owner is None or owner.merged_into_user_id is not None:
+            raise PaymentOperationOwnerMergedError
+
     async def claim(
         self,
         *,
@@ -43,6 +58,10 @@ class PaymentOperationDaoImpl(PaymentOperationDao):
         provider_key: str,
         lease_for: timedelta,
     ) -> tuple[PaymentOperationRecord, bool]:
+        # FOR KEY SHARE serializes operation creation with user merge's FOR
+        # UPDATE locks. A claim either commits before the merge and is moved, or
+        # resumes afterwards and observes the merged tombstone.
+        await self._lock_active_owner(user_id)
         stmt = (
             insert(PaymentOperation)
             .values(

@@ -7,6 +7,9 @@ from src.application.dto import UserDto
 class UserMergeNotFoundError(Exception): ...
 
 
+class UserMergePaymentOperationConflictError(Exception): ...
+
+
 @dataclass(frozen=True)
 class UserMergeTargetSnapshot:
     id: int
