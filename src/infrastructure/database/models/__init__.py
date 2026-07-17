@@ -4,6 +4,7 @@ from .broadcast import Broadcast, BroadcastMessage
 from .oauth_provider import UserOAuthProvider
 from .payment_gateway import PaymentGateway
 from .payment_operation import PaymentOperation
+from .payment_webhook_event import PaymentWebhookEvent
 from .plan import Plan, PlanDuration, PlanPrice
 from .promocode import Promocode, PromocodeActivation
 from .referral import Referral, ReferralReward
@@ -23,6 +24,7 @@ __all__ = [
     "UserOAuthProvider",
     "PaymentGateway",
     "PaymentOperation",
+    "PaymentWebhookEvent",
     "Plan",
     "PlanDuration",
     "PlanPrice",

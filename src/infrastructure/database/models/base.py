@@ -26,6 +26,7 @@ from src.core.enums import (
     ReferralRewardType,
     Role,
     SubscriptionStatus,
+    TransactionFulfillmentStatus,
     TransactionStatus,
 )
 
@@ -43,6 +44,10 @@ mapper_registry = registry(
         PaymentGatewayType: Enum(PaymentGatewayType, name="payment_gateway_type"),
         PurchaseType: Enum(PurchaseType, name="purchase_type"),
         TransactionStatus: Enum(TransactionStatus, name="transaction_status"),
+        TransactionFulfillmentStatus: Enum(
+            TransactionFulfillmentStatus,
+            name="transaction_fulfillment_status",
+        ),
         SubscriptionStatus: Enum(SubscriptionStatus, name="subscription_status"),
         TrafficLimitStrategy: Enum(TrafficLimitStrategy, name="plan_traffic_limit_strategy"),
         PlanAvailability: Enum(PlanAvailability, name="plan_availability"),

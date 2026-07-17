@@ -28,14 +28,13 @@ async def test_plan_reports_payment_operation_identity_collision(
         "payment_operation_duplicates": 1,
     }
     monkeypatch.setattr(dao, "_lock_users", AsyncMock(return_value=(_user(11), _user(22))))
+    monkeypatch.setattr(dao, "_normalize_stale_payment_work", AsyncMock())
     monkeypatch.setattr(dao, "_collect_moved_counts", AsyncMock(return_value=moved))
 
     plan = await dao.plan(11, 22)
 
     assert plan.moved == moved
-    assert plan.conflicts == [
-        "Payment idempotency key collision between source and target (1)"
-    ]
+    assert plan.conflicts == ["Payment idempotency key collision between source and target (1)"]
 
 
 class UpdateSession:
@@ -75,6 +74,9 @@ async def test_payment_operations_transfer_in_one_atomic_update() -> None:
     ).upper()
     assert "UPDATE PAYMENT_OPERATIONS SET USER_ID=22" in sql
     assert "PAYMENT_OPERATIONS.USER_ID = 11" in sql
+    assert "JSONB_SET" in sql
+    assert "ARRAY['USER_ID']" in sql
+    assert "TO_JSONB(22)" in sql
 
 
 @pytest.mark.asyncio

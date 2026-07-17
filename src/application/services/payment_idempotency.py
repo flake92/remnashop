@@ -6,6 +6,7 @@ from typing import Any, Optional
 from src.application.common.dao import PaymentOperationDao
 from src.application.common.dao.payment_operation import (
     PaymentOperationRecord,
+    PaymentOperationRecoveryMode,
     PaymentOperationStatus,
 )
 from src.application.common.uow import UnitOfWork
@@ -100,20 +101,83 @@ class PaymentIdempotencyService:
                 replay_response=record.response,
             )
 
-        if record.status == PaymentOperationStatus.UNKNOWN:
+        if record.status in (
+            PaymentOperationStatus.UNKNOWN,
+            PaymentOperationStatus.MANUAL_REQUIRED,
+        ):
             raise PaymentOperationOutcomeUnknownError
 
         raise PaymentOperationInProgressError
 
-    async def mark_processing(self, operation_id: int) -> None:
+    async def mark_processing(
+        self,
+        operation_id: int,
+        *,
+        gateway_type: str,
+        resolved_payment_snapshot: dict[str, Any],
+        provider_request_snapshot: dict[str, Any],
+        provider_owner_hash: Optional[str],
+        recovery_mode: PaymentOperationRecoveryMode,
+        provider_replay_for: Optional[timedelta],
+    ) -> None:
         async with self.uow:
             updated = await self.payment_operation_dao.mark_processing(
                 operation_id,
                 lease_for=PROCESSING_LEASE,
+                gateway_type=gateway_type,
+                resolved_payment_snapshot=resolved_payment_snapshot,
+                provider_request_snapshot=provider_request_snapshot,
+                provider_owner_hash=provider_owner_hash,
+                recovery_mode=recovery_mode,
+                provider_replay_for=provider_replay_for,
             )
             if not updated:
                 raise RuntimeError("Payment operation is no longer claimable")
             await self.uow.commit()
+
+    async def checkpoint_provider_result(
+        self,
+        operation_id: int,
+        result: dict[str, Any],
+    ) -> None:
+        async with self.uow:
+            updated = await self.payment_operation_dao.checkpoint_provider_result(
+                operation_id,
+                result,
+            )
+            if not updated:
+                raise RuntimeError("Payment operation lost its execution lease")
+            await self.uow.commit()
+
+    async def link_transaction(self, operation_id: int, transaction_id: int) -> None:
+        updated = await self.payment_operation_dao.link_transaction(operation_id, transaction_id)
+        if not updated:
+            raise RuntimeError("Payment operation is no longer owned by the request")
+
+    async def complete_in_current_transaction(
+        self,
+        operation_id: int,
+        response: dict[str, Any],
+    ) -> None:
+        updated = await self.payment_operation_dao.complete(operation_id, response)
+        if not updated:
+            raise RuntimeError("Payment operation is no longer processing")
+
+    async def get_owned_operation(
+        self,
+        *,
+        user_id: int,
+        operation: str,
+        idempotency_key: str,
+    ) -> Optional[PaymentOperationRecord]:
+        async with self.uow:
+            record = await self.payment_operation_dao.get_by_identity(
+                user_id=user_id,
+                operation=operation,
+                idempotency_key=idempotency_key,
+            )
+            await self.uow.commit()
+        return record
 
     async def complete(self, operation_id: int, response: dict[str, Any]) -> None:
         async with self.uow:

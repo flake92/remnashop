@@ -13,8 +13,16 @@ from src.application.dto import PaymentGatewayDto, PaymentResultDto
 from src.application.dto.payment_gateway import PlategaGatewaySettingsDto
 from src.core.config import AppConfig
 from src.core.enums import TransactionStatus
+from src.core.utils.payment_methods import normalize_platega_payment_method
 
 from .base import BasePaymentGateway
+
+
+class PlategaWebhookMetadataError(ValueError):
+    def __init__(self, payment_id: UUID, status: TransactionStatus) -> None:
+        super().__init__("Invalid Platega webhook paymentMethod")
+        self.payment_id = payment_id
+        self.status = status
 
 
 # https://docs.platega.io/
@@ -83,11 +91,11 @@ class PlategaGateway(BasePaymentGateway):
     async def handle_webhook(self, request: Request) -> Union[tuple[UUID, TransactionStatus], None]:
         logger.debug(f"Received {self.__class__.__name__} webhook request")
 
-        raw_body = await request.body()
-        webhook_data = orjson.loads(raw_body)
-
         if not self._verify_webhook(request):
             raise PermissionError("Webhook verification failed")
+
+        raw_body = await request.body()
+        webhook_data = orjson.loads(raw_body)
 
         payment_id_str = webhook_data.get("id")
         if not payment_id_str:
@@ -95,9 +103,6 @@ class PlategaGateway(BasePaymentGateway):
 
         status = webhook_data.get("status")
         payment_id = UUID(payment_id_str)
-        self.selected_payment_method = self._normalize_payment_method(
-            webhook_data.get("paymentMethod")
-        )
 
         match status:
             case "CONFIRMED":
@@ -108,6 +113,13 @@ class PlategaGateway(BasePaymentGateway):
                 transaction_status = TransactionStatus.REFUNDED
             case _:
                 raise ValueError(f"Unsupported status: {status}")
+
+        try:
+            self.selected_payment_method = self._normalize_payment_method(
+                webhook_data.get("paymentMethod")
+            )
+        except ValueError as exc:
+            raise PlategaWebhookMetadataError(payment_id, transaction_status) from exc
 
         return payment_id, transaction_status
 
@@ -139,11 +151,7 @@ class PlategaGateway(BasePaymentGateway):
 
     @staticmethod
     def _normalize_payment_method(value: Any) -> str | None:
-        if value is None:
-            return None
-
-        payment_method = str(value).strip()
-        return payment_method or None
+        return normalize_platega_payment_method(value)
 
     def _verify_webhook(self, request: Request) -> bool:
         merchant_id = request.headers.get("X-MerchantId")

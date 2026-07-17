@@ -74,7 +74,11 @@ async def test_claim_after_user_merge_fails_before_insert() -> None:
 
 
 def test_payment_operation_model_uses_named_restrict_fk() -> None:
-    foreign_key = next(iter(PaymentOperation.__table__.c.user_id.foreign_keys))
+    foreign_key = next(
+        foreign_key
+        for foreign_key in PaymentOperation.__table__.c.user_id.foreign_keys
+        if foreign_key.name == "fk_payment_operations_user_id_users"
+    )
 
     assert foreign_key.name == "fk_payment_operations_user_id_users"
     assert foreign_key.ondelete == "RESTRICT"

@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from decimal import Decimal
 from ipaddress import ip_address, ip_network
-from typing import Optional, Protocol, Union
+from typing import Any, Optional, Protocol, Union
 from uuid import UUID
 
 import orjson
@@ -50,6 +50,34 @@ class BasePaymentGateway(ABC):
         # adapter-level wrapper preserves their existing implementations while
         # allowing capable providers to bind a durable operation to a stable key.
         return await self.handle_create_payment(amount, details)
+
+    async def build_payment_request(self, amount: Decimal, details: str) -> dict[str, Any]:
+        """Build the exact, JSON-serializable request persisted before provider I/O."""
+        return {"version": 1, "amount": str(amount), "details": details}
+
+    async def create_payment_from_request(
+        self,
+        request_snapshot: dict[str, Any],
+        *,
+        idempotency_key: Optional[str],
+    ) -> PaymentResultDto:
+        try:
+            amount = Decimal(str(request_snapshot["amount"]))
+            details = str(request_snapshot["details"])
+        except (KeyError, ValueError, TypeError) as exc:
+            raise ValueError("Invalid persisted provider request") from exc
+        return await self.create_payment(amount, details, idempotency_key=idempotency_key)
+
+    def payment_owner_fingerprint(self) -> Optional[str]:
+        """Return a non-secret stable fingerprint for replay-owner validation."""
+        return None
+
+    async def verify_payment_result(
+        self,
+        payment_id: UUID,
+        request_snapshot: dict[str, Any],
+    ) -> PaymentResultDto:
+        raise NotImplementedError("This gateway does not support exact payment inspection")
 
     @abstractmethod
     async def handle_webhook(
