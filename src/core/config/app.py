@@ -1,6 +1,8 @@
 import re
+from ipaddress import ip_address
 from pathlib import Path
 from typing import Optional, Self
+from urllib.parse import urlsplit
 
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_core.core_schema import FieldValidationInfo
@@ -105,7 +107,24 @@ class AppConfig(BaseConfig, env_prefix="APP_"):
     def validate_web_cabinet_url(cls, value: str) -> str:
         url = value.strip()
         if url and not is_valid_url(url):
-            raise ValueError("WEB_CABINET_URL must be an HTTPS URL")
+            parsed = urlsplit(url)
+            hostname = parsed.hostname
+            is_loopback = hostname == "localhost"
+            if hostname and not is_loopback:
+                try:
+                    is_loopback = ip_address(hostname).is_loopback
+                except ValueError:
+                    pass
+
+            if (
+                parsed.scheme != "http"
+                or not is_loopback
+                or parsed.username is not None
+                or parsed.password is not None
+            ):
+                raise ValueError(
+                    "WEB_CABINET_URL must be an HTTPS URL or an HTTP loopback URL"
+                )
         return url
 
     @field_validator("crypt_key")
