@@ -1,4 +1,5 @@
 from datetime import timezone
+from hashlib import sha256
 from typing import Any
 
 from sqlalchemy import ColumnElement, Text, case, cast, delete, func, or_, select, text, update
@@ -7,6 +8,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.application.common.dao.payment_operation import PaymentOperationStatus
 from src.application.common.dao.user_merge import (
+    EmailConflictResolution,
+    PaymentConflictResolution,
+    TelegramConflictResolution,
     UserMergeDao,
     UserMergeNotFoundError,
     UserMergePaymentOperationConflictError,
@@ -33,7 +37,15 @@ class UserMergeDaoImpl(UserMergeDao):
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    async def plan(self, source_user_id: int, target_user_id: int) -> UserMergePlan:
+    async def plan(
+        self,
+        source_user_id: int,
+        target_user_id: int,
+        *,
+        email_resolution: EmailConflictResolution = EmailConflictResolution.REJECT,
+        telegram_resolution: TelegramConflictResolution = TelegramConflictResolution.REJECT,
+        payment_resolution: PaymentConflictResolution = PaymentConflictResolution.REJECT,
+    ) -> UserMergePlan:
         source, target = await self._lock_users(source_user_id, target_user_id)
         existing_merge = await self._existing_merge_plan(source, target)
         if existing_merge is not None:
@@ -48,6 +60,9 @@ class UserMergeDaoImpl(UserMergeDao):
             conflicts=self._validate(
                 source,
                 target,
+                email_resolution=email_resolution,
+                telegram_resolution=telegram_resolution,
+                payment_resolution=payment_resolution,
                 payment_operation_duplicates=moved["payment_operation_duplicates"],
                 active_payment_operations=moved.get("active_payment_operations", 0),
                 fulfillment_processing=moved.get("fulfillment_processing", 0),
@@ -61,6 +76,9 @@ class UserMergeDaoImpl(UserMergeDao):
         source_user_id: int,
         target_user_id: int,
         reason: str,
+        email_resolution: EmailConflictResolution = EmailConflictResolution.REJECT,
+        telegram_resolution: TelegramConflictResolution = TelegramConflictResolution.REJECT,
+        payment_resolution: PaymentConflictResolution = PaymentConflictResolution.REJECT,
     ) -> UserMergePlan:
         source, target = await self._lock_users(source_user_id, target_user_id)
         existing_merge = await self._existing_merge_plan(source, target)
@@ -68,9 +86,18 @@ class UserMergeDaoImpl(UserMergeDao):
             return existing_merge
         await self._normalize_stale_payment_work(source.id, target.id)
         await self._assert_no_active_payment_work(source.id, target.id)
-        await self._assert_no_payment_operation_collisions(source.id, target.id)
+        if payment_resolution is PaymentConflictResolution.REKEY_SOURCE:
+            await self._rekey_source_payment_operation_collisions(source.id, target.id)
+        else:
+            await self._assert_no_payment_operation_collisions(source.id, target.id)
         moved = await self._collect_moved_counts(source.id, target.id)
-        await self._merge_records(source, target, moved)
+        await self._merge_records(
+            source,
+            target,
+            moved,
+            email_resolution=email_resolution,
+            telegram_resolution=telegram_resolution,
+        )
         self.session.add(
             UserMergeAudit(
                 actor_user_id=None if actor.id < 0 else actor.id,
@@ -157,19 +184,31 @@ class UserMergeDaoImpl(UserMergeDao):
         payment_operation_duplicates: int = 0,
         active_payment_operations: int = 0,
         fulfillment_processing: int = 0,
+        email_resolution: EmailConflictResolution = EmailConflictResolution.REJECT,
+        telegram_resolution: TelegramConflictResolution = TelegramConflictResolution.REJECT,
+        payment_resolution: PaymentConflictResolution = PaymentConflictResolution.REJECT,
     ) -> list[str]:
         conflicts: list[str] = []
-        if target.email and source.email and target.email != source.email:
+        if (
+            target.email
+            and source.email
+            and target.email != source.email
+            and email_resolution is EmailConflictResolution.REJECT
+        ):
             conflicts.append("Both users have different emails")
         if (
             target.telegram_id is not None
             and source.telegram_id is not None
             and target.telegram_id != source.telegram_id
+            and telegram_resolution is TelegramConflictResolution.REJECT
         ):
             conflicts.append("Both users have different Telegram accounts")
         if target.current_subscription_id and source.current_subscription_id:
             conflicts.append("Both users have current subscriptions")
-        if payment_operation_duplicates:
+        if (
+            payment_operation_duplicates
+            and payment_resolution is PaymentConflictResolution.REJECT
+        ):
             conflicts.append(
                 "Payment idempotency key collision between source and target "
                 f"({payment_operation_duplicates})"
@@ -309,6 +348,51 @@ class UserMergeDaoImpl(UserMergeDao):
                 f"Payment idempotency key collision between source and target ({duplicates})"
             )
 
+    async def _rekey_source_payment_operation_collisions(
+        self,
+        source_user_id: int,
+        target_user_id: int,
+    ) -> None:
+        target_operation = PaymentOperation.__table__.alias("target_operation")
+        stmt = (
+            select(PaymentOperation)
+            .join(
+                target_operation,
+                (target_operation.c.operation == PaymentOperation.operation)
+                & (target_operation.c.idempotency_key == PaymentOperation.idempotency_key)
+                & (target_operation.c.user_id == target_user_id),
+            )
+            .where(PaymentOperation.user_id == source_user_id)
+            .order_by(PaymentOperation.id)
+            .with_for_update()
+        )
+        collisions = list((await self.session.scalars(stmt)).all())
+        occupied_keys = set(
+            (
+                await self.session.scalars(
+                    select(PaymentOperation.idempotency_key).where(
+                        PaymentOperation.user_id.in_((source_user_id, target_user_id))
+                    )
+                )
+            ).all()
+        )
+
+        for operation in collisions:
+            counter = 0
+            while True:
+                digest = sha256(
+                    f"{source_user_id}:{operation.id}:{operation.idempotency_key}:{counter}".encode()
+                ).hexdigest()
+                replacement = f"merged-{source_user_id}-{operation.id}-{digest[:32]}"
+                if replacement not in occupied_keys:
+                    break
+                counter += 1
+            operation.idempotency_key = replacement
+            occupied_keys.add(replacement)
+
+        if collisions:
+            await self.session.flush()
+
     async def _normalize_stale_payment_work(self, *user_ids: int) -> None:
         now = func.clock_timestamp()
         await self.session.execute(
@@ -385,13 +469,31 @@ class UserMergeDaoImpl(UserMergeDao):
                 f"(operations={active_operations}, fulfillments={processing_fulfillments})"
             )
 
-    async def _merge_records(self, source: User, target: User, moved: dict[str, int]) -> None:
+    async def _merge_records(
+        self,
+        source: User,
+        target: User,
+        moved: dict[str, int],
+        *,
+        email_resolution: EmailConflictResolution = EmailConflictResolution.REJECT,
+        telegram_resolution: TelegramConflictResolution = TelegramConflictResolution.REJECT,
+    ) -> None:
         source_email = source.email
         source_email_verified = source.is_email_verified
         source_password_hash = source.password_hash
         source_telegram_id = source.telegram_id
+        source_username = source.username
+        source_name = source.name
+        source_language = source.language
+        source_is_bot_blocked = source.is_bot_blocked
         source_subscription_id = source.current_subscription_id
         target_subscription_id = target.current_subscription_id or source_subscription_id
+        merged_points = target.points + source.points
+        merged_personal_discount = max(target.personal_discount, source.personal_discount)
+        merged_purchase_discount = max(target.purchase_discount, source.purchase_discount)
+        merged_rules_accepted = target.is_rules_accepted or source.is_rules_accepted
+        merged_trial_available = target.is_trial_available and source.is_trial_available
+        merged_ad_link_id = target.ad_link_id or source.ad_link_id
 
         source.email = None
         source.pending_email = None
@@ -402,6 +504,11 @@ class UserMergeDaoImpl(UserMergeDao):
         source.password_hash = None
         source.is_email_verified = False
         source.telegram_id = None
+        source.personal_discount = 0
+        source.purchase_discount = 0
+        source.points = 0
+        source.is_trial_available = False
+        source.ad_link_id = None
         source.current_subscription_id = None
         source.token_version += 1
         source.is_blocked = True
@@ -423,7 +530,26 @@ class UserMergeDaoImpl(UserMergeDao):
         target.email = target.email or source_email
         target.password_hash = target.password_hash or source_password_hash
         target.is_email_verified = target.is_email_verified or source_email_verified
-        target.telegram_id = target.telegram_id or source_telegram_id
+        target.telegram_id = (
+            source_telegram_id
+            if telegram_resolution is TelegramConflictResolution.KEEP_SOURCE
+            and source_telegram_id is not None
+            else target.telegram_id or source_telegram_id
+        )
+        if (
+            telegram_resolution is TelegramConflictResolution.KEEP_SOURCE
+            and source_telegram_id is not None
+        ):
+            target.username = source_username
+            target.name = source_name
+            target.language = source_language
+            target.is_bot_blocked = source_is_bot_blocked
+        target.points = merged_points
+        target.personal_discount = merged_personal_discount
+        target.purchase_discount = merged_purchase_discount
+        target.is_rules_accepted = merged_rules_accepted
+        target.is_trial_available = merged_trial_available
+        target.ad_link_id = merged_ad_link_id
         target.pending_email = None
         target.email_verification_code_hash = None
         target.email_verification_expires_at = None

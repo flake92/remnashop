@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -7,6 +9,9 @@ class MergeUsersRequest(BaseModel):
     source_user_id: int = Field(gt=0)
     target_user_id: int = Field(gt=0)
     reason: str = Field(min_length=1, max_length=1024)
+    email_resolution: Literal["REJECT", "KEEP_TARGET"] = "REJECT"
+    telegram_resolution: Literal["REJECT", "KEEP_SOURCE"] = "REJECT"
+    payment_resolution: Literal["REJECT", "REKEY_SOURCE"] = "REJECT"
 
 
 class MergeUsersTargetResponse(BaseModel):

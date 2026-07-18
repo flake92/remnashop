@@ -8,7 +8,12 @@ from src.application.common.dao import (
     UserMergePlan,
     UserMergeTargetConflictError,
 )
-from src.application.common.dao.user_merge import UserMergeTargetSnapshot
+from src.application.common.dao.user_merge import (
+    EmailConflictResolution,
+    PaymentConflictResolution,
+    TelegramConflictResolution,
+    UserMergeTargetSnapshot,
+)
 from src.application.common.policy import Permission
 from src.application.common.uow import UnitOfWork
 from src.application.dto import UserDto
@@ -32,6 +37,9 @@ class MergeUsersDto:
     target_user_id: int
     reason: str
     dry_run: bool = False
+    email_resolution: EmailConflictResolution = EmailConflictResolution.REJECT
+    telegram_resolution: TelegramConflictResolution = TelegramConflictResolution.REJECT
+    payment_resolution: PaymentConflictResolution = PaymentConflictResolution.REJECT
 
 
 @dataclass(frozen=True)
@@ -61,7 +69,13 @@ class MergeUsers(Interactor[MergeUsersDto, MergeUsersResultDto]):
 
         async with self.uow:
             try:
-                plan = await self.user_merge_dao.plan(data.source_user_id, data.target_user_id)
+                plan = await self.user_merge_dao.plan(
+                    data.source_user_id,
+                    data.target_user_id,
+                    email_resolution=data.email_resolution,
+                    telegram_resolution=data.telegram_resolution,
+                    payment_resolution=data.payment_resolution,
+                )
             except UserMergeNotFoundError as exc:
                 raise MergeUsersNotFoundError(str(exc)) from exc
             except UserMergeTargetConflictError as exc:
@@ -80,6 +94,9 @@ class MergeUsers(Interactor[MergeUsersDto, MergeUsersResultDto]):
                     source_user_id=data.source_user_id,
                     target_user_id=data.target_user_id,
                     reason=reason,
+                    email_resolution=data.email_resolution,
+                    telegram_resolution=data.telegram_resolution,
+                    payment_resolution=data.payment_resolution,
                 )
             except UserMergePaymentOperationConflictError as exc:
                 raise MergeUsersConflictError(str(exc)) from exc

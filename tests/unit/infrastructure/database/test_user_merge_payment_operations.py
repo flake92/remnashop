@@ -5,6 +5,9 @@ import pytest
 from sqlalchemy.dialects import postgresql
 
 from src.application.common.dao.user_merge import (
+    EmailConflictResolution,
+    PaymentConflictResolution,
+    TelegramConflictResolution,
     UserMergePaymentOperationConflictError,
     UserMergeTargetConflictError,
 )
@@ -20,6 +23,69 @@ def _user(user_id: int, *, merged_into_user_id: int | None = None) -> SimpleName
         current_subscription_id=None,
         merged_into_user_id=merged_into_user_id,
     )
+
+
+def test_identity_resolution_only_suppresses_explicitly_confirmed_conflicts() -> None:
+    dao = UserMergeDaoImpl(SimpleNamespace())  # type: ignore[arg-type]
+    source = _user(11)
+    target = _user(22)
+    source.email = "source@example.com"
+    target.email = "target@example.com"
+    source.telegram_id = 111
+    target.telegram_id = 222
+
+    assert dao._validate(source, target) == [
+        "Both users have different emails",
+        "Both users have different Telegram accounts",
+    ]
+    assert dao._validate(
+        source,
+        target,
+        email_resolution=EmailConflictResolution.KEEP_TARGET,
+        telegram_resolution=TelegramConflictResolution.KEEP_SOURCE,
+    ) == []
+
+
+def test_payment_resolution_preserves_colliding_operations_without_hiding_subscriptions() -> None:
+    dao = UserMergeDaoImpl(SimpleNamespace())  # type: ignore[arg-type]
+    source = _user(11)
+    target = _user(22)
+
+    assert dao._validate(source, target, payment_operation_duplicates=1) == [
+        "Payment idempotency key collision between source and target (1)"
+    ]
+    assert dao._validate(
+        source,
+        target,
+        payment_operation_duplicates=1,
+        payment_resolution=PaymentConflictResolution.REKEY_SOURCE,
+    ) == []
+
+    source.current_subscription_id = 101
+    target.current_subscription_id = 202
+    assert dao._validate(
+        source,
+        target,
+        payment_operation_duplicates=1,
+        payment_resolution=PaymentConflictResolution.REKEY_SOURCE,
+    ) == ["Both users have current subscriptions"]
+
+
+def test_two_current_subscriptions_remain_blocking_with_identity_resolution() -> None:
+    dao = UserMergeDaoImpl(SimpleNamespace())  # type: ignore[arg-type]
+    source = _user(11)
+    target = _user(22)
+    source.email = "source@example.com"
+    target.email = "target@example.com"
+    source.current_subscription_id = 101
+    target.current_subscription_id = 202
+
+    assert dao._validate(
+        source,
+        target,
+        email_resolution=EmailConflictResolution.KEEP_TARGET,
+        telegram_resolution=TelegramConflictResolution.KEEP_SOURCE,
+    ) == ["Both users have current subscriptions"]
 
 
 @pytest.mark.asyncio
@@ -187,6 +253,16 @@ async def test_merge_moves_payment_operations_before_marking_source_merged(
         password_hash="password",
         is_email_verified=True,
         telegram_id=111,
+        username="source_telegram",
+        name="Source Telegram",
+        language="ru",
+        personal_discount=15,
+        purchase_discount=5,
+        points=40,
+        is_bot_blocked=True,
+        is_rules_accepted=True,
+        is_trial_available=False,
+        ad_link_id=17,
         current_subscription_id=101,
         token_version=0,
         is_blocked=False,
@@ -195,7 +271,7 @@ async def test_merge_moves_payment_operations_before_marking_source_merged(
     )
     target = SimpleNamespace(
         id=22,
-        email=None,
+        email="target@example.com",
         pending_email=None,
         email_verification_code_hash=None,
         email_verification_expires_at=None,
@@ -203,7 +279,17 @@ async def test_merge_moves_payment_operations_before_marking_source_merged(
         password_reset_expires_at=None,
         password_hash=None,
         is_email_verified=False,
-        telegram_id=None,
+        telegram_id=222,
+        username="target_web",
+        name="Target Web",
+        language="en",
+        personal_discount=10,
+        purchase_discount=20,
+        points=2,
+        is_bot_blocked=False,
+        is_rules_accepted=False,
+        is_trial_available=True,
+        ad_link_id=None,
         current_subscription_id=None,
         token_version=0,
     )
@@ -227,11 +313,34 @@ async def test_merge_moves_payment_operations_before_marking_source_merged(
     monkeypatch.setattr(dao, "_move_oauth_providers", AsyncMock())
     moved = {"payment_operations": 2}
 
-    await dao._merge_records(source, target, moved)  # type: ignore[arg-type]
+    await dao._merge_records(
+        source,
+        target,
+        moved,
+        email_resolution=EmailConflictResolution.KEEP_TARGET,
+        telegram_resolution=TelegramConflictResolution.KEEP_SOURCE,
+    )  # type: ignore[arg-type]
 
     assert transfer_states == [None]
     assert session.merged_owner_at_flush == [None, 22]
     assert source.merged_into_user_id == 22
+    assert source.points == 0
+    assert source.personal_discount == 0
+    assert source.purchase_discount == 0
+    assert source.is_trial_available is False
+    assert source.ad_link_id is None
+    assert target.email == "target@example.com"
+    assert target.telegram_id == 111
+    assert target.username == "source_telegram"
+    assert target.name == "Source Telegram"
+    assert target.language == "ru"
+    assert target.is_bot_blocked is True
+    assert target.points == 42
+    assert target.personal_discount == 15
+    assert target.purchase_discount == 20
+    assert target.is_rules_accepted is True
+    assert target.is_trial_available is False
+    assert target.ad_link_id == 17
 
 
 @pytest.mark.asyncio
@@ -249,3 +358,33 @@ async def test_merge_recheck_fails_closed_on_payment_operation_collision(
         await dao._assert_no_payment_operation_collisions(11, 22)
 
     count_duplicates.assert_awaited_once_with(11, 22)
+
+
+class ScalarResult:
+    def __init__(self, values: list[object]) -> None:
+        self.values = values
+
+    def all(self) -> list[object]:
+        return self.values
+
+
+@pytest.mark.asyncio
+async def test_rekey_source_payment_collision_is_deterministic_and_preserves_row() -> None:
+    operation = SimpleNamespace(id=7, idempotency_key="shared-key")
+    session = SimpleNamespace(
+        scalars=AsyncMock(
+            side_effect=[
+                ScalarResult([operation]),
+                ScalarResult(["shared-key", "occupied-key"]),
+            ]
+        ),
+        flush=AsyncMock(),
+    )
+    dao = UserMergeDaoImpl(session)  # type: ignore[arg-type]
+
+    await dao._rekey_source_payment_operation_collisions(11, 22)
+    first_key = operation.idempotency_key
+
+    assert first_key.startswith("merged-11-7-")
+    assert len(first_key) <= 128
+    session.flush.assert_awaited_once()

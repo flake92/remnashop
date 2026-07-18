@@ -2,6 +2,11 @@ from dishka import FromDishka
 from dishka.integrations.fastapi import inject
 from fastapi import APIRouter, HTTPException, Security
 
+from src.application.common.dao.user_merge import (
+    EmailConflictResolution,
+    PaymentConflictResolution,
+    TelegramConflictResolution,
+)
 from src.application.use_cases.user.commands.merge import (
     MergeUsers,
     MergeUsersConflictError,
@@ -30,6 +35,9 @@ async def merge_users(
                 target_user_id=body.target_user_id,
                 reason=body.reason,
                 dry_run=dry_run,
+                email_resolution=EmailConflictResolution(body.email_resolution),
+                telegram_resolution=TelegramConflictResolution(body.telegram_resolution),
+                payment_resolution=PaymentConflictResolution(body.payment_resolution),
             )
         )
     except (MergeUsersConflictError, MergeUsersNotFoundError) as exc:
