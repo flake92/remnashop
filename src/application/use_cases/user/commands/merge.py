@@ -6,6 +6,7 @@ from src.application.common.dao import (
     UserMergeNotFoundError,
     UserMergePaymentOperationConflictError,
     UserMergePlan,
+    UserMergeTargetConflictError,
 )
 from src.application.common.dao.user_merge import UserMergeTargetSnapshot
 from src.application.common.policy import Permission
@@ -63,6 +64,8 @@ class MergeUsers(Interactor[MergeUsersDto, MergeUsersResultDto]):
                 plan = await self.user_merge_dao.plan(data.source_user_id, data.target_user_id)
             except UserMergeNotFoundError as exc:
                 raise MergeUsersNotFoundError(str(exc)) from exc
+            except UserMergeTargetConflictError as exc:
+                raise MergeUsersConflictError(str(exc)) from exc
 
             if data.dry_run:
                 await self.uow.rollback()
@@ -79,6 +82,8 @@ class MergeUsers(Interactor[MergeUsersDto, MergeUsersResultDto]):
                     reason=reason,
                 )
             except UserMergePaymentOperationConflictError as exc:
+                raise MergeUsersConflictError(str(exc)) from exc
+            except UserMergeTargetConflictError as exc:
                 raise MergeUsersConflictError(str(exc)) from exc
             await self.uow.commit()
             return self._result(data, merged)

@@ -7,6 +7,9 @@ from src.application.dto import UserDto
 class UserMergeNotFoundError(Exception): ...
 
 
+class UserMergeTargetConflictError(Exception): ...
+
+
 class UserMergePaymentOperationConflictError(Exception): ...
 
 

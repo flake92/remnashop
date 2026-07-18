@@ -1,20 +1,24 @@
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from sqlalchemy.dialects import postgresql
 
-from src.application.common.dao.user_merge import UserMergePaymentOperationConflictError
+from src.application.common.dao.user_merge import (
+    UserMergePaymentOperationConflictError,
+    UserMergeTargetConflictError,
+)
 from src.infrastructure.database.dao.user_merge import UserMergeDaoImpl
 
 
-def _user(user_id: int) -> SimpleNamespace:
+def _user(user_id: int, *, merged_into_user_id: int | None = None) -> SimpleNamespace:
     return SimpleNamespace(
         id=user_id,
         email=None,
         telegram_id=None,
         is_email_verified=False,
         current_subscription_id=None,
+        merged_into_user_id=merged_into_user_id,
     )
 
 
@@ -35,6 +39,95 @@ async def test_plan_reports_payment_operation_identity_collision(
 
     assert plan.moved == moved
     assert plan.conflicts == ["Payment idempotency key collision between source and target (1)"]
+
+
+@pytest.mark.asyncio
+async def test_replaying_merge_to_same_target_returns_original_stable_counts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_moved = {
+        "subscriptions": 2,
+        "transactions": 4,
+        "payment_operations": 1,
+    }
+    session = SimpleNamespace(
+        scalar=AsyncMock(return_value={**original_moved, "invalid": True}),
+        add=Mock(),
+    )
+    dao = UserMergeDaoImpl(session)  # type: ignore[arg-type]
+    normalize = AsyncMock()
+    collect = AsyncMock()
+    monkeypatch.setattr(
+        dao,
+        "_lock_users",
+        AsyncMock(return_value=(_user(11, merged_into_user_id=22), _user(22))),
+    )
+    monkeypatch.setattr(dao, "_normalize_stale_payment_work", normalize)
+    monkeypatch.setattr(dao, "_collect_moved_counts", collect)
+
+    first = await dao.plan(11, 22)
+    second = await dao.plan(11, 22)
+
+    assert first == second
+    assert first.moved == original_moved
+    assert first.conflicts == []
+    assert first.target.id == 22
+    normalize.assert_not_awaited()
+    collect.assert_not_awaited()
+    session.add.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_replaying_merge_to_same_target_is_a_write_free_noop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = SimpleNamespace(
+        scalar=AsyncMock(return_value={"subscriptions": 2}),
+        add=Mock(),
+    )
+    dao = UserMergeDaoImpl(session)  # type: ignore[arg-type]
+    normalize = AsyncMock()
+    merge_records = AsyncMock()
+    monkeypatch.setattr(
+        dao,
+        "_lock_users",
+        AsyncMock(return_value=(_user(11, merged_into_user_id=22), _user(22))),
+    )
+    monkeypatch.setattr(dao, "_normalize_stale_payment_work", normalize)
+    monkeypatch.setattr(dao, "_merge_records", merge_records)
+
+    result = await dao.merge(
+        actor=SimpleNamespace(),  # type: ignore[arg-type]
+        source_user_id=11,
+        target_user_id=22,
+        reason="request retry",
+    )
+
+    assert result.moved == {"subscriptions": 2}
+    normalize.assert_not_awaited()
+    merge_records.assert_not_awaited()
+    session.add.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_already_merged_source_cannot_be_redirected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = SimpleNamespace(scalar=AsyncMock(), add=Mock())
+    dao = UserMergeDaoImpl(session)  # type: ignore[arg-type]
+    monkeypatch.setattr(
+        dao,
+        "_lock_users",
+        AsyncMock(return_value=(_user(11, merged_into_user_id=33), _user(22))),
+    )
+
+    with pytest.raises(
+        UserMergeTargetConflictError,
+        match=r"already merged into user '33'.*cannot be redirected.*'22'",
+    ):
+        await dao.plan(11, 22)
+
+    session.scalar.assert_not_awaited()
 
 
 class UpdateSession:

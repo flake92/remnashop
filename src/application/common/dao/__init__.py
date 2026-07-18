@@ -17,6 +17,7 @@ from .user_merge import (
     UserMergeNotFoundError,
     UserMergePaymentOperationConflictError,
     UserMergePlan,
+    UserMergeTargetConflictError,
     UserMergeTargetSnapshot,
 )
 from .waitlist import WaitlistDao
@@ -41,6 +42,7 @@ __all__ = [
     "UserMergeNotFoundError",
     "UserMergePaymentOperationConflictError",
     "UserMergePlan",
+    "UserMergeTargetConflictError",
     "UserMergeTargetSnapshot",
     "WaitlistDao",
     "WebhookDao",

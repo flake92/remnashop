@@ -11,6 +11,7 @@ from src.application.common.dao.user_merge import (
     UserMergeNotFoundError,
     UserMergePaymentOperationConflictError,
     UserMergePlan,
+    UserMergeTargetConflictError,
     UserMergeTargetSnapshot,
 )
 from src.application.dto import UserDto
@@ -34,6 +35,9 @@ class UserMergeDaoImpl(UserMergeDao):
 
     async def plan(self, source_user_id: int, target_user_id: int) -> UserMergePlan:
         source, target = await self._lock_users(source_user_id, target_user_id)
+        existing_merge = await self._existing_merge_plan(source, target)
+        if existing_merge is not None:
+            return existing_merge
         await self._normalize_stale_payment_work(source.id, target.id)
         moved = await self._collect_moved_counts(source.id, target.id)
         return UserMergePlan(
@@ -59,6 +63,9 @@ class UserMergeDaoImpl(UserMergeDao):
         reason: str,
     ) -> UserMergePlan:
         source, target = await self._lock_users(source_user_id, target_user_id)
+        existing_merge = await self._existing_merge_plan(source, target)
+        if existing_merge is not None:
+            return existing_merge
         await self._normalize_stale_payment_work(source.id, target.id)
         await self._assert_no_active_payment_work(source.id, target.id)
         await self._assert_no_payment_operation_collisions(source.id, target.id)
@@ -79,6 +86,51 @@ class UserMergeDaoImpl(UserMergeDao):
         return UserMergePlan(
             source_user_id=source_user_id,
             target_user_id=target_user_id,
+            target=self._target_snapshot(target),
+            moved=moved,
+            conflicts=[],
+        )
+
+    async def _existing_merge_plan(
+        self,
+        source: User,
+        target: User,
+    ) -> UserMergePlan | None:
+        merged_target_id = source.merged_into_user_id
+        if merged_target_id is None:
+            return None
+        if merged_target_id != target.id:
+            raise UserMergeTargetConflictError(
+                f"Source user '{source.id}' is already merged into user "
+                f"'{merged_target_id}' and cannot be redirected to user '{target.id}'"
+            )
+
+        # A retry must describe the original operation, not the now-empty source.
+        # Keep using the first successful audit entry so accidental historical
+        # duplicate entries cannot make the response change between retries.
+        stmt = (
+            select(UserMergeAudit.moved)
+            .where(
+                UserMergeAudit.source_user_id == source.id,
+                UserMergeAudit.target_user_id == target.id,
+                UserMergeAudit.dry_run.is_(False),
+            )
+            .order_by(UserMergeAudit.id.asc())
+            .limit(1)
+        )
+        persisted_moved = await self.session.scalar(stmt)
+        moved = (
+            {
+                key: value
+                for key, value in persisted_moved.items()
+                if isinstance(key, str) and isinstance(value, int) and not isinstance(value, bool)
+            }
+            if isinstance(persisted_moved, dict)
+            else {}
+        )
+        return UserMergePlan(
+            source_user_id=source.id,
+            target_user_id=target.id,
             target=self._target_snapshot(target),
             moved=moved,
             conflicts=[],
@@ -124,13 +176,11 @@ class UserMergeDaoImpl(UserMergeDao):
             )
         if active_payment_operations:
             conflicts.append(
-                "Source user has active payment operations "
-                f"({active_payment_operations})"
+                f"Source user has active payment operations ({active_payment_operations})"
             )
         if fulfillment_processing:
             conflicts.append(
-                "Source user has payment fulfillment in progress "
-                f"({fulfillment_processing})"
+                f"Source user has payment fulfillment in progress ({fulfillment_processing})"
             )
         return conflicts
 
@@ -165,8 +215,7 @@ class UserMergeDaoImpl(UserMergeDao):
                 Transaction,
                 Transaction.user_id.in_((source_user_id, target_user_id)),
                 or_(
-                    Transaction.fulfillment_status
-                    == TransactionFulfillmentStatus.PROCESSING,
+                    Transaction.fulfillment_status == TransactionFulfillmentStatus.PROCESSING,
                     Transaction.fulfillment_token_hash.is_not(None),
                 ),
             ),
@@ -298,8 +347,7 @@ class UserMergeDaoImpl(UserMergeDao):
             update(Transaction)
             .where(
                 Transaction.user_id.in_(user_ids),
-                Transaction.fulfillment_status
-                == TransactionFulfillmentStatus.PROCESSING,
+                Transaction.fulfillment_status == TransactionFulfillmentStatus.PROCESSING,
                 Transaction.fulfillment_lease_expires_at <= now,
             )
             .values(
@@ -327,8 +375,7 @@ class UserMergeDaoImpl(UserMergeDao):
             Transaction,
             Transaction.user_id.in_(user_ids),
             or_(
-                Transaction.fulfillment_status
-                == TransactionFulfillmentStatus.PROCESSING,
+                Transaction.fulfillment_status == TransactionFulfillmentStatus.PROCESSING,
                 Transaction.fulfillment_token_hash.is_not(None),
             ),
         )
