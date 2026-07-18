@@ -51,9 +51,20 @@ class BasePaymentGateway(ABC):
         # allowing capable providers to bind a durable operation to a stable key.
         return await self.handle_create_payment(amount, details)
 
-    async def build_payment_request(self, amount: Decimal, details: str) -> dict[str, Any]:
+    async def build_payment_request(
+        self,
+        amount: Decimal,
+        details: str,
+        *,
+        return_url: Optional[str] = None,
+    ) -> dict[str, Any]:
         """Build the exact, JSON-serializable request persisted before provider I/O."""
-        return {"version": 1, "amount": str(amount), "details": details}
+        return {
+            "version": 1,
+            "amount": str(amount),
+            "details": details,
+            "return_url": return_url,
+        }
 
     async def create_payment_from_request(
         self,

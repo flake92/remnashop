@@ -158,6 +158,7 @@ class CreatePaymentDto:
     gateway_type: PaymentGatewayType
     provider_idempotency_key: Optional[str] = None
     payment_operation_id: Optional[int] = None
+    return_url: Optional[str] = None
 
 
 class CreatePayment(Interactor[CreatePaymentDto, PaymentResultDto]):
@@ -245,6 +246,7 @@ class CreatePayment(Interactor[CreatePaymentDto, PaymentResultDto]):
             provider_request = await gateway_instance.build_payment_request(
                 data.pricing.final_amount,
                 details,
+                return_url=data.return_url,
             )
             if data.gateway_type == PaymentGatewayType.YOOKASSA:
                 if operation_id is not None:

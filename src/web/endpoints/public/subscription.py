@@ -2,6 +2,7 @@ import hashlib
 import json
 import re
 from typing import Optional
+from urllib.parse import urlsplit
 from uuid import UUID
 
 from dishka import FromDishka
@@ -59,6 +60,7 @@ from src.application.use_cases.subscription.commands.purchase import (
     ActivateTrialSubscriptionDto,
 )
 from src.application.use_cases.user.queries.plans import GetAvailablePlans, GetAvailableTrial
+from src.core.config import AppConfig
 from src.core.enums import (
     PaymentGatewayType,
     PurchaseType,
@@ -275,6 +277,33 @@ def _assert_web_purchase_email_verified(user: UserDto) -> None:
         status_code=status.HTTP_409_CONFLICT,
         detail="Email must be verified before purchasing or extending a subscription",
     )
+
+
+def _validated_payment_return_url(value: object, config: AppConfig) -> Optional[str]:
+    if value is None:
+        return None
+
+    return_url = str(value)
+    cabinet_url = config.web_cabinet_url
+    if not cabinet_url:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="WEB_CABINET_URL is required for a web payment return URL",
+        )
+
+    parsed = urlsplit(return_url)
+    cabinet = urlsplit(cabinet_url)
+    if (
+        (parsed.scheme, parsed.netloc) != (cabinet.scheme, cabinet.netloc)
+        or parsed.path not in {"/payment/success", "/payment/fail", "/payment/pending"}
+        or parsed.fragment
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Payment return URL must use the configured web cabinet origin and payment path",
+        )
+
+    return return_url
 
 
 def _to_payment_transaction_response(transaction: TransactionDto) -> PaymentTransactionResponse:
@@ -764,8 +793,10 @@ async def purchase_subscription(
     create_payment: FromDishka[CreatePayment],
     process_payment: FromDishka[ProcessPayment],
     idempotency: FromDishka[PaymentIdempotencyService],
+    config: FromDishka[AppConfig],
     idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
 ) -> PaymentInitResponse:
+    return_url = _validated_payment_return_url(body.return_url, config)
     payment_operation, replay = await _start_payment_operation(
         idempotency_key=idempotency_key,
         operation=_PURCHASE_OPERATION,
@@ -823,6 +854,7 @@ async def purchase_subscription(
                 payment_operation_id=(
                     payment_operation.operation_id if payment_operation is not None else None
                 ),
+                return_url=return_url,
             ),
         )
 
@@ -845,6 +877,7 @@ async def purchase_subscription(
             is_free=pricing.is_free,
             final_amount=str(pricing.final_amount),
             currency=gateway.currency.symbol,
+            return_url=return_url,
         )
         if payment_operation is not None and pricing.is_free:
             await idempotency.complete(
@@ -875,8 +908,10 @@ async def extend_subscription(
     create_payment: FromDishka[CreatePayment],
     process_payment: FromDishka[ProcessPayment],
     idempotency: FromDishka[PaymentIdempotencyService],
+    config: FromDishka[AppConfig],
     idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
 ) -> PaymentInitResponse:
+    return_url = _validated_payment_return_url(body.return_url, config)
     payment_operation, replay = await _start_payment_operation(
         idempotency_key=idempotency_key,
         operation=_EXTEND_OPERATION,
@@ -943,6 +978,7 @@ async def extend_subscription(
                 payment_operation_id=(
                     payment_operation.operation_id if payment_operation is not None else None
                 ),
+                return_url=return_url,
             ),
         )
 
@@ -965,6 +1001,7 @@ async def extend_subscription(
             is_free=pricing.is_free,
             final_amount=str(pricing.final_amount),
             currency=gateway.currency.symbol,
+            return_url=return_url,
         )
         if payment_operation is not None and pricing.is_free:
             await idempotency.complete(

@@ -78,8 +78,14 @@ class YookassaGateway(BasePaymentGateway):
             idempotency_key=idempotency_key or str(uuid.uuid4()),
         )
 
-    async def build_payment_request(self, amount: Decimal, details: str) -> dict[str, Any]:
-        return await self._create_payment_payload(str(amount), details)
+    async def build_payment_request(
+        self,
+        amount: Decimal,
+        details: str,
+        *,
+        return_url: str | None = None,
+    ) -> dict[str, Any]:
+        return await self._create_payment_payload(str(amount), details, return_url=return_url)
 
     def payment_owner_fingerprint(self) -> str:
         shop_id = self.data.settings.shop_id  # type: ignore[union-attr]
@@ -217,10 +223,19 @@ class YookassaGateway(BasePaymentGateway):
 
         return payment_id, transaction_status
 
-    async def _create_payment_payload(self, amount: str, details: str) -> dict[str, Any]:
+    async def _create_payment_payload(
+        self,
+        amount: str,
+        details: str,
+        *,
+        return_url: str | None = None,
+    ) -> dict[str, Any]:
         return {
             "amount": {"value": amount, "currency": self.data.currency},
-            "confirmation": {"type": "redirect", "return_url": await self._get_bot_redirect_url()},
+            "confirmation": {
+                "type": "redirect",
+                "return_url": return_url or await self._get_bot_redirect_url(),
+            },
             "capture": True,
             "description": details,
             "receipt": {

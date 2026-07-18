@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, model_validator
 
 from src.core.enums import PaymentGatewayType
 
@@ -67,11 +67,13 @@ class PurchaseRequest(BaseModel):
     plan_code: str = Field(min_length=3, max_length=64)
     duration_days: int = Field(ge=0)
     gateway_type: PaymentGatewayType
+    return_url: Optional[AnyHttpUrl] = None
 
 
 class ExtendRequest(BaseModel):
     duration_days: int = Field(ge=0)
     gateway_type: PaymentGatewayType
+    return_url: Optional[AnyHttpUrl] = None
 
 
 class PaymentInitResponse(BaseModel):
@@ -82,6 +84,7 @@ class PaymentInitResponse(BaseModel):
     is_free: bool
     final_amount: str
     currency: str
+    return_url: Optional[str] = None
 
 
 class PaymentTransactionResponse(BaseModel):

@@ -1,4 +1,5 @@
 from decimal import Decimal
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
 from uuid import uuid4
@@ -6,6 +7,7 @@ from uuid import uuid4
 import orjson
 import pytest
 
+from src.core.enums import Currency
 from src.infrastructure.payment_gateways.yookassa import YookassaGateway
 
 
@@ -55,3 +57,27 @@ async def test_yookassa_uses_durable_provider_key() -> None:
         {"Idempotence-Key": "durable-provider-key"},
         {"Idempotence-Key": "durable-provider-key"},
     ]
+
+
+@pytest.mark.asyncio
+async def test_yookassa_uses_explicit_web_return_url() -> None:
+    gateway = object.__new__(YookassaGateway)
+    gateway.data = SimpleNamespace(
+        currency=Currency.RUB,
+        settings=SimpleNamespace(customer="buyer@example.com", vat_code=1),
+    )
+    gateway._get_bot_redirect_url = AsyncMock(  # type: ignore[method-assign]
+        return_value="https://t.me/remnashop_bot"
+    )
+
+    payload = await gateway._create_payment_payload(
+        "100.00",
+        "Subscription",
+        return_url="https://cabinet.example/payment/pending?operation_id=op-1",
+    )
+
+    assert payload["confirmation"] == {
+        "type": "redirect",
+        "return_url": "https://cabinet.example/payment/pending?operation_id=op-1",
+    }
+    gateway._get_bot_redirect_url.assert_not_awaited()

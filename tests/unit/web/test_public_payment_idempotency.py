@@ -113,6 +113,7 @@ def build_purchase_call(
         "create_payment": create_payment,
         "process_payment": process_payment,
         "idempotency": idempotency,
+        "config": SimpleNamespace(web_cabinet_url="https://cabinet.example/auth/telegram/webapp"),
         "idempotency_key": idempotency_key,
     }
     return handler, kwargs, process_payment, idempotency
@@ -161,6 +162,7 @@ def build_extend_call(
         "create_payment": create_payment,
         "process_payment": process_payment,
         "idempotency": idempotency,
+        "config": SimpleNamespace(web_cabinet_url="https://cabinet.example/auth/telegram/webapp"),
         "idempotency_key": idempotency_key,
     }
     return handler, kwargs, process_payment, idempotency
@@ -185,6 +187,54 @@ async def test_free_purchase_is_fulfilled_once_and_then_replayed(monkeypatch: An
     assert first.status == "COMPLETED"
     assert create_payment.await_count == 1
     assert process_payment.system.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_web_purchase_forwards_and_echoes_validated_return_url(monkeypatch: Any) -> None:
+    payment = PaymentResultDto(id=uuid4(), url="https://payments.example/confirmation")
+    create_payment = AsyncMock(return_value=payment)
+    handler, kwargs, _, _ = build_purchase_call(
+        monkeypatch,
+        create_payment,
+        "request-key-return-0001",
+        is_free=False,
+    )
+    return_url = "https://cabinet.example/payment/pending?operation_id=clean-op-1"
+    kwargs["body"] = PurchaseRequest(
+        plan_code="basic",
+        duration_days=30,
+        gateway_type=PaymentGatewayType.YOOKASSA,
+        return_url=return_url,
+    )
+
+    response = await handler(**kwargs)
+
+    assert response.return_url == return_url
+    payment_dto = create_payment.await_args.args[1]
+    assert payment_dto.return_url == return_url
+
+
+@pytest.mark.asyncio
+async def test_web_purchase_rejects_untrusted_return_url(monkeypatch: Any) -> None:
+    create_payment = AsyncMock()
+    handler, kwargs, _, _ = build_purchase_call(
+        monkeypatch,
+        create_payment,
+        "request-key-return-0002",
+        is_free=False,
+    )
+    kwargs["body"] = PurchaseRequest(
+        plan_code="basic",
+        duration_days=30,
+        gateway_type=PaymentGatewayType.YOOKASSA,
+        return_url="https://attacker.example/payment/success",
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await handler(**kwargs)
+
+    assert exc.value.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+    create_payment.assert_not_awaited()
 
 
 @pytest.mark.asyncio
