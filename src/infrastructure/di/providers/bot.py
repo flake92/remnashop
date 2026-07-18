@@ -1,8 +1,10 @@
 from collections.abc import AsyncIterable
+from typing import Any
 
 from aiogram import Bot
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.client.telegram import TelegramAPIServer
 from aiogram.enums import ParseMode
 from aiogram_dialog import BgManagerFactory
 from dishka import Provider, Scope, from_context, provide
@@ -30,11 +32,7 @@ class BotProvider(Provider):
     async def get_bot(self, config: AppConfig) -> AsyncIterable[Bot]:
         logger.debug("Initializing Bot instance")
 
-        session = None
-        if config.bot.proxy_url:
-            logger.info("Using SOCKS5 proxy for Telegram")
-            proxy = _normalize_proxy_url(config.bot.proxy_url.get_secret_value())
-            session = AiohttpSession(proxy=proxy)
+        session = _build_bot_session(config)
 
         async with Bot(
             token=config.bot.token.get_secret_value(),
@@ -42,3 +40,19 @@ class BotProvider(Provider):
             session=session,
         ) as bot:
             yield bot
+
+
+def _build_bot_session(config: AppConfig) -> AiohttpSession | None:
+    session_kwargs: dict[str, Any] = {}
+
+    if config.bot.api_base_url:
+        logger.info("Using custom Telegram Bot API base URL")
+        session_kwargs["api"] = TelegramAPIServer.from_base(config.bot.api_base_url)
+
+    if config.bot.proxy_url:
+        logger.info("Using SOCKS5 proxy for Telegram")
+        session_kwargs["proxy"] = _normalize_proxy_url(
+            config.bot.proxy_url.get_secret_value()
+        )
+
+    return AiohttpSession(**session_kwargs) if session_kwargs else None

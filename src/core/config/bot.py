@@ -1,4 +1,5 @@
 from typing import Optional, Union
+from urllib.parse import urlsplit
 
 from pydantic import SecretStr, field_validator
 from pydantic_core.core_schema import FieldValidationInfo
@@ -17,6 +18,7 @@ class BotConfig(BaseConfig, env_prefix="BOT_"):
     support_username: SecretStr
     mini_app: Union[bool, SecretStr] = False
     proxy_url: Optional[SecretStr] = None
+    api_base_url: Optional[str] = None
 
     reset_webhook: bool = False
     drop_pending_updates: bool = False
@@ -59,6 +61,25 @@ class BotConfig(BaseConfig, env_prefix="BOT_"):
     def validate_bot_support_username(cls, field: object, info: FieldValidationInfo) -> object:
         validate_username(field, info)
         return field
+
+    @field_validator("api_base_url")
+    @classmethod
+    def validate_api_base_url(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+
+        url = value.strip().rstrip("/")
+        parsed = urlsplit(url)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError("BOT_API_BASE_URL must be a valid HTTP(S) base URL")
+        return url
 
     @field_validator("mini_app")
     @classmethod
