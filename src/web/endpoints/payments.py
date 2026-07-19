@@ -109,23 +109,14 @@ async def _process_payment_webhook(
         return Response(status_code=status.HTTP_403_FORBIDDEN)
     except PlategaWebhookMetadataError as exc:
         logger.warning(
-            "Persisting Platega webhook '{}' for manual review due to invalid metadata",
+            "Ignoring invalid paymentMethod metadata for signed Platega webhook '{}'",
             exc.payment_id,
         )
-        storage_error = await _store_payment_event(
-            exc.payment_id,
-            exc.status,
-            gateway_enum,
-            gateway_type,
-            config,
-            event_publisher,
-            transaction_dao,
-            uow,
-            error_code="WEBHOOK_INVALID_PAYMENT_METHOD",
-        )
-        if storage_error is not None:
-            return storage_error
-        return await _build_response(gateway, request, gateway_type)
+        # The provider status and payment id are authenticated by the webhook
+        # signature. paymentMethod is optional descriptive metadata and must not
+        # block fulfillment when a provider sends a new/non-canonical shape.
+        # Discard only that field and process the terminal payment normally.
+        result = (exc.payment_id, exc.status)
     except Exception as e:
         logger.exception(f"Error processing webhook for '{gateway_type}': {e}")
         error_event = ErrorEvent(**config.build.data, exception=e)

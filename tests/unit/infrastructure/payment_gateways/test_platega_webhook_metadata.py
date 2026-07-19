@@ -1,12 +1,13 @@
 from types import SimpleNamespace
 from typing import Any, Optional
-from unittest.mock import AsyncMock
+from unittest.mock import ANY, AsyncMock
 from uuid import UUID
 
 import orjson
 import pytest
 from starlette.requests import Request
 
+import src.web.endpoints.payments as payments_endpoint
 from src.core.enums import PaymentGatewayType, TransactionStatus
 from src.infrastructure.payment_gateways.platega import PlategaGateway
 from src.web.endpoints.payments import _process_payment_webhook
@@ -94,9 +95,13 @@ def test_platega_normalizes_safe_payment_method(value: Any, expected: Optional[s
 
 
 @pytest.mark.asyncio
-async def test_signed_terminal_webhook_with_invalid_method_is_durable_before_ack() -> None:
+async def test_signed_terminal_webhook_with_invalid_method_is_processed_without_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     dao = FakeTransactionDao()
     platega = gateway()
+    enqueue = AsyncMock(return_value=None)
+    monkeypatch.setattr(payments_endpoint, "_enqueue_payment_task", enqueue)
 
     response = await _process_payment_webhook(
         gateway_type="platega",
@@ -117,9 +122,17 @@ async def test_signed_terminal_webhook_with_invalid_method_is_durable_before_ack
             "gateway_type": PaymentGatewayType.PLATEGA,
             "status": TransactionStatus.COMPLETED,
             "selected_payment_method": None,
-            "error_code": "WEBHOOK_INVALID_PAYMENT_METHOD",
+            "error_code": None,
         }
     ]
+    enqueue.assert_awaited_once_with(
+        UUID("00000000-0000-0000-0000-000000000888"),
+        TransactionStatus.COMPLETED,
+        PaymentGatewayType.PLATEGA,
+        "platega",
+        ANY,
+        ANY,
+    )
 
 
 @pytest.mark.asyncio
