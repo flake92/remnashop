@@ -2,7 +2,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import orjson
 import pytest
@@ -57,6 +57,18 @@ async def test_yookassa_uses_durable_provider_key() -> None:
         {"Idempotence-Key": "durable-provider-key"},
         {"Idempotence-Key": "durable-provider-key"},
     ]
+
+
+@pytest.mark.asyncio
+async def test_yookassa_generates_key_for_native_payment_request() -> None:
+    gateway = object.__new__(YookassaGateway)
+    client = FakeClient(FakeResponse(str(uuid4())))
+    gateway._client = client
+
+    await gateway.create_payment_from_request({}, idempotency_key=None)
+
+    generated_key = client.headers[0]["Idempotence-Key"]
+    assert str(UUID(generated_key)) == generated_key
 
 
 @pytest.mark.asyncio

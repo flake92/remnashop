@@ -97,14 +97,16 @@ class YookassaGateway(BasePaymentGateway):
         *,
         idempotency_key: str | None,
     ) -> PaymentResultDto:
-        if not idempotency_key:
-            raise ValueError("YooKassa replay requires an idempotency key")
+        # Native bot purchases do not have a durable payment operation. They are
+        # initial provider requests, so give them a fresh key just as create_payment
+        # historically did. Web/recovery replays pass their persisted key explicitly.
+        provider_key = idempotency_key or str(uuid.uuid4())
         # Copy through orjson to reject non-JSON values and prevent callers mutating the
         # persisted object while the request is in flight.
         payload = orjson.loads(orjson.dumps(request_snapshot))
         if not isinstance(payload, dict):
             raise ValueError("Invalid persisted YooKassa request")
-        headers = {"Idempotence-Key": idempotency_key}
+        headers = {"Idempotence-Key": provider_key}
         logger.debug(
             "Creating YooKassa payment with persisted payload (amount={}, currency={}, "
             "has_metadata={})",
