@@ -1,5 +1,6 @@
 from decimal import Decimal, InvalidOperation
-from typing import Any, cast
+from enum import Enum
+from typing import Any, TypeVar, cast
 from uuid import UUID
 
 from remnapy.enums.users import TrafficLimitStrategy
@@ -13,14 +14,35 @@ SNAPSHOT_VERSION = 1
 class InvalidPaymentRecoverySnapshotError(ValueError): ...
 
 
+EnumValue = TypeVar("EnumValue", bound=Enum)
+
+
+def _enum_member(value: object, enum_type: type[EnumValue], name: str) -> EnumValue:
+    if isinstance(value, enum_type):
+        return value
+    try:
+        return enum_type(value)
+    except (TypeError, ValueError) as exc:
+        raise InvalidPaymentRecoverySnapshotError(f"Invalid {name}") from exc
+
+
 def build_resolved_payment_snapshot(transaction: TransactionDto) -> dict[str, Any]:
     plan = transaction.plan_snapshot
     pricing = transaction.pricing
+    purchase_type = _enum_member(transaction.purchase_type, PurchaseType, "purchase_type")
+    gateway_type = _enum_member(transaction.gateway_type, PaymentGatewayType, "gateway_type")
+    currency = _enum_member(transaction.currency, Currency, "currency")
+    plan_type = _enum_member(plan.type, PlanType, "plan.type")
+    traffic_limit_strategy = _enum_member(
+        plan.traffic_limit_strategy,
+        TrafficLimitStrategy,
+        "plan.traffic_limit_strategy",
+    )
     return {
         "version": SNAPSHOT_VERSION,
         "user_id": transaction.user_id,
-        "purchase_type": transaction.purchase_type.value,
-        "gateway_type": transaction.gateway_type.value,
+        "purchase_type": purchase_type.value,
+        "gateway_type": gateway_type.value,
         "gateway_display_name": transaction.gateway_display_name,
         "payment_method": transaction.payment_method,
         "pricing": {
@@ -28,13 +50,13 @@ def build_resolved_payment_snapshot(transaction: TransactionDto) -> dict[str, An
             "discount_percent": pricing.discount_percent,
             "final_amount": str(pricing.final_amount),
         },
-        "currency": transaction.currency.value,
+        "currency": currency.value,
         "plan": {
             "id": plan.id,
             "name": plan.name,
             "tag": plan.tag,
-            "type": plan.type.value,
-            "traffic_limit_strategy": plan.traffic_limit_strategy.value,
+            "type": plan_type.value,
+            "traffic_limit_strategy": traffic_limit_strategy.value,
             "traffic_limit": plan.traffic_limit,
             "device_limit": plan.device_limit,
             "duration": plan.duration,
@@ -183,12 +205,15 @@ def build_payment_response(
     *,
     payment_url: str | None,
 ) -> dict[str, Any]:
+    purchase_type = _enum_member(transaction.purchase_type, PurchaseType, "purchase_type")
+    status = _enum_member(transaction.status, TransactionStatus, "status")
+    currency = _enum_member(transaction.currency, Currency, "currency")
     return {
         "payment_id": str(transaction.payment_id),
         "payment_url": payment_url,
-        "purchase_type": transaction.purchase_type.value,
-        "status": transaction.status.value,
+        "purchase_type": purchase_type.value,
+        "status": status.value,
         "is_free": transaction.pricing.is_free,
         "final_amount": str(transaction.pricing.final_amount),
-        "currency": transaction.currency.symbol,
+        "currency": currency.symbol,
     }

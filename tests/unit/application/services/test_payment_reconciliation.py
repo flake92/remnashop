@@ -3,7 +3,7 @@ from dataclasses import replace
 from datetime import timedelta
 from decimal import Decimal
 from types import SimpleNamespace
-from typing import Any, Optional
+from typing import Any, Optional, cast
 from unittest.mock import AsyncMock
 from uuid import UUID
 
@@ -498,6 +498,43 @@ def transaction(*, fulfilled: bool = False, is_free: bool = False) -> Transactio
         created_at=now,
         updated_at=now,
     )
+
+
+def test_payment_recovery_serializers_accept_legacy_dao_enum_strings() -> None:
+    current = transaction()
+    legacy_plan = replace(
+        current.plan_snapshot,
+        type=cast(Any, current.plan_snapshot.type.value),
+        traffic_limit_strategy=cast(
+            Any,
+            current.plan_snapshot.traffic_limit_strategy.value,
+        ),
+    )
+    legacy = replace(
+        current,
+        status=cast(Any, current.status.value),
+        purchase_type=cast(Any, current.purchase_type.value),
+        gateway_type=cast(Any, current.gateway_type.value),
+        currency=cast(Any, current.currency.value),
+        plan_snapshot=legacy_plan,
+    )
+
+    snapshot = build_resolved_payment_snapshot(legacy)
+    response = build_payment_response(legacy, payment_url="https://payments.example/777")
+
+    assert snapshot["purchase_type"] == PurchaseType.NEW.value
+    assert snapshot["gateway_type"] == PaymentGatewayType.YOOKASSA.value
+    assert snapshot["currency"] == Currency.RUB.value
+    assert snapshot["plan"]["type"] == PlanType.UNLIMITED.value
+    assert response == {
+        "payment_id": "00000000-0000-0000-0000-000000000777",
+        "payment_url": "https://payments.example/777",
+        "purchase_type": PurchaseType.NEW.value,
+        "status": TransactionStatus.PENDING.value,
+        "is_free": False,
+        "final_amount": "100",
+        "currency": Currency.RUB.symbol,
+    }
 
 
 def operation_record(
