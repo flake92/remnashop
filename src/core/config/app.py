@@ -1,4 +1,5 @@
 import re
+import secrets
 from pathlib import Path
 from typing import Optional, Self
 
@@ -32,6 +33,7 @@ class AppConfig(BaseConfig, env_prefix="APP_"):
     crypt_key: SecretStr
     jwt_secret: Optional[SecretStr] = None
     api_key: Optional[SecretStr] = None
+    auth_service_key: Optional[SecretStr] = None
     assets_dir: Path = ASSETS_DIR
     origins: StringList = StringList("")
     swagger_enabled: bool = False
@@ -88,6 +90,15 @@ class AppConfig(BaseConfig, env_prefix="APP_"):
                     "APP_JWT_SECRET must be set when WEB_ENABLED=true; "
                     "do not reuse APP_CRYPT_KEY for JWT signing"
                 )
+            if not self.auth_service_key:
+                raise ValueError(
+                    "APP_AUTH_SERVICE_KEY must be set when WEB_ENABLED=true; "
+                    "use a dedicated least-privilege credential for web auth"
+                )
+            if self.api_key and secrets.compare_digest(
+                self.api_key.get_secret_value(), self.auth_service_key.get_secret_value()
+            ):
+                raise ValueError("APP_AUTH_SERVICE_KEY must not reuse APP_API_KEY")
         return self
 
     @field_validator("domain")

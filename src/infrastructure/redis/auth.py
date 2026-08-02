@@ -4,6 +4,9 @@ from redis.asyncio import Redis
 
 from src.infrastructure.redis.key_builder import serialize_storage_key
 from src.infrastructure.redis.keys import (
+    EmailAuthAttemptsKey,
+    EmailAuthChallengeKey,
+    EmailAuthRequestKey,
     PasswordResetAttemptsKey,
     PasswordResetLockKey,
     PasswordResetRequestKey,
@@ -20,6 +23,13 @@ return current
 """
 
 RELEASE_LOCK_SCRIPT = """
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return redis.call('DEL', KEYS[1])
+end
+return 0
+"""
+
+CONSUME_VALUE_SCRIPT = """
 if redis.call('GET', KEYS[1]) == ARGV[1] then
   return redis.call('DEL', KEYS[1])
 end
@@ -96,3 +106,33 @@ class RedisAuthRepository:
         await cast(
             Awaitable[Any], self.redis.eval(RELEASE_LOCK_SCRIPT, 1, key, token)
         )
+
+    async def reserve_email_auth_request(self, identity_hash: str, ttl: int) -> bool:
+        key = serialize_storage_key(EmailAuthRequestKey(identity_hash=identity_hash))
+        return bool(await self.redis.set(key, "1", ex=ttl, nx=True))
+
+    async def store_email_auth_challenge(
+        self, identity_hash: str, code_hash: str, ttl: int
+    ) -> None:
+        key = serialize_storage_key(EmailAuthChallengeKey(identity_hash=identity_hash))
+        await self.redis.setex(key, ttl, code_hash)
+
+    async def consume_email_auth_challenge(
+        self, identity_hash: str, code_hash: str
+    ) -> bool:
+        key = serialize_storage_key(EmailAuthChallengeKey(identity_hash=identity_hash))
+        value = await cast(
+            Awaitable[Any], self.redis.eval(CONSUME_VALUE_SCRIPT, 1, key, code_hash)
+        )
+        return bool(value)
+
+    async def increment_email_auth_attempts(self, identity_hash: str, ttl: int) -> int:
+        key = serialize_storage_key(EmailAuthAttemptsKey(identity_hash=identity_hash))
+        value = await cast(
+            Awaitable[Any], self.redis.eval(INCREMENT_WITH_TTL_SCRIPT, 1, key, ttl)
+        )
+        return int(value)
+
+    async def clear_email_auth_attempts(self, identity_hash: str) -> None:
+        key = serialize_storage_key(EmailAuthAttemptsKey(identity_hash=identity_hash))
+        await self.redis.delete(key)

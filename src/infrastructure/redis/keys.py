@@ -77,3 +77,18 @@ class PasswordResetAttemptsKey(StorageKey, prefix="password_reset_attempts"):
 @dataclass(frozen=True)
 class PasswordResetLockKey(StorageKey, prefix="password_reset_lock"):
     identity_hash: str
+
+
+@dataclass(frozen=True)
+class EmailAuthRequestKey(StorageKey, prefix="email_auth_request"):
+    identity_hash: str
+
+
+@dataclass(frozen=True)
+class EmailAuthChallengeKey(StorageKey, prefix="email_auth_challenge"):
+    identity_hash: str
+
+
+@dataclass(frozen=True)
+class EmailAuthAttemptsKey(StorageKey, prefix="email_auth_attempts"):
+    identity_hash: str

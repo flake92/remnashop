@@ -1,6 +1,6 @@
 from dishka import FromDishka
 from dishka.integrations.fastapi import inject
-from fastapi import APIRouter, HTTPException, Request, Response, status
+from fastapi import APIRouter, HTTPException, Request, Response, Security, status
 
 from src.application.common.dao.auth import AuthSessionDao
 from src.application.dto import UserDto
@@ -11,6 +11,12 @@ from src.application.use_cases.auth.commands.email import (
     ConfirmEmailVerificationDto,
     RequestEmailVerification,
     RequestEmailVerificationDto,
+)
+from src.application.use_cases.auth.commands.generic_email import (
+    CompleteGenericEmailAuth,
+    CompleteGenericEmailAuthDto,
+    StartGenericEmailAuth,
+    StartGenericEmailAuthDto,
 )
 from src.application.use_cases.auth.commands.login import LoginEmailUser, LoginEmailUserDto
 from src.application.use_cases.auth.commands.password import (
@@ -35,15 +41,18 @@ from src.application.use_cases.auth.commands.telegram import (
 )
 from src.core.config import AppConfig
 from src.core.exceptions import EmailDeliveryDisabledError, EmailDeliveryError
+from src.web.dependencies import require_auth_service_key
 from src.web.schemas import (
     AuthResponse,
     ChangeEmailRequest,
     ChangeEmailResponse,
     ChangePasswordRequest,
     ChangePasswordResponse,
+    CompleteGenericEmailAuthRequest,
     ConfirmEmailVerificationRequest,
     ConfirmEmailVerificationResponse,
     ConfirmPasswordResetRequest,
+    GenericEmailAuthStartResponse,
     LoginRequest,
     LogoutResponse,
     MeResponse,
@@ -52,6 +61,7 @@ from src.web.schemas import (
     RequestEmailVerificationCodeRequest,
     RequestEmailVerificationCodeResponse,
     RequestPasswordResetRequest,
+    StartGenericEmailAuthRequest,
     TelegramAuthRequest,
     TelegramWebAppAuthRequest,
 )
@@ -63,7 +73,11 @@ from ._common import (
     set_auth_cookies,
 )
 
-router = APIRouter(prefix="/auth", tags=["Public - Auth"])
+router = APIRouter(
+    prefix="/auth",
+    tags=["Public - Auth"],
+    dependencies=[Security(require_auth_service_key)],
+)
 
 
 def _to_me_response(user: UserDto) -> MeResponse:
@@ -72,6 +86,7 @@ def _to_me_response(user: UserDto) -> MeResponse:
         auth_type=user.auth_type,
         email=user.email,
         is_email_verified=user.is_email_verified,
+        has_password=bool(user.password_hash),
         pending_email=user.pending_email,
         name=user.name,
         username=user.username,
@@ -121,6 +136,39 @@ async def login_public_user(
 ) -> AuthResponse:
     user = await login_email_user.system(
         LoginEmailUserDto(email=body.email, password=body.password)
+    )
+    return await _issue_and_set(user, response, config, auth_session)
+
+
+@router.post(
+    "/email/start",
+    response_model=GenericEmailAuthStartResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+@inject
+async def start_generic_email_auth(
+    body: StartGenericEmailAuthRequest,
+    start_email_auth: FromDishka[StartGenericEmailAuth],
+) -> GenericEmailAuthStartResponse:
+    await start_email_auth.system(StartGenericEmailAuthDto(email=body.email))
+    return GenericEmailAuthStartResponse(success=True)
+
+
+@router.post("/email/complete", response_model=AuthResponse)
+@inject
+async def complete_generic_email_auth(
+    body: CompleteGenericEmailAuthRequest,
+    response: Response,
+    config: FromDishka[AppConfig],
+    complete_email_auth: FromDishka[CompleteGenericEmailAuth],
+    auth_session: FromDishka[AuthSessionDao],
+) -> AuthResponse:
+    user = await complete_email_auth.system(
+        CompleteGenericEmailAuthDto(
+            email=body.email,
+            code=body.code,
+            password=body.password,
+        )
     )
     return await _issue_and_set(user, response, config, auth_session)
 

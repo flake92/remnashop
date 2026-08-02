@@ -30,6 +30,8 @@ COPY ./src ./src
 COPY ./assets /opt/remnashop/assets.default
 
 COPY ./docker-entrypoint.sh ./docker-entrypoint.sh
+COPY ./docker-migrate.sh ./docker-migrate.sh
 RUN sed -i 's/\r$//' ./docker-entrypoint.sh \
-    && chmod +x ./docker-entrypoint.sh
+    && sed -i 's/\r$//' ./docker-migrate.sh \
+    && chmod +x ./docker-entrypoint.sh ./docker-migrate.sh
 CMD ["./docker-entrypoint.sh"]
