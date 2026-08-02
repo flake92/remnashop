@@ -1,13 +1,19 @@
+from __future__ import annotations
+
 import inspect
 import logging
+import re
 import sys
 from collections import deque
-from typing import Final, Union
+from typing import TYPE_CHECKING, Final, Union
 
 from loguru import logger
 
 from src.core.config import AppConfig
 from src.core.constants import LOG_DIR
+
+if TYPE_CHECKING:
+    from loguru import Record
 
 LOG_BUFFER_CAPACITY: Final[int] = 200
 LOG_FILENAME: Final[str] = "bot.log"
@@ -17,6 +23,29 @@ LOG_FORMAT: Final[str] = (
     "<level>{level: <8}</level> | "
     "<cyan>{name}</cyan>:<cyan>{line}</cyan> | <level>{message}</level>"
 )
+LOG_REDACTED: Final[str] = "[REDACTED]"
+_EMAIL_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"(?<![\w.+-])[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}(?![\w.-])"
+)
+_BEARER_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"(?i)\b(bearer\s+)[A-Za-z0-9._~+/=-]+"
+)
+_SECRET_VALUE_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"(?i)([\"']?(?:password|passwd|secret|token|authorization|api[_-]?key|signature|sign)"
+    r"[\"']?\s*[:=]\s*)([\"']?)[^\s,;&}\]]+"
+)
+
+
+def sanitize_log_text(value: str) -> str:
+    """Remove common credentials and personal email addresses from log messages."""
+    sanitized = _EMAIL_PATTERN.sub("[EMAIL]", value)
+    sanitized = _BEARER_PATTERN.sub(rf"\1{LOG_REDACTED}", sanitized)
+    return _SECRET_VALUE_PATTERN.sub(rf"\1{LOG_REDACTED}", sanitized)
+
+
+def _sanitize_record(record: Record) -> bool:
+    record["message"] = sanitize_log_text(str(record["message"]))
+    return True
 
 
 class LogBuffer:
@@ -63,6 +92,8 @@ def setup_logger(config: AppConfig) -> None:
         level=config.log.level,
         format=LOG_FORMAT,
         colorize=True,
+        diagnose=False,
+        filter=_sanitize_record,
     )
 
     if config.log.to_file:
@@ -74,6 +105,8 @@ def setup_logger(config: AppConfig) -> None:
             retention=config.log.retention,
             compression=config.log.compression,
             encoding=LOG_ENCODING,
+            diagnose=False,
+            filter=_sanitize_record,
         )
 
     logger.add(
@@ -81,6 +114,8 @@ def setup_logger(config: AppConfig) -> None:
         level=config.log.level,
         format=LOG_FORMAT,
         colorize=False,
+        diagnose=False,
+        filter=_sanitize_record,
     )
 
     intercept_handler = InterceptHandler()

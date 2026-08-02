@@ -107,14 +107,17 @@ class BasePaymentGateway(ABC):
     async def _get_webhook_data(self, request: Request) -> dict:
         try:
             data = orjson.loads(await request.body())
-            logger.debug(f"Webhook data: {data}")
 
             if not isinstance(data, dict):
                 raise ValueError("Payload is not a dictionary")
 
+            logger.debug("Webhook payload parsed (fields={fields})", fields=sorted(data))
             return data
         except (orjson.JSONDecodeError, ValueError) as e:
-            logger.error(f"Failed to parse webhook payload: {e}")
+            logger.error(
+                "Failed to parse webhook payload (error_type={error_type})",
+                error_type=type(e).__name__,
+            )
             raise ValueError("Invalid webhook payload") from e
 
     def _make_client(

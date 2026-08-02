@@ -28,7 +28,10 @@ class SmtpEmailSender(EmailSender):
         try:
             await asyncio.to_thread(self._send_sync, to=to, subject=subject, body=body)
         except Exception as e:
-            logger.error(f"Failed to send email to '{to}': {e}")
+            logger.error(
+                "Failed to send email (error_type={error_type})",
+                error_type=type(e).__name__,
+            )
             raise EmailDeliveryError(
                 "Failed to send verification email. Please try again later."
             ) from e

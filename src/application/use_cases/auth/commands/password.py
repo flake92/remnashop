@@ -162,7 +162,10 @@ class RequestPasswordReset(Interactor[RequestPasswordResetDto, PasswordResetRequ
                 ),
             )
         except Exception as e:
-            logger.warning(f"Password reset email delivery failed: {e}")
+            logger.warning(
+                "Password reset email delivery failed (error_type={error_type})",
+                error_type=type(e).__name__,
+            )
             return PasswordResetRequested()
 
         user.password_reset_code_hash = hash_email_verification_code(
@@ -173,7 +176,7 @@ class RequestPasswordReset(Interactor[RequestPasswordResetDto, PasswordResetRequ
         async with self.uow:
             updated = await self.user_dao.update(user)
             if not updated:
-                logger.warning(f"User '{user.id}' disappeared during password reset request")
+                logger.warning("User disappeared during password reset request")
                 return PasswordResetRequested()
             await self.uow.commit()
 
