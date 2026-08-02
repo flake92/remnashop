@@ -194,6 +194,7 @@ class PlanOfferResponse(BaseModel):
     device_limit: int
     type: str
     recommended_purchase_type: str
+    renewal_terms_changed: bool = False
     durations: list[DurationOfferResponse]
 
 

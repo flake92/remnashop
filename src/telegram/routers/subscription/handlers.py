@@ -19,7 +19,11 @@ from src.application.use_cases.gateways.commands.payment import (
     ProcessPaymentDto,
 )
 from src.application.use_cases.gateways.queries.stars import IsStarsPaymentBlocked
-from src.application.use_cases.plan.queries.match import MatchPlan, MatchPlanDto
+from src.application.use_cases.plan.queries.match import (
+    MatchPlan,
+    MatchPlanDto,
+    resolve_renew_plan,
+)
 from src.application.use_cases.user.queries.plans import GetAvailablePlans
 from src.core.constants import PAYMENT_PREFIX, USER_KEY
 from src.core.enums import PaymentGatewayType, PurchaseType, TransactionStatus
@@ -132,22 +136,16 @@ async def _resolve_renew_plan(
     matched_plan = await match_plan.system(
         MatchPlanDto(plan_snapshot=current_subscription.plan_snapshot, plans=plans)
     )
-    if matched_plan:
-        dialog_manager.dialog_data[PlanDto.__name__] = retort.dump(matched_plan)
+    resolution = resolve_renew_plan(current_subscription.plan_snapshot, plans, matched_plan)
+    if resolution.plan:
+        dialog_manager.dialog_data[PlanDto.__name__] = retort.dump(resolution.plan)
         dialog_manager.dialog_data["only_single_plan"] = True
-        dialog_manager.dialog_data["plan_is_modified"] = False
-        await dialog_manager.switch_to(state=Subscription.DURATION)
-        return True
-
-    snapshot_id = current_subscription.plan_snapshot.id
-    modified_plan = next((p for p in plans if p.id == snapshot_id), None)
-    if modified_plan:
-        logger.info(
-            f"{user.log} Plan '{snapshot_id}' was modified, allowing renewal with updated data"
-        )
-        dialog_manager.dialog_data[PlanDto.__name__] = retort.dump(modified_plan)
-        dialog_manager.dialog_data["only_single_plan"] = True
-        dialog_manager.dialog_data["plan_is_modified"] = True
+        dialog_manager.dialog_data["plan_is_modified"] = resolution.terms_changed
+        if resolution.terms_changed:
+            logger.info(
+                f"{user.log} Plan '{current_subscription.plan_snapshot.id}' was modified, "
+                "allowing renewal with updated data"
+            )
         await dialog_manager.switch_to(state=Subscription.DURATION)
         return True
 

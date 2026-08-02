@@ -13,6 +13,27 @@ class MatchPlanDto:
     plans: list[PlanDto]
 
 
+@dataclass(frozen=True)
+class RenewPlanResolution:
+    plan: Optional[PlanDto]
+    terms_changed: bool
+
+
+def resolve_renew_plan(
+    snapshot: PlanSnapshotDto,
+    plans: list[PlanDto],
+    exact_match: Optional[PlanDto],
+) -> RenewPlanResolution:
+    if exact_match is not None:
+        return RenewPlanResolution(plan=exact_match, terms_changed=False)
+
+    modified_plan = next((plan for plan in plans if plan.id == snapshot.id), None)
+    return RenewPlanResolution(
+        plan=modified_plan,
+        terms_changed=modified_plan is not None,
+    )
+
+
 class MatchPlan(Interactor[MatchPlanDto, Optional[PlanDto]]):
     required_permission = None
 
