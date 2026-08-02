@@ -127,6 +127,11 @@ class PasswordResetResponse(BaseModel):
     success: bool
 
 
+class PasswordResetConfirmResponse(PasswordResetResponse):
+    expires_at: datetime
+    refresh_expires_at: datetime
+
+
 class ChangeEmailRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 

@@ -3,8 +3,7 @@ import secrets
 from pathlib import Path
 from typing import Optional, Self
 
-from pydantic import Field, SecretStr, field_validator, model_validator
-from pydantic_core.core_schema import FieldValidationInfo
+from pydantic import Field, SecretStr, ValidationInfo, field_validator, model_validator
 
 from src.core.constants import API_V1, ASSETS_DEFAULT_DIR, ASSETS_DIR, PAYMENTS_WEBHOOK_PATH
 from src.core.enums import Locale, PaymentGatewayType
@@ -103,7 +102,7 @@ class AppConfig(BaseConfig, env_prefix="APP_"):
 
     @field_validator("domain")
     @classmethod
-    def validate_domain(cls, field: SecretStr, info: FieldValidationInfo) -> SecretStr:
+    def validate_domain(cls, field: SecretStr, info: ValidationInfo) -> SecretStr:
         validate_not_change_me(field, info)
 
         if not is_valid_domain(field.get_secret_value()):
@@ -121,7 +120,7 @@ class AppConfig(BaseConfig, env_prefix="APP_"):
 
     @field_validator("crypt_key")
     @classmethod
-    def validate_crypt_key(cls, field: SecretStr, info: FieldValidationInfo) -> SecretStr:
+    def validate_crypt_key(cls, field: SecretStr, info: ValidationInfo) -> SecretStr:
         validate_not_change_me(field, info)
 
         if not re.match(r"^[A-Za-z0-9+/=]{44}$", field.get_secret_value()):

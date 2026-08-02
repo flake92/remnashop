@@ -72,7 +72,8 @@ class ActivatePromocode(Interactor[ActivatePromocodeDto, PromocodeDto]):
         pending = await self._apply_reward_remote(actor, user, promo, subscription)
 
         async with self.uow:
-            assert promo.id is not None
+            if promo.id is None:
+                raise RuntimeError("A persisted promocode must have an id")
             activation = PromocodeActivationDto(
                 promocode_id=promo.id,
                 user_id=user.id,

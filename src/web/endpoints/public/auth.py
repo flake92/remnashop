@@ -56,6 +56,7 @@ from src.web.schemas import (
     LoginRequest,
     LogoutResponse,
     MeResponse,
+    PasswordResetConfirmResponse,
     PasswordResetResponse,
     RegisterRequest,
     RequestEmailVerificationCodeRequest,
@@ -291,22 +292,31 @@ async def request_password_reset(
     return PasswordResetResponse(success=True)
 
 
-@router.post("/password/confirm-reset", response_model=PasswordResetResponse)
+@router.post("/password/confirm-reset", response_model=PasswordResetConfirmResponse)
 @inject
 async def confirm_password_reset(
     body: ConfirmPasswordResetRequest,
     response: Response,
+    config: FromDishka[AppConfig],
     confirm_password_reset_uc: FromDishka[ConfirmPasswordReset],
-) -> PasswordResetResponse:
-    await confirm_password_reset_uc.system(
+    auth_session: FromDishka[AuthSessionDao],
+) -> PasswordResetConfirmResponse:
+    user = await confirm_password_reset_uc.system(
         ConfirmPasswordResetDto(
             email=body.email,
             code=body.code,
             new_password=body.new_password,
         )
     )
-    clear_auth_cookies(response)
-    return PasswordResetResponse(success=True)
+    # The reset use case revokes every old session. Issue a new session only
+    # after the password change has committed, so a successful response never
+    # leaves the browser in an ambiguous logged-out state.
+    auth = await _issue_and_set(user, response, config, auth_session)
+    return PasswordResetConfirmResponse(
+        success=True,
+        expires_at=auth.expires_at,
+        refresh_expires_at=auth.refresh_expires_at,
+    )
 
 
 @router.post("/email/change", response_model=ChangeEmailResponse)
