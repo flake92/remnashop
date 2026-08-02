@@ -65,6 +65,10 @@ class GenericEmailAuthStartResponse(BaseModel):
     success: bool
 
 
+class IdentifyEmailResponse(BaseModel):
+    exists: bool
+
+
 class ChangePasswordRequest(BaseModel):
     current_password: str = Field(min_length=1, max_length=256)
     new_password: str = Field(min_length=8, max_length=256)

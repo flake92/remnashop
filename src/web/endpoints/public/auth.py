@@ -2,6 +2,7 @@ from dishka import FromDishka
 from dishka.integrations.fastapi import inject
 from fastapi import APIRouter, HTTPException, Request, Response, Security, status
 
+from src.application.common.dao import UserDao
 from src.application.common.dao.auth import AuthSessionDao
 from src.application.dto import UserDto
 from src.application.use_cases.auth.commands.email import (
@@ -53,6 +54,7 @@ from src.web.schemas import (
     ConfirmEmailVerificationResponse,
     ConfirmPasswordResetRequest,
     GenericEmailAuthStartResponse,
+    IdentifyEmailResponse,
     LoginRequest,
     LogoutResponse,
     MeResponse,
@@ -79,6 +81,15 @@ router = APIRouter(
     tags=["Public - Auth"],
     dependencies=[Security(require_auth_service_key)],
 )
+
+
+@router.post("/identify", response_model=IdentifyEmailResponse)
+@inject
+async def identify_email_user(
+    body: StartGenericEmailAuthRequest,
+    user_dao: FromDishka[UserDao],
+) -> IdentifyEmailResponse:
+    return IdentifyEmailResponse(exists=await user_dao.get_by_email(body.email) is not None)
 
 
 def _to_me_response(user: UserDto) -> MeResponse:
