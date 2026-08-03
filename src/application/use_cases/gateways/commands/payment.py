@@ -279,7 +279,7 @@ class CreatePayment(Interactor[CreatePaymentDto, PaymentResultDto]):
         else:
             payment = await gateway_instance.create_payment_from_request(
                 provider_request,
-                idempotency_key=provider_key,
+                idempotency_key=provider_key or str(uuid.uuid4()),
             )
             transaction.payment_id = payment.id
 
