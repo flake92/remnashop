@@ -64,6 +64,7 @@ from src.web.schemas import (
     RequestEmailVerificationCodeRequest,
     RequestEmailVerificationCodeResponse,
     RequestPasswordResetRequest,
+    ServiceSessionRequest,
     StartGenericEmailAuthRequest,
     TelegramAuthRequest,
     TelegramWebAppAuthRequest,
@@ -90,6 +91,23 @@ async def identify_email_user(
     user_dao: FromDishka[UserDao],
 ) -> IdentifyEmailResponse:
     return IdentifyEmailResponse(exists=await user_dao.get_by_email(body.email) is not None)
+
+
+@router.post("/service-session", response_model=AuthResponse)
+@inject
+async def create_service_session(
+    body: ServiceSessionRequest,
+    response: Response,
+    config: FromDishka[AppConfig],
+    user_dao: FromDishka[UserDao],
+    auth_session: FromDishka[AuthSessionDao],
+) -> AuthResponse:
+    user = await user_dao.get_by_email(body.email)
+    if not user or not user.is_email_verified or str(user.id) != body.user_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Verified user not found")
+    if user.is_blocked:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User is blocked")
+    return await _issue_and_set(user, response, config, auth_session)
 
 
 def _to_me_response(user: UserDto) -> MeResponse:
