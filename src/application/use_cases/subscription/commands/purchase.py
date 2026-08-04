@@ -145,7 +145,7 @@ class PurchaseSubscription(Interactor[PurchaseSubscriptionDto, None]):
 
         async with self.uow:
             # 1. NEW PURCHASE (NOT TRIAL)
-            if purchase_type == PurchaseType.NEW and not has_trial:
+            if purchase_type == PurchaseType.NEW and not has_trial and subscription is None:
                 created_user = await self.remnawave.create_user(user, plan=plan)
                 new_sub = self._build_subscription_dto(created_user, plan)
 
@@ -162,11 +162,16 @@ class PurchaseSubscription(Interactor[PurchaseSubscriptionDto, None]):
                 logger.debug(f"{actor.log} Created new subscription for user '{user.id}'")
 
             # 2. RENEW (NOT TRIAL)
-            elif purchase_type == PurchaseType.RENEW and not has_trial:
+            elif purchase_type in {PurchaseType.RENEW, PurchaseType.NEW} and not has_trial:
                 if not subscription:
                     raise ValueError(
                         f"No subscription found for renewal for user '{user.remna_name}'"
                     )
+
+                # More than one NEW payment can be confirmed after the first
+                # transaction has already created the subscription (for example,
+                # delayed or previously unprocessable provider callbacks). Preserve
+                # every paid duration instead of trying to create a duplicate user.
 
                 duration = transaction.plan_snapshot.duration
 
