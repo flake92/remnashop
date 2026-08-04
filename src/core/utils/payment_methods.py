@@ -1,8 +1,6 @@
-import re
 from typing import Any
 
-_PLATEGA_PAYMENT_METHOD_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/+\- ]{0,63}")
-_PLATEGA_PAYMENT_METHOD_IDS = frozenset({2, 3, 11, 12, 13, 14})
+_PLATEGA_PAYMENT_METHOD_MAX_ID = 2**31 - 1
 
 
 def normalize_platega_payment_method(value: Any) -> str | None:
@@ -10,7 +8,7 @@ def normalize_platega_payment_method(value: Any) -> str | None:
     if value is None:
         return None
     if isinstance(value, int) and not isinstance(value, bool):
-        if value not in _PLATEGA_PAYMENT_METHOD_IDS:
+        if value < 0 or value > _PLATEGA_PAYMENT_METHOD_MAX_ID:
             raise ValueError("Invalid Platega paymentMethod id")
         return str(value)
     if not isinstance(value, str):
@@ -19,6 +17,6 @@ def normalize_platega_payment_method(value: Any) -> str | None:
     payment_method = value.strip()
     if not payment_method:
         return None
-    if _PLATEGA_PAYMENT_METHOD_RE.fullmatch(payment_method) is None:
+    if len(payment_method) > 64 or not payment_method.isprintable():
         raise ValueError("Invalid Platega paymentMethod")
     return payment_method
