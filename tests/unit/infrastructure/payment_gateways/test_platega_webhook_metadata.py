@@ -78,7 +78,7 @@ def gateway() -> PlategaGateway:
 
 @pytest.mark.parametrize(
     "value",
-    ["X" * 65, "CARD\nINJECT", 123, ["CARD"], {"method": "CARD"}],
+    ["X" * 65, "CARD\nINJECT", True, 123, ["CARD"], {"method": "CARD"}],
 )
 def test_platega_rejects_noncanonical_payment_method(value: Any) -> None:
     with pytest.raises(ValueError):
@@ -87,10 +87,29 @@ def test_platega_rejects_noncanonical_payment_method(value: Any) -> None:
 
 @pytest.mark.parametrize(
     ("value", "expected"),
-    [(None, None), ("  ", None), (" CARD-SBP_2 ", "CARD-SBP_2")],
+    [
+        (None, None),
+        ("  ", None),
+        (" CARD-SBP_2 ", "CARD-SBP_2"),
+        (2, "2"),
+        (14, "14"),
+    ],
 )
 def test_platega_normalizes_safe_payment_method(value: Any, expected: Optional[str]) -> None:
     assert PlategaGateway._normalize_payment_method(value) == expected
+
+
+@pytest.mark.asyncio
+async def test_signed_webhook_accepts_documented_integer_payment_method() -> None:
+    platega = gateway()
+
+    result = await platega.handle_webhook(signed_request(2))
+
+    assert result == (
+        UUID("00000000-0000-0000-0000-000000000888"),
+        TransactionStatus.COMPLETED,
+    )
+    assert platega.selected_payment_method == "2"
 
 
 @pytest.mark.asyncio
