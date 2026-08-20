@@ -172,6 +172,7 @@ class RequestPasswordReset(Interactor[RequestPasswordResetDto, PasswordResetRequ
             code, self.config.crypt_key.get_secret_value()
         )
         user.password_reset_expires_at = expires_at
+        user.password_reset_attempts = 0
 
         async with self.uow:
             updated = await self.user_dao.update(user)
@@ -267,6 +268,7 @@ class ConfirmPasswordReset(Interactor[ConfirmPasswordResetDto, UserDto]):
                 user.password_hash = self.password_hasher.hash(data.new_password)
                 user.password_reset_code_hash = None
                 user.password_reset_expires_at = None
+                user.password_reset_attempts = 0
                 user.token_version += 1
 
                 updated = await self.user_dao.update(user)

@@ -11,6 +11,7 @@ from src.core.enums import Currency, PaymentGatewayType, PurchaseType
 
 T = TypeVar("T")
 
+
 class FakeUnitOfWork:
     def __init__(self) -> None:
         self.committed = False
@@ -35,6 +36,7 @@ class FakeUnitOfWork:
         retries: int = 5,
     ) -> T:
         raise NotImplementedError
+
 
 @pytest.mark.asyncio
 async def test_native_payment_generates_provider_idempotency_key() -> None:

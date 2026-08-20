@@ -333,7 +333,10 @@ event-subscription =
     Включен временный доступ: <b>{ $traffic_mb ->
         [0] безлимит
         *[other] { $traffic_mb } МБ
-        }</b>.
+        }</b>{ $is_indefinite ->
+        [1] { "" }
+       *[0] { " на " }{ $grace_until }
+    }.
     Оплатите, чтобы восстановить полный доступ.
 
     .not-connected =

@@ -51,6 +51,7 @@ class UserDto(BaseDto, TrackableMixin, TimestampMixin):
     email_verification_expires_at: Optional[datetime] = None
     password_reset_code_hash: Optional[str] = None
     password_reset_expires_at: Optional[datetime] = None
+    password_reset_attempts: int = 0
     token_version: int = 0
 
     username: Optional[str] = None

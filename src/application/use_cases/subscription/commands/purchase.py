@@ -220,6 +220,11 @@ class PurchaseSubscription(Interactor[PurchaseSubscriptionDto, None]):
                 subscription.internal_squads = plan.internal_squads
                 subscription.external_squad = plan.external_squad
                 subscription.grace_until = None
+                # A paid renewal always restores access. Ending a grace period disables the
+                # panel user, and that DISABLED status is synced back onto the subscription —
+                # without this, _build_update_request would keep sending DISABLED and the
+                # customer would pay for nothing.
+                subscription.status = SubscriptionStatus.ACTIVE
 
                 await self.remnawave.update_user(
                     user=user,

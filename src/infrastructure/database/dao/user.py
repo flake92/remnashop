@@ -217,8 +217,7 @@ class UserDaoImpl(UserDao):
         result = await self.session.execute(stmt)
         claimed: bool = result.rowcount > 0  # type: ignore[attr-defined]
         logger.debug(
-            f"Trial claim for user_id '{user_id}': "
-            f"{'claimed' if claimed else 'already taken'}"
+            f"Trial claim for user_id '{user_id}': {'claimed' if claimed else 'already taken'}"
         )
         return claimed
 

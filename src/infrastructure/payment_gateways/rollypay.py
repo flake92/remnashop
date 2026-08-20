@@ -96,7 +96,13 @@ class RollyPayGateway(BasePaymentGateway):
             return None
 
         status = webhook_data.get("status")
-        payment_id = UUID(order_id_str)
+
+        try:
+            payment_id = UUID(order_id_str)
+        except (ValueError, AttributeError, TypeError):
+            # order_id was not issued by us (foreign integration on the same account)
+            logger.warning(f"RollyPay webhook has a non-UUID 'order_id': '{order_id_str}'")
+            return None
 
         match status:
             case "paid":
