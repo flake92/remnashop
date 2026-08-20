@@ -470,14 +470,10 @@ class ProcessPayment(Interactor[ProcessPaymentDto, None]):
                         "Invalid Platega payment method metadata"
                     ) from exc
                 if selected_payment_method is None:
-                    raise PaymentEventNotAppliedError(
-                        "Empty Platega payment method metadata"
-                    )
-                method_applied = (
-                    await self.transaction_dao.set_payment_method_if_absent_or_equal(
-                        payment_id,
-                        payment_method=selected_payment_method,
-                    )
+                    raise PaymentEventNotAppliedError("Empty Platega payment method metadata")
+                method_applied = await self.transaction_dao.set_payment_method_if_absent_or_equal(
+                    payment_id,
+                    payment_method=selected_payment_method,
                 )
                 if not method_applied:
                     payment_method_conflict = True
@@ -543,8 +539,7 @@ class ProcessPayment(Interactor[ProcessPaymentDto, None]):
                     refreshed = await self.transaction_dao.get_by_payment_id(payment_id)
                     if (
                         refreshed is not None
-                        and refreshed.fulfillment_status
-                        == TransactionFulfillmentStatus.PROCESSING
+                        and refreshed.fulfillment_status == TransactionFulfillmentStatus.PROCESSING
                     ):
                         expired = await self.transaction_dao.expire_fulfillment(payment_id)
                         if expired:
@@ -552,8 +547,7 @@ class ProcessPayment(Interactor[ProcessPaymentDto, None]):
                             await self.uow.commit()
                     elif (
                         refreshed is not None
-                        and refreshed.fulfillment_status
-                        == TransactionFulfillmentStatus.SUCCEEDED
+                        and refreshed.fulfillment_status == TransactionFulfillmentStatus.SUCCEEDED
                         and refreshed.fulfillment_completed_at is not None
                     ):
                         logger.info(
@@ -572,10 +566,7 @@ class ProcessPayment(Interactor[ProcessPaymentDto, None]):
                         raise PaymentEventNotAppliedError(
                             "Success event requires manual fulfillment review"
                         )
-                    elif (
-                        refreshed is not None
-                        and refreshed.status == TransactionStatus.REFUNDED
-                    ):
+                    elif refreshed is not None and refreshed.status == TransactionStatus.REFUNDED:
                         logger.info(
                             f"Success event superseded by refund for '{payment_id}', "
                             f"user '{user.remna_name}'"
@@ -617,9 +608,7 @@ class ProcessPayment(Interactor[ProcessPaymentDto, None]):
             elif new_status == TransactionStatus.REFUNDED:
                 updated = await self.transaction_dao.transition_refunded(payment_id)
                 if not updated:
-                    manual = await self.transaction_dao.mark_refund_manual_required(
-                        payment_id
-                    )
+                    manual = await self.transaction_dao.mark_refund_manual_required(payment_id)
                     if manual:
                         refreshed = await self.transaction_dao.get_by_payment_id(payment_id)
                         if refreshed is None:
@@ -634,10 +623,7 @@ class ProcessPayment(Interactor[ProcessPaymentDto, None]):
                         await self.uow.commit()
                     else:
                         refreshed = await self.transaction_dao.get_by_payment_id(payment_id)
-                        if (
-                            refreshed is not None
-                            and refreshed.status == TransactionStatus.REFUNDED
-                        ):
+                        if refreshed is not None and refreshed.status == TransactionStatus.REFUNDED:
                             if (
                                 refreshed.fulfillment_status
                                 == TransactionFulfillmentStatus.MANUAL_REQUIRED
@@ -726,12 +712,10 @@ class ProcessPayment(Interactor[ProcessPaymentDto, None]):
                     }
                     and refreshed.fulfillment_completed_at is None
                 ):
-                    finalized = (
-                        await self.transaction_dao.mark_fulfillment_manual_required(
-                            payment_id,
-                            token_hash=fulfillment_token_hash,
-                            error_code="REFUND_DURING_COMPLETED_SIDE_EFFECT",
-                        )
+                    finalized = await self.transaction_dao.mark_fulfillment_manual_required(
+                        payment_id,
+                        token_hash=fulfillment_token_hash,
+                        error_code="REFUND_DURING_COMPLETED_SIDE_EFFECT",
                     )
                     if not finalized:
                         raise RuntimeError(
@@ -751,12 +735,10 @@ class ProcessPayment(Interactor[ProcessPaymentDto, None]):
                     }
                     and refreshed.fulfillment_completed_at is None
                 ):
-                    finalized = (
-                        await self.transaction_dao.mark_fulfillment_manual_required(
-                            payment_id,
-                            token_hash=fulfillment_token_hash,
-                            error_code="FULFILLMENT_RESULT_AFTER_LEASE",
-                        )
+                    finalized = await self.transaction_dao.mark_fulfillment_manual_required(
+                        payment_id,
+                        token_hash=fulfillment_token_hash,
+                        error_code="FULFILLMENT_RESULT_AFTER_LEASE",
                     )
                     if not finalized:
                         raise RuntimeError(
@@ -766,14 +748,10 @@ class ProcessPayment(Interactor[ProcessPaymentDto, None]):
                     if refreshed is None:
                         raise RuntimeError("Expired payment fulfillment disappeared")
                     manual_escalation = (user, refreshed)
-                if (
-                    manual_escalation is None
-                    and (
-                        refreshed is None
-                        or refreshed.fulfillment_status
-                        != TransactionFulfillmentStatus.SUCCEEDED
-                        or refreshed.fulfillment_completed_at is None
-                    )
+                if manual_escalation is None and (
+                    refreshed is None
+                    or refreshed.fulfillment_status != TransactionFulfillmentStatus.SUCCEEDED
+                    or refreshed.fulfillment_completed_at is None
                 ):
                     raise RuntimeError("Payment fulfillment proof could not be persisted")
             await self.uow.commit()
@@ -843,9 +821,7 @@ class ProcessPayment(Interactor[ProcessPaymentDto, None]):
             notification_type=SystemNotificationType.SYSTEM,
         )
         async with self.uow:
-            await self.transaction_dao.mark_fulfillment_alerted(
-                transaction.payment_id
-            )
+            await self.transaction_dao.mark_fulfillment_alerted(transaction.payment_id)
             await self.uow.commit()
 
     async def _handle_success(self, user: UserDto, transaction: TransactionDto) -> None:
@@ -927,35 +903,10 @@ class ProcessPayment(Interactor[ProcessPaymentDto, None]):
         await self.event_publisher.publish(event)
 
         if not transaction.pricing.is_free:
-            # The purchase is already COMPLETED and committed. Referral rewards are
-            # best-effort: their failure must not break the successful purchase nor
-            # leave the transaction in a non-terminal state for retry. Isolate it.
-            try:
-                await self.assign_referral_rewards.system(
-                    AssignReferralRewardsDto(user, transaction)
-                )
-            except Exception:
-                logger.exception(
-                    f"Referral reward assignment failed for user '{user.remna_name}', "
-                    f"transaction '{transaction.payment_id}' — purchase succeeded"
-                )
-                await self.notifier.notify_admins(
-                    MessagePayloadDto(
-                        i18n_key="event-payment.referral-failed",
-                        i18n_kwargs={
-                            "payment_id": str(transaction.payment_id),
-                            "gateway_type": transaction.gateway_type,
-                            "final_amount": transaction.pricing.final_amount,
-                            "original_amount": transaction.pricing.original_amount,
-                            "discount_percent": transaction.pricing.discount_percent,
-                            "currency": transaction.currency.symbol,
-                            "telegram_id": user.telegram_id or 0,
-                            "username": user.username or 0,
-                            "name": user.name,
-                            "email": user.email,
-                        },
-                    )
-                )
+            # Persist immutable reward intents while this transaction still owns the
+            # fulfillment fence. Issuance is asynchronous and begins only after the
+            # source transaction is durably SUCCEEDED.
+            await self.assign_referral_rewards.system(AssignReferralRewardsDto(user, transaction))
 
         if user.telegram_id is not None:
             await self.redirect.to_success_payment(user.telegram_id, transaction.purchase_type)

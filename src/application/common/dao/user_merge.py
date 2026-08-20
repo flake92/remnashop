@@ -14,6 +14,9 @@ class UserMergeTargetConflictError(Exception): ...
 class UserMergePaymentOperationConflictError(Exception): ...
 
 
+class UserMergeReferralAttributionConflictError(Exception): ...
+
+
 class EmailConflictResolution(StrEnum):
     REJECT = "REJECT"
     KEEP_TARGET = "KEEP_TARGET"

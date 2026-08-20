@@ -2,7 +2,19 @@ from datetime import timezone
 from hashlib import sha256
 from typing import Any
 
-from sqlalchemy import ColumnElement, Text, case, cast, delete, func, or_, select, text, update
+from sqlalchemy import (
+    ColumnElement,
+    Text,
+    and_,
+    case,
+    cast,
+    delete,
+    func,
+    or_,
+    select,
+    text,
+    update,
+)
 from sqlalchemy.dialects.postgresql import ARRAY, array
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,11 +27,12 @@ from src.application.common.dao.user_merge import (
     UserMergeNotFoundError,
     UserMergePaymentOperationConflictError,
     UserMergePlan,
+    UserMergeReferralAttributionConflictError,
     UserMergeTargetConflictError,
     UserMergeTargetSnapshot,
 )
 from src.application.dto import UserDto
-from src.core.enums import TransactionFulfillmentStatus
+from src.core.enums import ReferralRewardState, TransactionFulfillmentStatus
 from src.core.utils.time import datetime_now
 from src.infrastructure.database.models import (
     PaymentOperation,
@@ -50,6 +63,7 @@ class UserMergeDaoImpl(UserMergeDao):
         existing_merge = await self._existing_merge_plan(source, target)
         if existing_merge is not None:
             return existing_merge
+        await self._lock_nonterminal_referral_rewards(source.id, target.id)
         await self._normalize_stale_payment_work(source.id, target.id)
         moved = await self._collect_moved_counts(source.id, target.id)
         return UserMergePlan(
@@ -66,6 +80,10 @@ class UserMergeDaoImpl(UserMergeDao):
                 payment_operation_duplicates=moved["payment_operation_duplicates"],
                 active_payment_operations=moved.get("active_payment_operations", 0),
                 fulfillment_processing=moved.get("fulfillment_processing", 0),
+                referral_reward_attribution_conflicts=moved.get(
+                    "referral_reward_attribution_conflicts", 0
+                ),
+                active_referral_rewards=moved.get("active_referral_rewards", 0),
             ),
         )
 
@@ -84,8 +102,11 @@ class UserMergeDaoImpl(UserMergeDao):
         existing_merge = await self._existing_merge_plan(source, target)
         if existing_merge is not None:
             return existing_merge
+        await self._lock_nonterminal_referral_rewards(source.id, target.id)
         await self._normalize_stale_payment_work(source.id, target.id)
         await self._assert_no_active_payment_work(source.id, target.id)
+        await self._assert_no_active_referral_reward_work(source.id, target.id)
+        await self._assert_no_referral_reward_attribution_conflicts(source.id, target.id)
         if payment_resolution is PaymentConflictResolution.REKEY_SOURCE:
             await self._rekey_source_payment_operation_collisions(source.id, target.id)
         else:
@@ -184,6 +205,8 @@ class UserMergeDaoImpl(UserMergeDao):
         payment_operation_duplicates: int = 0,
         active_payment_operations: int = 0,
         fulfillment_processing: int = 0,
+        referral_reward_attribution_conflicts: int = 0,
+        active_referral_rewards: int = 0,
         email_resolution: EmailConflictResolution = EmailConflictResolution.REJECT,
         telegram_resolution: TelegramConflictResolution = TelegramConflictResolution.REJECT,
         payment_resolution: PaymentConflictResolution = PaymentConflictResolution.REJECT,
@@ -205,10 +228,7 @@ class UserMergeDaoImpl(UserMergeDao):
             conflicts.append("Both users have different Telegram accounts")
         if target.current_subscription_id and source.current_subscription_id:
             conflicts.append("Both users have current subscriptions")
-        if (
-            payment_operation_duplicates
-            and payment_resolution is PaymentConflictResolution.REJECT
-        ):
+        if payment_operation_duplicates and payment_resolution is PaymentConflictResolution.REJECT:
             conflicts.append(
                 "Payment idempotency key collision between source and target "
                 f"({payment_operation_duplicates})"
@@ -220,6 +240,15 @@ class UserMergeDaoImpl(UserMergeDao):
         if fulfillment_processing:
             conflicts.append(
                 f"Source user has payment fulfillment in progress ({fulfillment_processing})"
+            )
+        if referral_reward_attribution_conflicts:
+            conflicts.append(
+                "Merge has incompatible referral attribution "
+                f"({referral_reward_attribution_conflicts})"
+            )
+        if active_referral_rewards:
+            conflicts.append(
+                f"Source user has referral reward issuance in progress ({active_referral_rewards})"
             )
         return conflicts
 
@@ -266,6 +295,19 @@ class UserMergeDaoImpl(UserMergeDao):
             ),
             "referral_rewards": await self._count(
                 ReferralReward, ReferralReward.user_id == source_user_id
+            ),
+            "active_referral_rewards": await self._count(
+                ReferralReward,
+                self._nonterminal_referral_reward_predicate(
+                    source_user_id,
+                    target_user_id,
+                ),
+            ),
+            "referral_reward_attribution_conflicts": (
+                await self._count_referral_reward_attribution_conflicts(
+                    source_user_id,
+                    target_user_id,
+                )
             ),
             "promocode_activations": await self._count_promocode_activations(source_user_id),
             "promocode_activation_duplicates": await self._count_promocode_duplicates(
@@ -333,6 +375,115 @@ class UserMergeDaoImpl(UserMergeDao):
         )
         params = {"source_user_id": source_user_id, "target_user_id": target_user_id}
         return int(await self.session.scalar(stmt, params) or 0)
+
+    async def _count_referral_reward_attribution_conflicts(
+        self,
+        source_user_id: int,
+        target_user_id: int,
+    ) -> int:
+        source_attribution_id = await self.session.scalar(
+            select(Referral.id).where(Referral.referred_id == source_user_id).limit(1)
+        )
+        target_attribution_id = await self.session.scalar(
+            select(Referral.id).where(Referral.referred_id == target_user_id).limit(1)
+        )
+        conflicts: set[int] = set()
+        if source_attribution_id is not None and target_attribution_id is not None:
+            conflicts.add(source_attribution_id)
+
+        self_attribution_ids = await self.session.scalars(
+            select(Referral.id).where(
+                or_(
+                    and_(
+                        Referral.referrer_id == source_user_id,
+                        Referral.referred_id == target_user_id,
+                    ),
+                    and_(
+                        Referral.referrer_id == target_user_id,
+                        Referral.referred_id == source_user_id,
+                    ),
+                )
+            )
+        )
+        conflicts.update(self_attribution_ids.all())
+        return len(conflicts)
+
+    async def _lock_nonterminal_referral_rewards(
+        self,
+        source_user_id: int,
+        target_user_id: int,
+    ) -> None:
+        await self.session.execute(
+            select(ReferralReward.id)
+            .where(
+                self._nonterminal_referral_reward_predicate(
+                    source_user_id,
+                    target_user_id,
+                )
+            )
+            .order_by(ReferralReward.id)
+            .with_for_update()
+        )
+
+    @staticmethod
+    def _nonterminal_referral_reward_predicate(
+        source_user_id: int,
+        target_user_id: int,
+    ) -> ColumnElement[bool]:
+        user_ids = (source_user_id, target_user_id)
+        related_referrals = select(Referral.id).where(
+            or_(
+                Referral.referrer_id.in_(user_ids),
+                Referral.referred_id.in_(user_ids),
+            )
+        )
+        related_transactions = select(Transaction.id).where(Transaction.user_id.in_(user_ids))
+        return and_(
+            ReferralReward.state.notin_(
+                (
+                    ReferralRewardState.ISSUED,
+                    ReferralRewardState.SUPERSEDED,
+                )
+            ),
+            or_(
+                ReferralReward.user_id.in_(user_ids),
+                ReferralReward.referral_id.in_(related_referrals),
+                ReferralReward.origin_referral_id.in_(related_referrals),
+                ReferralReward.source_transaction_id.in_(related_transactions),
+            ),
+        )
+
+    async def _assert_no_referral_reward_attribution_conflicts(
+        self,
+        source_user_id: int,
+        target_user_id: int,
+    ) -> None:
+        conflicts = await self._count_referral_reward_attribution_conflicts(
+            source_user_id,
+            target_user_id,
+        )
+        if conflicts:
+            raise UserMergeReferralAttributionConflictError(
+                "Merge has incompatible referral attribution "
+                f"({conflicts}); resolve it explicitly before retrying"
+            )
+
+    async def _assert_no_active_referral_reward_work(
+        self,
+        source_user_id: int,
+        target_user_id: int,
+    ) -> None:
+        active = await self._count(
+            ReferralReward,
+            self._nonterminal_referral_reward_predicate(
+                source_user_id,
+                target_user_id,
+            ),
+        )
+        if active:
+            raise UserMergeReferralAttributionConflictError(
+                f"Cannot merge with nonterminal referral rewards ({active})"
+            )
 
     async def _assert_no_payment_operation_collisions(
         self,
@@ -599,16 +750,42 @@ class UserMergeDaoImpl(UserMergeDao):
     async def _move_referrals(
         self, source_user_id: int, target_user_id: int, moved: dict[str, int]
     ) -> None:
+        merge_edge = await self.session.scalar(
+            select(Referral.id)
+            .where(
+                or_(
+                    and_(
+                        Referral.referrer_id == source_user_id,
+                        Referral.referred_id == target_user_id,
+                    ),
+                    and_(
+                        Referral.referrer_id == target_user_id,
+                        Referral.referred_id == source_user_id,
+                    ),
+                )
+            )
+            .limit(1)
+        )
+        if merge_edge is not None:
+            raise UserMergeReferralAttributionConflictError(
+                "Merge would turn a source/target referral edge into self-referral"
+            )
+
         target_is_referred = bool(
             await self.session.scalar(
                 select(Referral.id).where(Referral.referred_id == target_user_id).limit(1)
             )
         )
         if target_is_referred:
-            deleted = await self.session.execute(
-                delete(Referral).where(Referral.referred_id == source_user_id)
+            source_is_referred = bool(
+                await self.session.scalar(
+                    select(Referral.id).where(Referral.referred_id == source_user_id).limit(1)
+                )
             )
-            moved["referrals_as_referred_dropped"] = int(getattr(deleted, "rowcount", 0) or 0)
+            if source_is_referred:
+                raise UserMergeReferralAttributionConflictError(
+                    "Both source and target have referral attribution; merge rejected"
+                )
         else:
             await self.session.execute(
                 update(Referral)
@@ -617,18 +794,9 @@ class UserMergeDaoImpl(UserMergeDao):
             )
 
         await self.session.execute(
-            delete(Referral).where(
-                Referral.referrer_id == source_user_id,
-                Referral.referred_id == target_user_id,
-            )
-        )
-        await self.session.execute(
             update(Referral)
             .where(Referral.referrer_id == source_user_id)
             .values(referrer_id=target_user_id)
-        )
-        await self.session.execute(
-            delete(Referral).where(Referral.referrer_id == Referral.referred_id)
         )
         await self.session.execute(
             update(ReferralReward)

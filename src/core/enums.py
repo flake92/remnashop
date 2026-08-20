@@ -133,6 +133,15 @@ class ReferralRewardType(UpperStrEnum):
     EXTRA_DAYS = auto()
 
 
+class ReferralRewardState(UpperStrEnum):
+    PENDING = auto()
+    PROCESSING = auto()
+    RETRY_WAITING = auto()
+    ISSUED = auto()
+    MANUAL_REQUIRED = auto()
+    SUPERSEDED = auto()
+
+
 class PromocodeRewardType(UpperStrEnum):
     DURATION = auto()
     TRAFFIC = auto()

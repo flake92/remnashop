@@ -17,7 +17,6 @@ from src.core.enums import PaymentGatewayType, TransactionStatus
 from src.core.exceptions import GatewayNotConfiguredError
 from src.infrastructure.payment_gateways import PlategaGateway
 from src.infrastructure.payment_gateways.base import BasePaymentGateway
-from src.infrastructure.payment_gateways.platega import PlategaWebhookMetadataError
 from src.infrastructure.taskiq.tasks.payments import handle_payment_transaction_task
 
 router = APIRouter(prefix=API_V1 + PAYMENTS_WEBHOOK_PATH, include_in_schema=False)
@@ -107,30 +106,13 @@ async def _process_payment_webhook(
     except PermissionError:
         logger.warning(f"Webhook signature verification failed for '{gateway_enum}'")
         return Response(status_code=status.HTTP_403_FORBIDDEN)
-    except PlategaWebhookMetadataError as exc:
-        logger.warning(
-            "Persisting Platega webhook '{}' for manual review due to invalid metadata",
-            exc.payment_id,
-        )
-        storage_error = await _store_payment_event(
-            exc.payment_id,
-            exc.status,
-            gateway_enum,
-            gateway_type,
-            config,
-            event_publisher,
-            transaction_dao,
-            uow,
-            error_code="WEBHOOK_INVALID_PAYMENT_METHOD",
-        )
-        if storage_error is not None:
-            return storage_error
-        return await _build_response(gateway, request, gateway_type)
     except Exception as e:
         logger.exception(f"Error processing webhook for '{gateway_type}': {e}")
         error_event = ErrorEvent(**config.build.data, exception=e)
         await event_publisher.publish(error_event)
-        return await _build_response(gateway, request, gateway_type)
+        # Never acknowledge an unpersisted callback. A retryable response gives
+        # every provider a chance to redeliver after parser/configuration fixes.
+        return Response(status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
 
     if result is not None:
         payment_id, payment_status = result

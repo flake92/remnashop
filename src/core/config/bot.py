@@ -1,8 +1,7 @@
 from typing import Optional, Union
 from urllib.parse import urlsplit
 
-from pydantic import SecretStr, field_validator
-from pydantic_core.core_schema import FieldValidationInfo
+from pydantic import SecretStr, ValidationInfo, field_validator
 
 from src.core.constants import API_V1, BOT_WEBHOOK_PATH
 from src.core.utils.validators import is_valid_url
@@ -52,13 +51,13 @@ class BotConfig(BaseConfig, env_prefix="BOT_"):
 
     @field_validator("token", "secret_token", "support_username")
     @classmethod
-    def validate_bot_fields(cls, field: object, info: FieldValidationInfo) -> object:
+    def validate_bot_fields(cls, field: object, info: ValidationInfo) -> object:
         validate_not_change_me(field, info)
         return field
 
     @field_validator("support_username")
     @classmethod
-    def validate_bot_support_username(cls, field: object, info: FieldValidationInfo) -> object:
+    def validate_bot_support_username(cls, field: object, info: ValidationInfo) -> object:
         validate_username(field, info)
         return field
 
@@ -86,7 +85,7 @@ class BotConfig(BaseConfig, env_prefix="BOT_"):
     def validate_mini_app(
         cls,
         field: Union[bool, SecretStr],
-        info: FieldValidationInfo,
+        info: ValidationInfo,
     ) -> Union[bool, SecretStr]:
         if isinstance(field, SecretStr):
             value = field.get_secret_value().strip().lower()

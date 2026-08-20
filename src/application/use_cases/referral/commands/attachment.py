@@ -49,23 +49,31 @@ class AttachReferral(Interactor[AttachReferralDto, Optional[UserDto]]):
             )
             return None
 
-        existing, parent = await self.referral_dao.get_referral_chain(data.user_id)
-        if existing:
-            logger.info(f"Referral skipped: user '{data.user_id}' already referred")
-            return None
-
-        level = self._define_referral_level(parent.level if parent else None)
-
-        logger.info(
-            f"Referral detected '{referrer.remna_name}' -> "
-            f"'{data.user_id}' with level '{level.name}'"
-        )
-
         async with self.uow:
+            # Serialize attachment with first-payment intent creation and account
+            # merge. The existing-check must happen only after this shared fence.
+            await self.referral_dao.lock_referral_attribution(
+                data.user_id,
+                (referrer.id,),
+            )
+            existing, parent = await self.referral_dao.get_referral_chain(data.user_id)
+            if existing:
+                logger.info(f"Referral skipped: user '{data.user_id}' already referred")
+                await self.uow.commit()
+                return None
+
             referred = await self.user_dao.get_by_id(data.user_id)
             if not referred:
                 logger.warning(f"Referral skipped: referred user not found '{data.user_id}'")
+                await self.uow.commit()
                 return None
+
+            level = self._define_referral_level(parent.level if parent else None)
+
+            logger.info(
+                f"Referral detected '{referrer.remna_name}' -> "
+                f"'{data.user_id}' with level '{level.name}'"
+            )
 
             await self.referral_dao.create_referral(
                 ReferralDto(

@@ -2,7 +2,7 @@ from dataclasses import dataclass
 
 from loguru import logger
 
-from src.application.common import Interactor, Remnawave
+from src.application.common import Interactor, Remnawave, SubscriptionMutationLock
 from src.application.common.dao import PlanDao, SubscriptionDao, UserDao
 from src.application.common.policy import Permission
 from src.application.common.uow import UnitOfWork
@@ -27,14 +27,24 @@ class SetUserSubscription(Interactor[SetUserSubscriptionDto, None]):
         plan_dao: PlanDao,
         subscription_dao: SubscriptionDao,
         remnawave: Remnawave,
+        subscription_mutation_lock: SubscriptionMutationLock,
     ) -> None:
         self.uow = uow
         self.user_dao = user_dao
         self.plan_dao = plan_dao
         self.subscription_dao = subscription_dao
         self.remnawave = remnawave
+        self.subscription_mutation_lock = subscription_mutation_lock
 
     async def _execute(self, actor: UserDto, data: SetUserSubscriptionDto) -> None:
+        async with self.subscription_mutation_lock.hold(data.user_id):
+            await self._execute_locked(actor, data)
+
+    async def _execute_locked(
+        self,
+        actor: UserDto,
+        data: SetUserSubscriptionDto,
+    ) -> None:
         async with self.uow:
             target_user = await self.user_dao.get_by_id(data.user_id)
             if not target_user:

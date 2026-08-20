@@ -14,6 +14,7 @@ from src.application.common import (
     PaymentNotificationDispatcher,
     Redirect,
     Remnawave,
+    SubscriptionMutationLock,
     XuiDbReader,
 )
 from src.application.services import (
@@ -38,6 +39,7 @@ from src.infrastructure.services import (
     PasswordHasherImpl,
     PaymentNotificationDispatcherImpl,
     RedirectImpl,
+    RedisSubscriptionMutationLock,
     RemnawaveImpl,
     SmtpEmailSender,
     WebhookService,
@@ -68,6 +70,10 @@ class ServicesProvider(Provider):
     webhook = provide(source=WebhookService)
 
     remnawave = provide(source=RemnawaveImpl, provides=Remnawave)
+    subscription_mutation_lock = provide(
+        source=RedisSubscriptionMutationLock,
+        provides=SubscriptionMutationLock,
+    )
     remna_webhook = provide(source=RemnaWebhookService, scope=Scope.REQUEST)
 
     notification_queue = provide(source=NotificationQueue)

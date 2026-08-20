@@ -44,7 +44,11 @@ from src.application.use_cases.gateways.commands.payment import (
     ProcessPayment,
     ProcessPaymentDto,
 )
-from src.application.use_cases.plan.queries.match import MatchPlan, MatchPlanDto
+from src.application.use_cases.plan.queries.match import (
+    MatchPlan,
+    MatchPlanDto,
+    resolve_renew_plan,
+)
 from src.application.use_cases.promocode.commands.activate import (
     ActivatePromocode,
     ActivatePromocodeDto,
@@ -935,9 +939,14 @@ async def extend_subscription(
             )
 
         available_plans = await get_available_plans.system(user)
-        matched_plan = await match_plan.system(
+        exact_match = await match_plan.system(
             MatchPlanDto(plan_snapshot=current_subscription.plan_snapshot, plans=available_plans)
         )
+        matched_plan = resolve_renew_plan(
+            current_subscription.plan_snapshot,
+            available_plans,
+            exact_match,
+        ).plan
         if not matched_plan:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -1042,13 +1051,21 @@ async def get_subscription_offers(
     current_subscription = await subscription_dao.get_current(user.id)
 
     matched_plan: Optional[PlanDto] = None
+    renewal_terms_changed = False
     if current_subscription:
-        matched_plan = await match_plan.system(
+        exact_match = await match_plan.system(
             MatchPlanDto(
                 plan_snapshot=current_subscription.plan_snapshot,
                 plans=available_plans,
             )
         )
+        resolution = resolve_renew_plan(
+            current_subscription.plan_snapshot,
+            available_plans,
+            exact_match,
+        )
+        matched_plan = resolution.plan
+        renewal_terms_changed = resolution.terms_changed
 
     plan_offers: list[PlanOfferResponse] = []
     for plan in available_plans:
@@ -1100,6 +1117,11 @@ async def get_subscription_offers(
                 device_limit=plan.device_limit,
                 type=plan.type.value,
                 recommended_purchase_type=recommended_purchase_type,
+                renewal_terms_changed=(
+                    renewal_terms_changed
+                    if is_renew_candidate
+                    else False
+                ),
                 durations=duration_offers,
             )
         )

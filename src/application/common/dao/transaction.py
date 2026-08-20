@@ -35,6 +35,22 @@ class TransactionDao(Protocol):
         transaction_id: int,
     ) -> Optional[TransactionDto]: ...
 
+    async def list_historical_referral_reward_sources(
+        self,
+        *,
+        limit: int,
+        offset: int,
+    ) -> list[TransactionDto]: ...
+
+    async def get_historical_referral_reward_sources(
+        self,
+        transaction_ids: list[int],
+        *,
+        for_update: bool = False,
+    ) -> list[TransactionDto]: ...
+
+    async def get_first_successful_paid_transaction_id(self, user_id: int) -> Optional[int]: ...
+
     async def get_by_user(self, user_id: int) -> list[TransactionDto]: ...
 
     async def get_page_by_user(

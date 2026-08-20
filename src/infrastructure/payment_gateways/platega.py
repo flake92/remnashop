@@ -18,13 +18,6 @@ from src.core.utils.payment_methods import normalize_platega_payment_method
 from .base import BasePaymentGateway
 
 
-class PlategaWebhookMetadataError(ValueError):
-    def __init__(self, payment_id: UUID, status: TransactionStatus) -> None:
-        super().__init__("Invalid Platega webhook paymentMethod")
-        self.payment_id = payment_id
-        self.status = status
-
-
 # https://docs.platega.io/
 class PlategaGateway(BasePaymentGateway):
     _client: AsyncClient
@@ -118,8 +111,15 @@ class PlategaGateway(BasePaymentGateway):
             self.selected_payment_method = self._normalize_payment_method(
                 webhook_data.get("paymentMethod")
             )
-        except ValueError as exc:
-            raise PlategaWebhookMetadataError(payment_id, transaction_status) from exc
+        except ValueError:
+            # paymentMethod is descriptive provider metadata. A valid signed
+            # terminal event must not be blocked if its optional representation
+            # changes or is malformed.
+            self.selected_payment_method = None
+            logger.warning(
+                "Ignoring invalid optional Platega paymentMethod for '{}'",
+                payment_id,
+            )
 
         return payment_id, transaction_status
 

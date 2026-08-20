@@ -6,6 +6,7 @@ from src.application.common.dao import (
     UserMergeNotFoundError,
     UserMergePaymentOperationConflictError,
     UserMergePlan,
+    UserMergeReferralAttributionConflictError,
     UserMergeTargetConflictError,
 )
 from src.application.common.dao.user_merge import (
@@ -99,6 +100,8 @@ class MergeUsers(Interactor[MergeUsersDto, MergeUsersResultDto]):
                     payment_resolution=data.payment_resolution,
                 )
             except UserMergePaymentOperationConflictError as exc:
+                raise MergeUsersConflictError(str(exc)) from exc
+            except UserMergeReferralAttributionConflictError as exc:
                 raise MergeUsersConflictError(str(exc)) from exc
             except UserMergeTargetConflictError as exc:
                 raise MergeUsersConflictError(str(exc)) from exc

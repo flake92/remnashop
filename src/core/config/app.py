@@ -1,9 +1,9 @@
 import re
+import secrets
 from pathlib import Path
 from typing import Optional, Self
 
-from pydantic import Field, SecretStr, field_validator, model_validator
-from pydantic_core.core_schema import FieldValidationInfo
+from pydantic import Field, SecretStr, ValidationInfo, field_validator, model_validator
 
 from src.core.constants import API_V1, ASSETS_DEFAULT_DIR, ASSETS_DIR, PAYMENTS_WEBHOOK_PATH
 from src.core.enums import Locale, PaymentGatewayType
@@ -32,11 +32,16 @@ class AppConfig(BaseConfig, env_prefix="APP_"):
     crypt_key: SecretStr
     jwt_secret: Optional[SecretStr] = None
     api_key: Optional[SecretStr] = None
+    auth_service_key: Optional[SecretStr] = None
     assets_dir: Path = ASSETS_DIR
     origins: StringList = StringList("")
     swagger_enabled: bool = False
     web_enabled: bool = Field(default=False, validation_alias="WEB_ENABLED")
     web_cabinet_url: str = Field(default="", validation_alias="WEB_CABINET_URL")
+    referral_reward_backfill_enabled: bool = Field(
+        default=False,
+        validation_alias="REFERRAL_REWARD_BACKFILL_ENABLED",
+    )
 
     bot: BotConfig = Field(default_factory=BotConfig)
     remnawave: RemnawaveConfig = Field(default_factory=RemnawaveConfig)
@@ -88,11 +93,20 @@ class AppConfig(BaseConfig, env_prefix="APP_"):
                     "APP_JWT_SECRET must be set when WEB_ENABLED=true; "
                     "do not reuse APP_CRYPT_KEY for JWT signing"
                 )
+            if not self.auth_service_key:
+                raise ValueError(
+                    "APP_AUTH_SERVICE_KEY must be set when WEB_ENABLED=true; "
+                    "use a dedicated least-privilege credential for web auth"
+                )
+            if self.api_key and secrets.compare_digest(
+                self.api_key.get_secret_value(), self.auth_service_key.get_secret_value()
+            ):
+                raise ValueError("APP_AUTH_SERVICE_KEY must not reuse APP_API_KEY")
         return self
 
     @field_validator("domain")
     @classmethod
-    def validate_domain(cls, field: SecretStr, info: FieldValidationInfo) -> SecretStr:
+    def validate_domain(cls, field: SecretStr, info: ValidationInfo) -> SecretStr:
         validate_not_change_me(field, info)
 
         if not is_valid_domain(field.get_secret_value()):
@@ -110,7 +124,7 @@ class AppConfig(BaseConfig, env_prefix="APP_"):
 
     @field_validator("crypt_key")
     @classmethod
-    def validate_crypt_key(cls, field: SecretStr, info: FieldValidationInfo) -> SecretStr:
+    def validate_crypt_key(cls, field: SecretStr, info: ValidationInfo) -> SecretStr:
         validate_not_change_me(field, info)
 
         if not re.match(r"^[A-Za-z0-9+/=]{44}$", field.get_secret_value()):

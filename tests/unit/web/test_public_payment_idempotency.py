@@ -22,6 +22,7 @@ from src.web.endpoints.admin.payment_operations import (
 from src.web.endpoints.public.subscription import (
     _set_operation_http_status,
     extend_subscription,
+    get_subscription_offers,
     purchase_subscription,
     reconcile_payment_operation,
     router,
@@ -126,7 +127,7 @@ def build_extend_call(
 ) -> tuple[Any, dict[str, Any], Any, FakePaymentIdempotency]:
     amount = Decimal(100)
     duration = SimpleNamespace(days=30, get_price=lambda currency: amount)
-    plan = SimpleNamespace(get_duration=lambda days: duration if days == 30 else None)
+    plan = SimpleNamespace(id=1, get_duration=lambda days: duration if days == 30 else None)
     gateway = SimpleNamespace(
         type=PaymentGatewayType.YOOKASSA,
         currency=Currency.RUB,
@@ -147,7 +148,7 @@ def build_extend_call(
         ),
         "user": SimpleNamespace(id=7, is_email_verified=True),
         "subscription_dao": SimpleNamespace(
-            get_current=AsyncMock(return_value=SimpleNamespace(plan_snapshot=SimpleNamespace()))
+            get_current=AsyncMock(return_value=SimpleNamespace(plan_snapshot=SimpleNamespace(id=1)))
         ),
         "payment_gateway_dao": SimpleNamespace(get_by_type=AsyncMock(return_value=gateway)),
         "pricing_service": SimpleNamespace(
@@ -166,6 +167,94 @@ def build_extend_call(
         "idempotency_key": idempotency_key,
     }
     return handler, kwargs, process_payment, idempotency
+
+
+@pytest.mark.asyncio
+async def test_extend_uses_updated_plan_terms_when_snapshot_id_still_exists(
+    monkeypatch: Any,
+) -> None:
+    create_payment = AsyncMock(
+        return_value=PaymentResultDto(
+            id=uuid4(),
+            url="https://payments.example/confirmation",
+        )
+    )
+    handler, kwargs, _, _ = build_extend_call(
+        monkeypatch,
+        create_payment,
+        "request-key-modified-plan-0001",
+    )
+    kwargs["match_plan"].system.return_value = None
+
+    response = await handler(**kwargs)
+
+    assert response.status == "PENDING"
+    create_payment.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_extend_rejects_snapshot_when_plan_id_is_no_longer_available(
+    monkeypatch: Any,
+) -> None:
+    create_payment = AsyncMock()
+    handler, kwargs, _, _ = build_extend_call(
+        monkeypatch,
+        create_payment,
+        "request-key-removed-plan-0001",
+    )
+    kwargs["subscription_dao"].get_current.return_value.plan_snapshot.id = 2
+    kwargs["match_plan"].system.return_value = None
+
+    with pytest.raises(HTTPException) as raised:
+        await handler(**kwargs)
+
+    assert raised.value.status_code == status.HTTP_409_CONFLICT
+    create_payment.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_offers_mark_same_id_modified_plan_as_renewal_with_warning() -> None:
+    amount = Decimal(100)
+    duration = SimpleNamespace(days=30, get_price=lambda currency: amount)
+    plan = SimpleNamespace(
+        id=1,
+        public_code="basic",
+        name="Basic",
+        description=None,
+        traffic_limit=100,
+        device_limit=5,
+        type=SimpleNamespace(value="BOTH"),
+        durations=[duration],
+    )
+    gateway = SimpleNamespace(
+        type=PaymentGatewayType.YOOKASSA,
+        currency=Currency.RUB,
+        settings=SimpleNamespace(is_configured=True),
+    )
+    current = SimpleNamespace(
+        plan_snapshot=SimpleNamespace(id=1),
+        current_status=SimpleNamespace(value="ACTIVE"),
+        is_unlimited=False,
+    )
+    handler = get_subscription_offers.__dishka_orig_func__  # type: ignore[attr-defined]
+
+    response = await handler(
+        user=SimpleNamespace(id=7),
+        subscription_dao=SimpleNamespace(get_current=AsyncMock(return_value=current)),
+        payment_gateway_dao=SimpleNamespace(get_active=AsyncMock(return_value=[gateway])),
+        pricing_service=SimpleNamespace(
+            calculate=lambda *args, **kwargs: PriceDetailsDto(
+                original_amount=amount,
+                discount_percent=0,
+                final_amount=amount,
+            )
+        ),
+        get_available_plans=SimpleNamespace(system=AsyncMock(return_value=[plan])),
+        match_plan=SimpleNamespace(system=AsyncMock(return_value=None)),
+    )
+
+    assert response.plans[0].recommended_purchase_type == "RENEW"
+    assert response.plans[0].renewal_terms_changed is True
 
 
 @pytest.mark.asyncio

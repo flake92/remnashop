@@ -17,6 +17,7 @@ from .user_merge import (
     UserMergeNotFoundError,
     UserMergePaymentOperationConflictError,
     UserMergePlan,
+    UserMergeReferralAttributionConflictError,
     UserMergeTargetConflictError,
     UserMergeTargetSnapshot,
 )
@@ -41,6 +42,7 @@ __all__ = [
     "UserMergeDao",
     "UserMergeNotFoundError",
     "UserMergePaymentOperationConflictError",
+    "UserMergeReferralAttributionConflictError",
     "UserMergePlan",
     "UserMergeTargetConflictError",
     "UserMergeTargetSnapshot",

@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from typing import Awaitable, Callable, TypeVar
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -8,6 +9,7 @@ from src.application.dto import PaymentResultDto, PlanSnapshotDto, PriceDetailsD
 from src.application.use_cases.gateways.commands.payment import CreatePayment, CreatePaymentDto
 from src.core.enums import Currency, PaymentGatewayType, PurchaseType
 
+T = TypeVar("T")
 
 class FakeUnitOfWork:
     def __init__(self) -> None:
@@ -22,6 +24,17 @@ class FakeUnitOfWork:
     async def commit(self) -> None:
         self.committed = True
 
+    async def rollback(self) -> None:
+        return None
+
+    async def persist_with_unique_code(
+        self,
+        generate: Callable[[], Awaitable[str]],
+        persist: Callable[[str], Awaitable[T]],
+        column: str,
+        retries: int = 5,
+    ) -> T:
+        raise NotImplementedError
 
 @pytest.mark.asyncio
 async def test_native_payment_generates_provider_idempotency_key() -> None:
