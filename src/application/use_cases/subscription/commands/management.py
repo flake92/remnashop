@@ -6,7 +6,7 @@ from uuid import UUID
 from loguru import logger
 from remnapy import RemnawaveSDK
 
-from src.application.common import Interactor, Remnawave
+from src.application.common import Interactor, Remnawave, SubscriptionMutationLock
 from src.application.common.dao import SettingsDao, SubscriptionDao, UserDao
 from src.application.common.policy import Permission
 from src.application.common.uow import UnitOfWork
@@ -24,13 +24,23 @@ class ToggleSubscriptionStatus(Interactor[int, SubscriptionStatus]):
         user_dao: UserDao,
         subscription_dao: SubscriptionDao,
         remnawave: Remnawave,
+        subscription_mutation_lock: SubscriptionMutationLock,
     ) -> None:
         self.uow = uow
         self.user_dao = user_dao
         self.subscription_dao = subscription_dao
         self.remnawave = remnawave
+        self.subscription_mutation_lock = subscription_mutation_lock
 
     async def _execute(self, actor: UserDto, user_id: int) -> SubscriptionStatus:
+        async with self.subscription_mutation_lock.hold(user_id):
+            return await self._execute_locked(actor, user_id)
+
+    async def _execute_locked(
+        self,
+        actor: UserDto,
+        user_id: int,
+    ) -> SubscriptionStatus:
         target_user = await self.user_dao.get_by_id(user_id)
         if not target_user:
             raise ValueError(f"User '{user_id}' not found")
@@ -73,13 +83,19 @@ class DeleteSubscription(Interactor[int, None]):
         user_dao: UserDao,
         subscription_dao: SubscriptionDao,
         remnawave: Remnawave,
+        subscription_mutation_lock: SubscriptionMutationLock,
     ) -> None:
         self.uow = uow
         self.user_dao = user_dao
         self.subscription_dao = subscription_dao
         self.remnawave = remnawave
+        self.subscription_mutation_lock = subscription_mutation_lock
 
     async def _execute(self, actor: UserDto, user_id: int) -> None:
+        async with self.subscription_mutation_lock.hold(user_id):
+            await self._execute_locked(actor, user_id)
+
+    async def _execute_locked(self, actor: UserDto, user_id: int) -> None:
         target_user = await self.user_dao.get_by_id(user_id)
         if not target_user:
             raise ValueError(f"User '{user_id}' not found")
@@ -121,13 +137,23 @@ class UpdateTrafficLimit(Interactor[UpdateTrafficLimitDto, None]):
         user_dao: UserDao,
         subscription_dao: SubscriptionDao,
         remnawave: Remnawave,
+        subscription_mutation_lock: SubscriptionMutationLock,
     ) -> None:
         self.uow = uow
         self.user_dao = user_dao
         self.subscription_dao = subscription_dao
         self.remnawave = remnawave
+        self.subscription_mutation_lock = subscription_mutation_lock
 
     async def _execute(self, actor: UserDto, data: UpdateTrafficLimitDto) -> None:
+        async with self.subscription_mutation_lock.hold(data.user_id):
+            await self._execute_locked(actor, data)
+
+    async def _execute_locked(
+        self,
+        actor: UserDto,
+        data: UpdateTrafficLimitDto,
+    ) -> None:
         async with self.uow:
             target_user = await self.user_dao.get_by_id(data.user_id)
             if not target_user:
@@ -167,13 +193,23 @@ class UpdateDeviceLimit(Interactor[UpdateDeviceLimitDto, None]):
         user_dao: UserDao,
         subscription_dao: SubscriptionDao,
         remnawave: Remnawave,
+        subscription_mutation_lock: SubscriptionMutationLock,
     ) -> None:
         self.uow = uow
         self.user_dao = user_dao
         self.subscription_dao = subscription_dao
         self.remnawave = remnawave
+        self.subscription_mutation_lock = subscription_mutation_lock
 
     async def _execute(self, actor: UserDto, data: UpdateDeviceLimitDto) -> None:
+        async with self.subscription_mutation_lock.hold(data.user_id):
+            await self._execute_locked(actor, data)
+
+    async def _execute_locked(
+        self,
+        actor: UserDto,
+        data: UpdateDeviceLimitDto,
+    ) -> None:
         async with self.uow:
             target_user = await self.user_dao.get_by_id(data.user_id)
             if not target_user:
@@ -212,13 +248,23 @@ class ToggleInternalSquad(Interactor[ToggleInternalSquadDto, None]):
         user_dao: UserDao,
         subscription_dao: SubscriptionDao,
         remnawave: Remnawave,
+        subscription_mutation_lock: SubscriptionMutationLock,
     ) -> None:
         self.uow = uow
         self.user_dao = user_dao
         self.subscription_dao = subscription_dao
         self.remnawave = remnawave
+        self.subscription_mutation_lock = subscription_mutation_lock
 
     async def _execute(self, actor: UserDto, data: ToggleInternalSquadDto) -> None:
+        async with self.subscription_mutation_lock.hold(data.user_id):
+            await self._execute_locked(actor, data)
+
+    async def _execute_locked(
+        self,
+        actor: UserDto,
+        data: ToggleInternalSquadDto,
+    ) -> None:
         async with self.uow:
             target_user = await self.user_dao.get_by_id(data.user_id)
             if not target_user:
@@ -264,13 +310,23 @@ class ToggleExternalSquad(Interactor[ToggleExternalSquadDto, None]):
         user_dao: UserDao,
         subscription_dao: SubscriptionDao,
         remnawave: Remnawave,
+        subscription_mutation_lock: SubscriptionMutationLock,
     ) -> None:
         self.uow = uow
         self.user_dao = user_dao
         self.subscription_dao = subscription_dao
         self.remnawave = remnawave
+        self.subscription_mutation_lock = subscription_mutation_lock
 
     async def _execute(self, actor: UserDto, data: ToggleExternalSquadDto) -> None:
+        async with self.subscription_mutation_lock.hold(data.user_id):
+            await self._execute_locked(actor, data)
+
+    async def _execute_locked(
+        self,
+        actor: UserDto,
+        data: ToggleExternalSquadDto,
+    ) -> None:
         async with self.uow:
             target_user = await self.user_dao.get_by_id(data.user_id)
             if not target_user:
@@ -315,13 +371,23 @@ class AddSubscriptionDuration(Interactor[AddSubscriptionDurationDto, None]):
         user_dao: UserDao,
         subscription_dao: SubscriptionDao,
         remnawave: Remnawave,
+        subscription_mutation_lock: SubscriptionMutationLock,
     ) -> None:
         self.uow = uow
         self.user_dao = user_dao
         self.subscription_dao = subscription_dao
         self.remnawave = remnawave
+        self.subscription_mutation_lock = subscription_mutation_lock
 
     async def _execute(self, actor: UserDto, data: AddSubscriptionDurationDto) -> None:
+        async with self.subscription_mutation_lock.hold(data.user_id):
+            await self._execute_locked(actor, data)
+
+    async def _execute_locked(
+        self,
+        actor: UserDto,
+        data: AddSubscriptionDurationDto,
+    ) -> None:
         async with self.uow:
             target_user = await self.user_dao.get_by_id(data.user_id)
             subscription = await self.subscription_dao.get_current(data.user_id)
@@ -367,12 +433,14 @@ class DisableTrialSubscription(Interactor[ChannelMemberEventDto, Optional[UserDt
         user_dao: UserDao,
         subscription_dao: SubscriptionDao,
         remnawave_sdk: RemnawaveSDK,
+        subscription_mutation_lock: SubscriptionMutationLock,
     ) -> None:
         self.uow = uow
         self.settings_dao = settings_dao
         self.user_dao = user_dao
         self.subscription_dao = subscription_dao
         self.remnawave_sdk = remnawave_sdk
+        self.subscription_mutation_lock = subscription_mutation_lock
 
     async def _execute(self, actor: UserDto, data: ChannelMemberEventDto) -> Optional[UserDto]:
         settings = await self.settings_dao.get()
@@ -384,6 +452,15 @@ class DisableTrialSubscription(Interactor[ChannelMemberEventDto, Optional[UserDt
         if not user:
             return None
 
+        async with self.subscription_mutation_lock.hold(user.id):
+            return await self._execute_locked(actor, data, user)
+
+    async def _execute_locked(
+        self,
+        actor: UserDto,
+        data: ChannelMemberEventDto,
+        user: UserDto,
+    ) -> Optional[UserDto]:
         subscription = await self.subscription_dao.get_current(user.id)
         if not subscription:
             return None
@@ -444,12 +521,14 @@ class EnableTrialSubscription(Interactor[ChannelMemberEventDto, Optional[UserDto
         user_dao: UserDao,
         subscription_dao: SubscriptionDao,
         remnawave_sdk: RemnawaveSDK,
+        subscription_mutation_lock: SubscriptionMutationLock,
     ) -> None:
         self.uow = uow
         self.settings_dao = settings_dao
         self.user_dao = user_dao
         self.subscription_dao = subscription_dao
         self.remnawave_sdk = remnawave_sdk
+        self.subscription_mutation_lock = subscription_mutation_lock
 
     async def _execute(self, actor: UserDto, data: ChannelMemberEventDto) -> Optional[UserDto]:
         settings = await self.settings_dao.get()
@@ -461,6 +540,15 @@ class EnableTrialSubscription(Interactor[ChannelMemberEventDto, Optional[UserDto
         if not user:
             return None
 
+        async with self.subscription_mutation_lock.hold(user.id):
+            return await self._execute_locked(actor, data, user)
+
+    async def _execute_locked(
+        self,
+        actor: UserDto,
+        data: ChannelMemberEventDto,
+        user: UserDto,
+    ) -> Optional[UserDto]:
         subscription = await self.subscription_dao.get_current(user.id)
         if not subscription:
             return None

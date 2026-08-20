@@ -9,6 +9,7 @@ from src.application.common.dao.user_merge import (
     PaymentConflictResolution,
     TelegramConflictResolution,
     UserMergePaymentOperationConflictError,
+    UserMergeReferralAttributionConflictError,
     UserMergeTargetConflictError,
 )
 from src.infrastructure.database.dao.user_merge import UserMergeDaoImpl
@@ -38,12 +39,15 @@ def test_identity_resolution_only_suppresses_explicitly_confirmed_conflicts() ->
         "Both users have different emails",
         "Both users have different Telegram accounts",
     ]
-    assert dao._validate(
-        source,
-        target,
-        email_resolution=EmailConflictResolution.KEEP_TARGET,
-        telegram_resolution=TelegramConflictResolution.KEEP_SOURCE,
-    ) == []
+    assert (
+        dao._validate(
+            source,
+            target,
+            email_resolution=EmailConflictResolution.KEEP_TARGET,
+            telegram_resolution=TelegramConflictResolution.KEEP_SOURCE,
+        )
+        == []
+    )
 
 
 def test_payment_resolution_preserves_colliding_operations_without_hiding_subscriptions() -> None:
@@ -54,12 +58,15 @@ def test_payment_resolution_preserves_colliding_operations_without_hiding_subscr
     assert dao._validate(source, target, payment_operation_duplicates=1) == [
         "Payment idempotency key collision between source and target (1)"
     ]
-    assert dao._validate(
-        source,
-        target,
-        payment_operation_duplicates=1,
-        payment_resolution=PaymentConflictResolution.REKEY_SOURCE,
-    ) == []
+    assert (
+        dao._validate(
+            source,
+            target,
+            payment_operation_duplicates=1,
+            payment_resolution=PaymentConflictResolution.REKEY_SOURCE,
+        )
+        == []
+    )
 
     source.current_subscription_id = 101
     target.current_subscription_id = 202
@@ -99,6 +106,7 @@ async def test_plan_reports_payment_operation_identity_collision(
     }
     monkeypatch.setattr(dao, "_lock_users", AsyncMock(return_value=(_user(11), _user(22))))
     monkeypatch.setattr(dao, "_normalize_stale_payment_work", AsyncMock())
+    monkeypatch.setattr(dao, "_lock_nonterminal_referral_rewards", AsyncMock())
     monkeypatch.setattr(dao, "_collect_moved_counts", AsyncMock(return_value=moved))
 
     plan = await dao.plan(11, 22)
@@ -388,3 +396,95 @@ async def test_rekey_source_payment_collision_is_deterministic_and_preserves_row
     assert first_key.startswith("merged-11-7-")
     assert len(first_key) <= 128
     session.flush.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_referral_conflict_count_checks_both_merge_edge_directions() -> None:
+    edge_result = ScalarResult([91])
+    session = SimpleNamespace(
+        scalar=AsyncMock(side_effect=[None, None]),
+        scalars=AsyncMock(return_value=edge_result),
+    )
+    dao = UserMergeDaoImpl(session)  # type: ignore[arg-type]
+
+    assert await dao._count_referral_reward_attribution_conflicts(11, 22) == 1
+
+    edge_sql = str(
+        session.scalars.await_args.args[0].compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    ).upper()
+    assert "REFERRALS.REFERRER_ID = 11" in edge_sql
+    assert "REFERRALS.REFERRED_ID = 22" in edge_sql
+    assert "REFERRALS.REFERRER_ID = 22" in edge_sql
+    assert "REFERRALS.REFERRED_ID = 11" in edge_sql
+
+
+@pytest.mark.asyncio
+async def test_referral_move_rejects_reverse_edge_before_any_rewrite() -> None:
+    session = SimpleNamespace(
+        scalar=AsyncMock(return_value=91),
+        execute=AsyncMock(),
+    )
+    dao = UserMergeDaoImpl(session)  # type: ignore[arg-type]
+
+    with pytest.raises(
+        UserMergeReferralAttributionConflictError,
+        match="self-referral",
+    ):
+        await dao._move_referrals(11, 22, {})
+
+    session.execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_merge_rejects_pending_reward_before_transaction_owner_can_change(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dao = UserMergeDaoImpl(SimpleNamespace())  # type: ignore[arg-type]
+    count_nonterminal = AsyncMock(return_value=1)
+    monkeypatch.setattr(dao, "_count", count_nonterminal)
+
+    with pytest.raises(
+        UserMergeReferralAttributionConflictError,
+        match="nonterminal referral rewards",
+    ):
+        # This fail-closed guard covers a source PENDING ON_FIRST intent even if
+        # target already owns an older paid transaction. Transaction.user_id can
+        # therefore never change underneath the eligibility query.
+        await dao._assert_no_active_referral_reward_work(11, 22)
+
+    predicate = count_nonterminal.await_args.args[1]
+    predicate_sql = str(
+        predicate.compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    ).upper()
+    assert "NOT IN ('ISSUED', 'SUPERSEDED')" in predicate_sql
+
+
+@pytest.mark.asyncio
+async def test_merge_reassigns_terminal_reward_history_without_deleting_rows() -> None:
+    session = SimpleNamespace(
+        scalar=AsyncMock(side_effect=[None, None]),
+        execute=AsyncMock(return_value=SimpleNamespace(rowcount=1)),
+    )
+    dao = UserMergeDaoImpl(session)  # type: ignore[arg-type]
+
+    await dao._move_referrals(11, 22, {})
+
+    statements = [
+        str(
+            call.args[0].compile(
+                dialect=postgresql.dialect(),
+                compile_kwargs={"literal_binds": True},
+            )
+        ).upper()
+        for call in session.execute.await_args_list
+    ]
+    reward_update = next(sql for sql in statements if "UPDATE REFERRAL_REWARDS" in sql)
+    assert "SET USER_ID=22" in reward_update
+    assert "REFERRAL_REWARDS.USER_ID = 11" in reward_update
+    assert "DELETE" not in "\n".join(statements)

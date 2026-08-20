@@ -1,4 +1,16 @@
-from .admin import MergeUsersRequest, MergeUsersResponse, MergeUsersTargetResponse
+from .admin import (
+    HistoricalReferralBackfillApplyRequest,
+    HistoricalReferralBackfillApplyResponse,
+    HistoricalReferralBackfillConfigSnapshot,
+    HistoricalReferralBackfillInventoryResponse,
+    HistoricalReferralBackfillPreviewRequest,
+    HistoricalReferralBackfillPreviewResponse,
+    ManualReferralRewardResponse,
+    MergeUsersRequest,
+    MergeUsersResponse,
+    MergeUsersTargetResponse,
+    ResolveManualReferralRewardRequest,
+)
 from .auth import (
     AuthResponse,
     ChangeEmailRequest,
@@ -63,8 +75,16 @@ from .subscription import (
 __all__ = [
     # admin
     "MergeUsersRequest",
+    "HistoricalReferralBackfillApplyRequest",
+    "HistoricalReferralBackfillApplyResponse",
+    "HistoricalReferralBackfillConfigSnapshot",
+    "HistoricalReferralBackfillInventoryResponse",
+    "HistoricalReferralBackfillPreviewRequest",
+    "HistoricalReferralBackfillPreviewResponse",
     "MergeUsersResponse",
     "MergeUsersTargetResponse",
+    "ManualReferralRewardResponse",
+    "ResolveManualReferralRewardRequest",
     # health
     "DatabaseStatusSchema",
     "HealthChecks",

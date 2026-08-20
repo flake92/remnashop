@@ -7,7 +7,7 @@ from adaptix import Retort
 from adaptix.conversion import ConversionRetort
 from loguru import logger
 from redis.asyncio import Redis
-from sqlalchemy import and_, case, delete, func, or_, select, update
+from sqlalchemy import Numeric, and_, case, delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -135,6 +135,86 @@ class TransactionDaoImpl(TransactionDao):
             )
         )
         return self._convert_to_dto(db_transaction) if db_transaction is not None else None
+
+    @staticmethod
+    def _successful_paid_nontrial_predicate(
+        *,
+        include_refunded: bool,
+    ) -> tuple[Any, ...]:
+        statuses = (
+            (TransactionStatus.COMPLETED, TransactionStatus.REFUNDED)
+            if include_refunded
+            else (TransactionStatus.COMPLETED,)
+        )
+        return (
+            Transaction.status.in_(statuses),
+            Transaction.fulfillment_status == TransactionFulfillmentStatus.SUCCEEDED,
+            Transaction.fulfillment_completed_at.is_not(None),
+            Transaction.is_test.is_(False),
+            Transaction.pricing["final_amount"].astext.cast(Numeric) > 0,
+            Transaction.plan_snapshot["is_trial"].astext == "false",
+        )
+
+    async def list_historical_referral_reward_sources(
+        self,
+        *,
+        limit: int,
+        offset: int,
+    ) -> list[TransactionDto]:
+        rows = cast(
+            list,
+            (
+                await self.session.scalars(
+                    select(Transaction)
+                    .where(*self._successful_paid_nontrial_predicate(include_refunded=False))
+                    .order_by(
+                        Transaction.fulfillment_completed_at,
+                        Transaction.id,
+                    )
+                    .limit(limit)
+                    .offset(offset)
+                )
+            ).all(),
+        )
+        return self._convert_to_dto_list(rows)
+
+    async def get_historical_referral_reward_sources(
+        self,
+        transaction_ids: list[int],
+        *,
+        for_update: bool = False,
+    ) -> list[TransactionDto]:
+        if not transaction_ids:
+            return []
+        stmt = (
+            select(Transaction)
+            .where(
+                Transaction.id.in_(sorted(set(transaction_ids))),
+                *self._successful_paid_nontrial_predicate(include_refunded=False),
+            )
+            .order_by(Transaction.id)
+        )
+        if for_update:
+            stmt = stmt.with_for_update()
+        rows = cast(list, (await self.session.scalars(stmt)).all())
+        return self._convert_to_dto_list(rows)
+
+    async def get_first_successful_paid_transaction_id(self, user_id: int) -> Optional[int]:
+        return cast(
+            Optional[int],
+            await self.session.scalar(
+                select(Transaction.id)
+                .where(
+                    Transaction.user_id == user_id,
+                    *self._successful_paid_nontrial_predicate(include_refunded=True),
+                )
+                .order_by(
+                    Transaction.fulfillment_completed_at,
+                    Transaction.id,
+                )
+                .limit(1)
+            ),
+        )
 
     async def get_by_user(self, user_id: int) -> list[TransactionDto]:
         stmt = (
@@ -269,13 +349,11 @@ class TransactionDaoImpl(TransactionDao):
                                 TransactionStatus.CANCELED,
                             )
                         ),
-                        Transaction.fulfillment_status
-                        == TransactionFulfillmentStatus.NOT_STARTED,
+                        Transaction.fulfillment_status == TransactionFulfillmentStatus.NOT_STARTED,
                     ),
                     and_(
                         Transaction.status == TransactionStatus.COMPLETED,
-                        Transaction.fulfillment_status
-                        == TransactionFulfillmentStatus.SUCCEEDED,
+                        Transaction.fulfillment_status == TransactionFulfillmentStatus.SUCCEEDED,
                         Transaction.fulfillment_completed_at.is_not(None),
                     ),
                 ),
@@ -293,11 +371,8 @@ class TransactionDaoImpl(TransactionDao):
             update(Transaction)
             .where(
                 Transaction.payment_id == payment_id,
-                Transaction.status.in_(
-                    (TransactionStatus.PENDING, TransactionStatus.CANCELED)
-                ),
-                Transaction.fulfillment_status
-                == TransactionFulfillmentStatus.NOT_STARTED,
+                Transaction.status.in_((TransactionStatus.PENDING, TransactionStatus.CANCELED)),
+                Transaction.fulfillment_status == TransactionFulfillmentStatus.NOT_STARTED,
             )
             .values(
                 status=TransactionStatus.CANCELED,
@@ -343,8 +418,7 @@ class TransactionDaoImpl(TransactionDao):
                         Transaction.cancellation_reason == "LOCAL_TIMEOUT",
                     ),
                 ),
-                Transaction.fulfillment_status
-                == TransactionFulfillmentStatus.NOT_STARTED,
+                Transaction.fulfillment_status == TransactionFulfillmentStatus.NOT_STARTED,
             )
             .values(
                 status=TransactionStatus.COMPLETED,
@@ -387,8 +461,7 @@ class TransactionDaoImpl(TransactionDao):
             .where(
                 Transaction.payment_id == payment_id,
                 Transaction.status == TransactionStatus.COMPLETED,
-                Transaction.fulfillment_status
-                == TransactionFulfillmentStatus.PROCESSING,
+                Transaction.fulfillment_status == TransactionFulfillmentStatus.PROCESSING,
                 Transaction.fulfillment_token_hash == token_hash,
                 Transaction.fulfillment_lease_expires_at > now,
             )
@@ -413,9 +486,7 @@ class TransactionDaoImpl(TransactionDao):
             update(Transaction)
             .where(
                 Transaction.payment_id == payment_id,
-                Transaction.status.in_(
-                    (TransactionStatus.COMPLETED, TransactionStatus.REFUNDED)
-                ),
+                Transaction.status.in_((TransactionStatus.COMPLETED, TransactionStatus.REFUNDED)),
                 Transaction.fulfillment_status.in_(
                     (
                         TransactionFulfillmentStatus.PROCESSING,
@@ -437,9 +508,7 @@ class TransactionDaoImpl(TransactionDao):
             update(Transaction)
             .where(
                 Transaction.payment_id == payment_id,
-                Transaction.status.in_(
-                    (TransactionStatus.COMPLETED, TransactionStatus.REFUNDED)
-                ),
+                Transaction.status.in_((TransactionStatus.COMPLETED, TransactionStatus.REFUNDED)),
                 Transaction.fulfillment_status == TransactionFulfillmentStatus.PROCESSING,
                 Transaction.fulfillment_lease_expires_at <= func.clock_timestamp(),
             )
@@ -456,9 +525,7 @@ class TransactionDaoImpl(TransactionDao):
         candidates = (
             select(Transaction.id)
             .where(
-                Transaction.status.in_(
-                    (TransactionStatus.COMPLETED, TransactionStatus.REFUNDED)
-                ),
+                Transaction.status.in_((TransactionStatus.COMPLETED, TransactionStatus.REFUNDED)),
                 Transaction.fulfillment_status == TransactionFulfillmentStatus.PROCESSING,
                 Transaction.fulfillment_lease_expires_at <= now,
             )
@@ -492,8 +559,7 @@ class TransactionDaoImpl(TransactionDao):
         candidates = (
             select(Transaction.id)
             .where(
-                Transaction.fulfillment_status
-                == TransactionFulfillmentStatus.MANUAL_REQUIRED,
+                Transaction.fulfillment_status == TransactionFulfillmentStatus.MANUAL_REQUIRED,
                 Transaction.fulfillment_alerted_at.is_(None),
                 or_(
                     Transaction.fulfillment_alert_next_attempt_at.is_(None),
@@ -545,8 +611,7 @@ class TransactionDaoImpl(TransactionDao):
             update(Transaction)
             .where(
                 Transaction.payment_id == payment_id,
-                Transaction.fulfillment_status
-                == TransactionFulfillmentStatus.MANUAL_REQUIRED,
+                Transaction.fulfillment_status == TransactionFulfillmentStatus.MANUAL_REQUIRED,
                 Transaction.fulfillment_alerted_at.is_(None),
                 token_predicate,
             )
@@ -723,9 +788,7 @@ class TransactionDaoImpl(TransactionDao):
                     .values(
                         processing_token_hash=token_hash,
                         processing_lease_expires_at=now + lease_for,
-                        processing_attempt_count=(
-                            PaymentWebhookEvent.processing_attempt_count + 1
-                        ),
+                        processing_attempt_count=(PaymentWebhookEvent.processing_attempt_count + 1),
                     )
                     .returning(PaymentWebhookEvent)
                 )
@@ -866,8 +929,7 @@ class TransactionDaoImpl(TransactionDao):
                 PaymentWebhookEvent.manual_required_at.is_(None),
                 or_(
                     PaymentWebhookEvent.processing_token_hash.is_(None),
-                    PaymentWebhookEvent.processing_lease_expires_at
-                    <= func.clock_timestamp(),
+                    PaymentWebhookEvent.processing_lease_expires_at <= func.clock_timestamp(),
                 ),
                 ~matching_transaction.exists(),
             )

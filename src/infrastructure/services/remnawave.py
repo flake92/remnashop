@@ -22,7 +22,7 @@ from remnapy.models import (
 )
 from remnapy.models.hwid import HwidDeviceDto
 
-from src.application.common import Remnawave
+from src.application.common import Remnawave, SubscriptionMutationLock
 from src.application.common.remnawave import T
 from src.application.dto import (
     PlanSnapshotDto,
@@ -38,8 +38,13 @@ from src.core.utils.time import datetime_now
 
 
 class RemnawaveImpl(Remnawave):
-    def __init__(self, sdk: RemnawaveSDK) -> None:
+    def __init__(
+        self,
+        sdk: RemnawaveSDK,
+        subscription_mutation_lock: SubscriptionMutationLock,
+    ) -> None:
         self.sdk = sdk
+        self.subscription_mutation_lock = subscription_mutation_lock
 
     async def try_connection(self) -> Version:
         for attempt in range(1, 4):
@@ -101,6 +106,26 @@ class RemnawaveImpl(Remnawave):
             raise
 
     async def update_user(
+        self,
+        user: UserDto,
+        uuid: UUID,
+        plan: Optional[PlanSnapshotDto] = None,
+        subscription: Optional[SubscriptionDto] = None,
+        reset_traffic: bool = False,
+    ) -> UserResponseDto:
+        # This lower-level fence is the last line of defence for every full user
+        # update. Use cases that read/modify a subscription also hold the same
+        # re-entrant lock around their read so they cannot send a stale expire_at.
+        async with self.subscription_mutation_lock.hold(user.id):
+            return await self._update_user_locked(
+                user=user,
+                uuid=uuid,
+                plan=plan,
+                subscription=subscription,
+                reset_traffic=reset_traffic,
+            )
+
+    async def _update_user_locked(
         self,
         user: UserDto,
         uuid: UUID,

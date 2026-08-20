@@ -4,7 +4,12 @@ from typing import Optional
 
 from loguru import logger
 
-from src.application.common import EventPublisher, Interactor, Remnawave
+from src.application.common import (
+    EventPublisher,
+    Interactor,
+    Remnawave,
+    SubscriptionMutationLock,
+)
 from src.application.common.dao import SubscriptionDao, UserDao
 from src.application.common.uow import UnitOfWork
 from src.application.dto import PlanSnapshotDto, SubscriptionDto, TransactionDto, UserDto
@@ -36,15 +41,25 @@ class ActivateTrialSubscription(Interactor[ActivateTrialSubscriptionDto, None]):
         user_dao: UserDao,
         subscription_dao: SubscriptionDao,
         remnawave: Remnawave,
+        subscription_mutation_lock: SubscriptionMutationLock,
         event_publisher: EventPublisher,
     ) -> None:
         self.uow = uow
         self.user_dao = user_dao
         self.subscription_dao = subscription_dao
         self.remnawave = remnawave
+        self.subscription_mutation_lock = subscription_mutation_lock
         self.event_publisher = event_publisher
 
     async def _execute(self, actor: UserDto, data: ActivateTrialSubscriptionDto) -> None:
+        async with self.subscription_mutation_lock.hold(data.user.id):
+            await self._execute_locked(actor, data)
+
+    async def _execute_locked(
+        self,
+        actor: UserDto,
+        data: ActivateTrialSubscriptionDto,
+    ) -> None:
         user = data.user
         plan = data.plan
 
@@ -121,16 +136,28 @@ class PurchaseSubscription(Interactor[PurchaseSubscriptionDto, None]):
         user_dao: UserDao,
         subscription_dao: SubscriptionDao,
         remnawave: Remnawave,
+        subscription_mutation_lock: SubscriptionMutationLock,
     ) -> None:
         self.uow = uow
         self.user_dao = user_dao
         self.subscription_dao = subscription_dao
         self.remnawave = remnawave
+        self.subscription_mutation_lock = subscription_mutation_lock
 
     async def _execute(self, actor: UserDto, data: PurchaseSubscriptionDto) -> None:  # noqa: C901
+        async with self.subscription_mutation_lock.hold(data.user.id):
+            await self._execute_locked(actor, data)
+
+    async def _execute_locked(  # noqa: C901
+        self,
+        actor: UserDto,
+        data: PurchaseSubscriptionDto,
+    ) -> None:
         user = data.user
         transaction = data.transaction
-        subscription = data.subscription
+        # The payment claim may have loaded its snapshot before waiting for another
+        # mutation. Always re-read the current subscription under the shared fence.
+        subscription = await self.subscription_dao.get_current(user.id)
         plan = transaction.plan_snapshot
         purchase_type = transaction.purchase_type
         has_trial = subscription.is_trial if subscription else False

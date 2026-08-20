@@ -3,7 +3,12 @@ from datetime import timedelta
 
 from loguru import logger
 
-from src.application.common import EventPublisher, Interactor, Remnawave
+from src.application.common import (
+    EventPublisher,
+    Interactor,
+    Remnawave,
+    SubscriptionMutationLock,
+)
 from src.application.common.dao import SettingsDao, SubscriptionDao
 from src.application.common.uow import UnitOfWork
 from src.application.dto import SubscriptionDto, UserDto
@@ -30,16 +35,25 @@ class EnterGraceMode(Interactor[EnterGraceModeDto, None]):
         subscription_dao: SubscriptionDao,
         remnawave: Remnawave,
         event_publisher: EventPublisher,
+        subscription_mutation_lock: SubscriptionMutationLock,
     ) -> None:
         self.uow = uow
         self.settings_dao = settings_dao
         self.subscription_dao = subscription_dao
         self.remnawave = remnawave
         self.event_publisher = event_publisher
+        self.subscription_mutation_lock = subscription_mutation_lock
 
     async def _execute(self, actor: UserDto, data: EnterGraceModeDto) -> None:
+        async with self.subscription_mutation_lock.hold(data.user.id):
+            await self._execute_locked(actor, data)
+
+    async def _execute_locked(self, actor: UserDto, data: EnterGraceModeDto) -> None:
         user = data.user
-        sub = data.subscription
+        sub = await self.subscription_dao.get_current(user.id)
+        if sub is None:
+            logger.info(f"{actor.log} Subscription disappeared before grace mutation")
+            return
         grace = (await self.settings_dao.get()).grace
 
         if not grace.enabled or sub.is_trial:
@@ -59,9 +73,7 @@ class EnterGraceMode(Interactor[EnterGraceModeDto, None]):
                 # act as an optional override (non-empty list / explicit UUID wins).
                 internal_squads = grace.internal_squads or sub.internal_squads
                 external_squad = (
-                    grace.external_squad
-                    if grace.external_squad is not None
-                    else sub.external_squad
+                    grace.external_squad if grace.external_squad is not None else sub.external_squad
                 )
                 await self.remnawave.apply_grace(
                     uuid=sub.user_remna_id,

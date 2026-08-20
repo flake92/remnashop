@@ -104,6 +104,15 @@ msg-menu-invite =
         *[OTHER] { $reward_type }
     }!
 
+    <b>🔗 Две ссылки для приглашения</b>:
+    <blockquote>
+    🤖 Telegram — открыть бота: { $referral_url }
+    { $has_web_referral_url ->
+    [1] 🌐 Clean Pay — регистрация и оплата: { $web_referral_url }
+    *[0] 🌐 Clean Pay — ссылка временно недоступна
+    }
+    </blockquote>
+
     <b>📊 Статистика</b>:
     <blockquote>
     👥 Всего приглашенных: { $referrals }

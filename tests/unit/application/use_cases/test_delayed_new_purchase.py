@@ -29,9 +29,20 @@ class FakeUnitOfWork:
         return None
 
 
+class FakeMutationLock:
+    def hold(self, user_id: int) -> "FakeMutationLock":
+        return self
+
+    async def __aenter__(self) -> None:
+        return None
+
+    async def __aexit__(self, *args: object) -> None:
+        return None
+
+
 @pytest.mark.asyncio
 async def test_delayed_new_payment_extends_subscription_created_by_first_payment() -> None:
-    initial_expiry = datetime(2026, 8, 20, tzinfo=timezone.utc)
+    initial_expiry = datetime(2036, 8, 20, tzinfo=timezone.utc)
     plan = SimpleNamespace(
         duration=30,
         device_limit=1,
@@ -59,6 +70,7 @@ async def test_delayed_new_payment_extends_subscription_created_by_first_payment
         plan_snapshot=plan,
     )
     subscription_dao = SimpleNamespace(
+        get_current=AsyncMock(return_value=subscription),
         create=AsyncMock(),
         update=AsyncMock(),
         update_status=AsyncMock(),
@@ -71,6 +83,7 @@ async def test_delayed_new_payment_extends_subscription_created_by_first_payment
         user_dao=user_dao,  # type: ignore[arg-type]
         subscription_dao=subscription_dao,  # type: ignore[arg-type]
         remnawave=remnawave,  # type: ignore[arg-type]
+        subscription_mutation_lock=FakeMutationLock(),  # type: ignore[arg-type]
     )
 
     await purchase._execute(
