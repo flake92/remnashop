@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Optional
+from typing import Any, Optional
 
 from sqlalchemy import CheckConstraint, ForeignKey, Index, Integer, String, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB
@@ -18,12 +18,10 @@ from src.infrastructure.database.constraints import (
 )
 
 from .base import BaseSql
+from .subscription import Subscription
 from .timestamp import NOW_FUNC, TimestampMixin
+from .transaction import Transaction
 from .user import User
-
-if TYPE_CHECKING:
-    from .subscription import Subscription
-    from .transaction import Transaction
 
 
 class Referral(BaseSql, TimestampMixin):
