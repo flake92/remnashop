@@ -29,7 +29,11 @@ class User(BaseSql, TimestampMixin):
     )
     password_reset_code_hash: Mapped[Optional[str]] = mapped_column(String(128))
     password_reset_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
-    password_reset_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    password_reset_attempts: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        server_default="0",
+    )
     token_version: Mapped[int] = mapped_column(Integer, default=0)
 
     username: Mapped[Optional[str]] = mapped_column(String(32), index=True)
