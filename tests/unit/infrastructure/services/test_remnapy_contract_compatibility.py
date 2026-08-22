@@ -2,7 +2,7 @@ from uuid import UUID
 
 from remnapy.models.hosts import GetAllHostsResponseDto, HostResponseDto
 from remnapy.models.hwid import HwidDeviceDto
-from remnapy.models.webhook import WebhookPayloadDto
+from remnapy.models.webhook import HwidUserDeviceDto, UserHwidDeviceEventDto, WebhookPayloadDto
 
 from src.infrastructure.remnapy_compat import apply_remnapy_contract_compatibility
 
@@ -32,6 +32,28 @@ def _host_payload() -> dict:
         "mihomoIpVersion": None,
         "nodes": [],
         "xrayJsonTemplateUuid": None,
+    }
+
+
+def _webhook_user_payload() -> dict:
+    return {
+        "uuid": "d1dc2477-01e7-4847-9400-79ae63d5a4b0",
+        "id": 42,
+        "shortUuid": "contract-check",
+        "username": "contract-check",
+        "status": "ACTIVE",
+        "userTraffic": {"usedTrafficBytes": 0, "lifetimeUsedTrafficBytes": 0},
+        "trafficLimitBytes": 0,
+        "trafficLimitStrategy": "NO_RESET",
+        "expireAt": "2026-09-20T10:00:00Z",
+        "trojanPassword": "contract-check",
+        "vlessUuid": "e1e6d083-fd61-49c8-a289-dd44ca452229",
+        "ssPassword": "contract-check",
+        "lastTriggeredThreshold": 0,
+        "subscriptionUrl": "https://vpn.example.com/sub/contract-check",
+        "createdAt": "2026-08-20T10:00:00Z",
+        "updatedAt": "2026-08-20T10:00:00Z",
+        "activeInternalSquads": [],
     }
 
 
@@ -84,3 +106,43 @@ def test_hwid_contract_accepts_new_user_id_and_keeps_legacy_uuid() -> None:
     assert new_device.user_uuid is None
     assert legacy_device.user_uuid == legacy_uuid
     assert legacy_device.user_id is None
+
+
+def test_hwid_webhook_device_contract_accepts_missing_or_null_redundant_owner() -> None:
+    apply_remnapy_contract_compatibility()
+    apply_remnapy_contract_compatibility()
+    payload = {
+        "hwid": "webhook-device",
+        "createdAt": "2026-08-20T10:00:00Z",
+        "updatedAt": "2026-08-20T10:00:00Z",
+    }
+
+    missing_owner = HwidUserDeviceDto.model_validate(payload)
+    null_owner = HwidUserDeviceDto.model_validate(payload | {"userUuid": None})
+
+    assert missing_owner.user_uuid is None
+    assert null_owner.user_uuid is None
+
+
+def test_full_hwid_webhook_contract_accepts_device_without_redundant_owner() -> None:
+    apply_remnapy_contract_compatibility()
+
+    for event_name in ("user_hwid_devices.added", "user_hwid_devices.deleted"):
+        payload = WebhookPayloadDto.from_dict(
+            {
+                "event": event_name,
+                "timestamp": "2026-08-20T10:00:00Z",
+                "data": {
+                    "user": _webhook_user_payload(),
+                    "hwidUserDevice": {
+                        "hwid": "webhook-device",
+                        "createdAt": "2026-08-20T10:00:00Z",
+                        "updatedAt": "2026-08-20T10:00:00Z",
+                    },
+                },
+            }
+        )
+
+        assert isinstance(payload.data, UserHwidDeviceEventDto)
+        assert payload.data.hwid_user_device.user_uuid is None
+        assert payload.data.user.id == 42
