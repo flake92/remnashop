@@ -2,7 +2,7 @@ import asyncio
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, call
 
 import pytest
 
@@ -1100,6 +1100,40 @@ async def test_worker_claims_each_reward_only_when_it_is_ready_to_start() -> Non
 
 
 @pytest.mark.asyncio
+async def test_worker_releases_safe_claim_after_pre_grant_failure() -> None:
+    reward = ReferralRewardDto(
+        id=8,
+        user_id=2,
+        type=ReferralRewardType.POINTS,
+        amount=1,
+        state=ReferralRewardState.PROCESSING,
+        attempt_count=1,
+    )
+    uow = FakeUnitOfWork()
+    referral_dao = SimpleNamespace(
+        claim_pending_rewards=AsyncMock(side_effect=[[reward], []]),
+        get_reward_referred_name=AsyncMock(side_effect=RuntimeError("read failed")),
+        defer_reward=AsyncMock(return_value=True),
+        claim_manual_required_rewards_for_alert=AsyncMock(return_value=[]),
+        mark_manual_rewards_alerted=AsyncMock(),
+    )
+    worker = RetryPendingReferralRewards(
+        uow,  # type: ignore[arg-type]
+        referral_dao,
+        SimpleNamespace(system=AsyncMock()),
+    )
+
+    assert await worker._execute(SimpleNamespace(log="system")) == 1  # type: ignore[arg-type]
+
+    uow.rollback.assert_awaited_once()
+    referral_dao.defer_reward.assert_awaited_once()
+    deferred = referral_dao.defer_reward.await_args
+    assert deferred.args == (8,)
+    assert deferred.kwargs["error_code"] == "REWARD_WORKER_UNEXPECTED_FAILURE"
+    assert deferred.kwargs["retry_after"] == timedelta(minutes=2)
+
+
+@pytest.mark.asyncio
 async def test_operator_resolution_records_decision_without_replaying_reward() -> None:
     uow = FakeUnitOfWork()
     reward = ReferralRewardDto(
@@ -1148,6 +1182,10 @@ async def test_operator_resolution_records_decision_without_replaying_reward() -
         source_status=None,
         ack_admin_compensated_refund=False,
     )
+    assert referral_dao.get_reward_by_id.await_args_list == [
+        call(8),
+        call(8, for_update=True),
+    ]
     uow.commit.assert_awaited_once()
 
 

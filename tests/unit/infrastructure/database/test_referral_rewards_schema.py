@@ -335,6 +335,12 @@ class _OneCandidateClaimSession(_ClaimSession):
         return _EmptyScalars()
 
 
+class _ClaimableCandidateSession(_OneCandidateClaimSession):
+    async def scalar(self, statement: object) -> int:
+        self.scalar_queries.append(statement)
+        return 8123
+
+
 @pytest.mark.asyncio
 async def test_manual_reward_listing_applies_stable_limit_and_offset() -> None:
     session = _ClaimSession()
@@ -510,6 +516,33 @@ async def test_worker_rechecks_processing_reward_after_recipient_lock() -> None:
     assert "PROCESSING_REWARD_FOR_LOCKED_USER" in sql
     assert "PROCESSING_REWARD_FOR_LOCKED_USER.USER_ID = 2883" in sql
     assert "PROCESSING_REWARD_FOR_LOCKED_USER.STATE = 'PROCESSING'" in sql
+
+
+@pytest.mark.asyncio
+async def test_claim_transition_revalidates_mutable_candidate_conditions() -> None:
+    session = _ClaimableCandidateSession()
+    dao = ReferralDaoImpl.__new__(ReferralDaoImpl)
+    dao.session = session  # type: ignore[assignment]
+    dao._convert_to_reward_list = lambda rows: rows  # type: ignore[method-assign]
+
+    assert await dao.claim_pending_rewards(
+        token_hash="a" * 64,
+        lease_for=timedelta(minutes=5),
+        limit=100,
+    ) == []
+
+    assert len(session.scalar_statements) == 2
+    claim_update = session.scalar_statements[1].compile(
+        dialect=postgresql.dialect(),
+    )
+    claim_update_sql = str(claim_update).upper()
+    assert "UPDATE REFERRAL_REWARDS" in claim_update_sql
+    assert "REFERRAL_REWARDS.ID IN" in claim_update_sql
+    assert ReferralRewardState.PENDING in claim_update.params.values()
+    assert ReferralRewardState.RETRY_WAITING in claim_update.params.values()
+    assert "REWARD_SOURCE_TRANSACTION" in claim_update_sql
+    assert "PROCESSING_REWARD_DURING_CLAIM_UPDATE" in claim_update_sql
+    assert "PROCESSING_REWARD_DURING_CLAIM_UPDATE.ID != REFERRAL_REWARDS.ID" in claim_update_sql
 
 
 def test_admin_compensated_on_first_fence_uses_immutable_resolution_provenance() -> None:
@@ -688,6 +721,28 @@ class _ScalarSession:
 
 
 @pytest.mark.asyncio
+async def test_reward_for_update_refreshes_the_locked_identity_map_row() -> None:
+    reward = SimpleNamespace(id=8)
+    session = _ScalarSession([reward])
+    dao = ReferralDaoImpl.__new__(ReferralDaoImpl)
+    dao.session = session  # type: ignore[assignment]
+    dao._convert_to_reward_dto = lambda row: row  # type: ignore[method-assign]
+
+    assert await dao.get_reward_by_id(8, for_update=True) is reward
+
+    statement = session.statements[0]
+    sql = str(
+        statement.compile(  # type: ignore[attr-defined]
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    ).upper()
+    assert "REFERRAL_REWARDS.ID = 8" in sql
+    assert "FOR UPDATE" in sql
+    assert statement.get_execution_options()["populate_existing"] is True  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
 async def test_idempotent_create_only_returns_the_exact_same_intent() -> None:
     exact = SimpleNamespace(id=91)
     session = _ScalarSession([None, None, exact])
@@ -767,7 +822,11 @@ async def test_rr65_l1_recovery_freezes_all_later_normal_levels(
 
 @pytest.mark.asyncio
 async def test_manual_resolver_locks_source_transaction_before_decision() -> None:
-    session = _ScalarSession([TransactionStatus.REFUNDED])
+    reward = SimpleNamespace(
+        source_transaction_id=77,
+        operator_recovery_manifest_sha256=None,
+    )
+    session = _ScalarSession([reward, TransactionStatus.REFUNDED])
     dao = ReferralDaoImpl.__new__(ReferralDaoImpl)
     dao.session = session  # type: ignore[assignment]
 
@@ -775,19 +834,30 @@ async def test_manual_resolver_locks_source_transaction_before_decision() -> Non
 
     assert status == TransactionStatus.REFUNDED
     sql = str(
+        session.statements[1].compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    ).upper()
+    reward_lock_sql = str(
         session.statements[0].compile(
             dialect=postgresql.dialect(),
             compile_kwargs={"literal_binds": True},
         )
     ).upper()
-    assert "JOIN REFERRAL_REWARDS" in sql
-    assert "REFERRAL_REWARDS.ID = 8" in sql
-    assert "FOR UPDATE OF TRANSACTIONS" in sql
+    assert "REFERRAL_REWARDS.ID = 8" in reward_lock_sql
+    assert "FOR UPDATE" in reward_lock_sql
+    assert "TRANSACTIONS.ID = 77" in sql
+    assert "FOR UPDATE" in sql
 
 
 @pytest.mark.asyncio
 async def test_manual_operator_resolution_locks_its_selected_source_by_digest() -> None:
-    session = _ScalarSession([None, TransactionStatus.REFUNDED])
+    reward = SimpleNamespace(
+        source_transaction_id=None,
+        operator_recovery_manifest_sha256="m" * 64,
+    )
+    session = _ScalarSession([reward, TransactionStatus.REFUNDED])
     dao = ReferralDaoImpl.__new__(ReferralDaoImpl)
     dao.session = session  # type: ignore[assignment]
 
@@ -801,15 +871,19 @@ async def test_manual_operator_resolution_locks_its_selected_source_by_digest() 
         )
     ).upper()
     assert "RETRY_OPERATOR_DIRECTED" in sql
-    assert "OPERATOR_RECOVERY_MANIFEST_SHA256" in sql
     assert "AUTHORIZATION_MANIFEST_SHA256" in sql
-    assert "REFERRAL_REWARDS.ID = 65" in sql
+    assert "REFERRAL_REWARD_RESOLUTIONS.REWARD_ID = 65" in sql
     assert "FOR UPDATE OF TRANSACTIONS" in sql
 
 
 @pytest.mark.asyncio
 async def test_side_effect_eligibility_locks_successful_source_transaction() -> None:
-    session = _ScalarSession([77])
+    reward = SimpleNamespace(
+        source_transaction_id=77,
+        operator_recovery_manifest_sha256=None,
+        manual_incident_version=0,
+    )
+    session = _ScalarSession([reward, 77])
     dao = ReferralDaoImpl.__new__(ReferralDaoImpl)
     dao.session = session  # type: ignore[assignment]
 
@@ -819,20 +893,36 @@ async def test_side_effect_eligibility_locks_successful_source_transaction() -> 
     )
 
     sql = str(
+        session.statements[1].compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    ).upper()
+    reward_lock_sql = str(
         session.statements[0].compile(
             dialect=postgresql.dialect(),
             compile_kwargs={"literal_binds": True},
         )
     ).upper()
-    assert "FOR UPDATE OF TRANSACTIONS" in sql
-    assert "TRANSACTIONS.STATUS = 'COMPLETED'" in sql
+    assert "REFERRAL_REWARDS.ID = 8" in reward_lock_sql
+    assert "PROCESSING_TOKEN_HASH" in reward_lock_sql
+    assert "FOR UPDATE" in reward_lock_sql
+    assert "FOR UPDATE" in sql
+    assert "TRANSACTIONS.STATUS IN ('COMPLETED')" in sql
     assert "TRANSACTIONS.FULFILLMENT_STATUS = 'SUCCEEDED'" in sql
-    assert "PROCESSING_TOKEN_HASH" in sql
+    assert "TRANSACTIONS.IS_TEST IS FALSE" in sql
+    assert "FINAL_AMOUNT" in sql
+    assert "IS_TRIAL" in sql
 
 
 @pytest.mark.asyncio
 async def test_operator_side_effect_eligibility_uses_pinned_resolution_source_class() -> None:
-    session = _ScalarSession([None, 1761])
+    reward = SimpleNamespace(
+        source_transaction_id=None,
+        operator_recovery_manifest_sha256="m" * 64,
+        manual_incident_version=4,
+    )
+    session = _ScalarSession([reward, 1761])
     dao = ReferralDaoImpl.__new__(ReferralDaoImpl)
     dao.session = session  # type: ignore[assignment]
 
@@ -850,6 +940,7 @@ async def test_operator_side_effect_eligibility_uses_pinned_resolution_source_cl
     assert "TRANSACTIONS.STATUS = 'FAILED'" in sql
     assert "TRANSACTIONS.GATEWAY_TYPE = 'YOOKASSA'" in sql
     assert "AUTHORIZATION_MANIFEST_SHA256" in sql
+    assert "INCIDENT_VERSION = 4" in sql
     assert "FOR UPDATE OF TRANSACTIONS" in sql
 
 
@@ -1885,7 +1976,11 @@ async def test_admin_compensation_refund_ack_reuses_normalized_source_and_keeps_
 
 @pytest.mark.asyncio
 async def test_admin_compensation_source_lock_uses_normalized_recovery_evidence() -> None:
-    session = _ResolutionSession([None, TransactionStatus.REFUNDED])
+    reward = SimpleNamespace(
+        source_transaction_id=None,
+        operator_recovery_manifest_sha256=None,
+    )
+    session = _ResolutionSession([reward, TransactionStatus.REFUNDED])
     dao = ReferralDaoImpl.__new__(ReferralDaoImpl)
     dao.session = session  # type: ignore[assignment]
 

@@ -66,7 +66,12 @@ class ReferralDao(Protocol):
 
     async def mark_backfill_preview_applied(self, preview_id: int) -> bool: ...
 
-    async def get_reward_by_id(self, reward_id: int) -> Optional[ReferralRewardDto]: ...
+    async def get_reward_by_id(
+        self,
+        reward_id: int,
+        *,
+        for_update: bool = False,
+    ) -> Optional[ReferralRewardDto]: ...
 
     async def lock_manual_reward_source_status(
         self,

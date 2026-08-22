@@ -1,0 +1,74 @@
+name: Remnashop - Quality
+
+on:
+  pull_request:
+  push:
+    branches:
+      - dev
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: remnashop
+          POSTGRES_PASSWORD: referral-test-password
+          POSTGRES_DB: remnashop_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U remnashop -d remnashop_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      BOT_TOKEN: unit-test-token
+      BOT_SECRET_TOKEN: unit-test-secret
+      BOT_OWNER_ID: 1
+      BOT_SUPPORT_USERNAME: unit_test_support
+      REMNAWAVE_TOKEN: unit-test-remnawave-token
+      REMNAWAVE_WEBHOOK_SECRET: unit-test-webhook-secret
+      APP_DOMAIN: example.com
+      APP_CRYPT_KEY: MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA=
+      DATABASE_HOST: localhost
+      DATABASE_PORT: 5432
+      DATABASE_NAME: remnashop_test
+      DATABASE_USER: remnashop
+      DATABASE_PASSWORD: referral-test-password
+      TEST_DATABASE_URL: postgresql+asyncpg://remnashop:referral-test-password@localhost:5432/remnashop_test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install locked dependencies
+        run: uv sync --locked --dev
+
+      - name: Apply database migrations
+        run: uv run alembic -c src/infrastructure/database/alembic.ini upgrade head
+
+      - name: Run tests
+        run: uv run pytest -q
+
+      - name: Run Ruff
+        run: uv run ruff check .
+
+      - name: Run mypy
+        run: uv run mypy

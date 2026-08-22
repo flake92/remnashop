@@ -659,9 +659,21 @@ class RetryPendingReferralRewards(Interactor[None, int]):
                     )
                 )
             except Exception:
-                # A per-row state fence remains durable. Continue the batch so one bad
-                # notification or recipient cannot starve unrelated rewards.
                 logger.exception(f"Referral reward worker failed on reward '{reward.id}'")
+                # Failures before the grant use case starts (for example, resolving
+                # the display name) used to strand a safe claim in PROCESSING until
+                # its lease expired. Reset the session and release only claims that
+                # have no persisted external target; issued or ambiguous rows remain
+                # protected by their state/target fences.
+                await self.uow.rollback()
+                async with self.uow:
+                    await self.referral_dao.defer_reward(
+                        reward.id,
+                        token_hash=token_hash,
+                        retry_after=GiveReferrerReward._retry_after(reward.attempt_count),
+                        error_code="REWARD_WORKER_UNEXPECTED_FAILURE",
+                    )
+                    await self.uow.commit()
 
         async with self.uow:
             manual = await self.referral_dao.claim_manual_required_rewards_for_alert(limit=20)
@@ -769,7 +781,10 @@ class ResolveManualReferralReward(Interactor[ResolveManualReferralRewardDto, Non
 
         async with self.subscription_mutation_lock.hold(reward.user_id):
             async with self.uow:
-                reward = await self.referral_dao.get_reward_by_id(data.reward_id)
+                reward = await self.referral_dao.get_reward_by_id(
+                    data.reward_id,
+                    for_update=True,
+                )
                 if reward is None:
                     raise ValueError(f"Referral reward '{data.reward_id}' was not found")
                 if reward.manual_incident_version != data.expected_version:

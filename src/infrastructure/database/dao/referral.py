@@ -348,28 +348,62 @@ class ReferralDaoImpl(ReferralDao):
         logger.debug(f"Created reward amount '{reward.amount}' for referral ID '{referral_id}'")
         return self._convert_to_reward_dto(db_reward)
 
-    async def get_reward_by_id(self, reward_id: int) -> Optional[ReferralRewardDto]:
-        reward = await self.session.get(ReferralReward, reward_id)
+    async def get_reward_by_id(
+        self,
+        reward_id: int,
+        *,
+        for_update: bool = False,
+    ) -> Optional[ReferralRewardDto]:
+        if for_update:
+            reward = await self.session.scalar(
+                select(ReferralReward)
+                .where(ReferralReward.id == reward_id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        else:
+            reward = await self.session.get(ReferralReward, reward_id)
         return self._convert_to_reward_dto(reward) if reward is not None else None
 
     async def lock_manual_reward_source_status(
         self,
         reward_id: int,
     ) -> Optional[TransactionStatus]:
-        status = cast(
-            Optional[TransactionStatus],
-            await self.session.scalar(
-                select(Transaction.status)
-                .join(
-                    ReferralReward,
-                    ReferralReward.source_transaction_id == Transaction.id,
-                )
-                .where(ReferralReward.id == reward_id)
-                .with_for_update(of=Transaction)
-            ),
+        # The reward row is the first durable fence for every grant/resolution
+        # path. Refresh it while locking so a long-lived request session cannot use
+        # an identity-map snapshot captured before the operator transaction.
+        reward = await self.session.scalar(
+            select(ReferralReward)
+            .where(ReferralReward.id == reward_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
         )
-        if status is not None:
-            return status
+        if reward is None:
+            return None
+
+        if reward.source_transaction_id is not None:
+            return cast(
+                Optional[TransactionStatus],
+                await self.session.scalar(
+                    select(Transaction.status)
+                    .where(Transaction.id == reward.source_transaction_id)
+                    .with_for_update()
+                ),
+            )
+
+        resolution_sources = [
+            ReferralRewardResolution.decision == "CONFIRM_ADMIN_COMPENSATED"
+        ]
+        if reward.operator_recovery_manifest_sha256 is not None:
+            resolution_sources.append(
+                and_(
+                    ReferralRewardResolution.decision
+                    == LegacyReferralRewardRecoveryAction.RETRY_OPERATOR_DIRECTED.value,
+                    ReferralRewardResolution.authorization_manifest_sha256
+                    == reward.operator_recovery_manifest_sha256,
+                )
+            )
+
         return cast(
             Optional[TransactionStatus],
             await self.session.scalar(
@@ -378,22 +412,9 @@ class ReferralDaoImpl(ReferralDao):
                     ReferralRewardResolution,
                     ReferralRewardResolution.selected_source_transaction_id == Transaction.id,
                 )
-                .join(
-                    ReferralReward,
-                    ReferralReward.id == ReferralRewardResolution.reward_id,
-                )
                 .where(
-                    ReferralReward.id == reward_id,
-                    or_(
-                        ReferralRewardResolution.decision == "CONFIRM_ADMIN_COMPENSATED",
-                        and_(
-                            ReferralRewardResolution.decision
-                            == LegacyReferralRewardRecoveryAction.RETRY_OPERATOR_DIRECTED.value,
-                            ReferralReward.operator_recovery_manifest_sha256.is_not(None),
-                            ReferralRewardResolution.authorization_manifest_sha256
-                            == ReferralReward.operator_recovery_manifest_sha256,
-                        ),
-                    ),
+                    ReferralRewardResolution.reward_id == reward_id,
+                    or_(*resolution_sources),
                 )
                 .with_for_update(of=Transaction)
             ),
@@ -1053,9 +1074,28 @@ class ReferralDaoImpl(ReferralDao):
         if not ids:
             return []
 
+        # The recipient lock serializes workers, but administrative recovery and
+        # source reconciliation intentionally use different entry points. Reapply
+        # every mutable eligibility predicate in the state transition itself so a
+        # row changed while this claimant was waiting can never be overwritten by
+        # a stale candidate id.
+        processing_during_claim = aliased(
+            ReferralReward,
+            name="processing_reward_during_claim_update",
+        )
+        other_processing_for_recipient = select(processing_during_claim.id).where(
+            processing_during_claim.user_id == ReferralReward.user_id,
+            processing_during_claim.id != ReferralReward.id,
+            processing_during_claim.state == ReferralRewardState.PROCESSING,
+        )
         stmt = (
             update(ReferralReward)
-            .where(ReferralReward.id.in_(ids))
+            .where(
+                ReferralReward.id.in_(ids),
+                due_condition,
+                eligible_source_condition,
+                ~other_processing_for_recipient.exists(),
+            )
             .values(
                 state=ReferralRewardState.PROCESSING,
                 accrual_strategy=case(
@@ -1160,46 +1200,55 @@ class ReferralDaoImpl(ReferralDao):
         *,
         token_hash: str,
     ) -> bool:
-        source_id = await self.session.scalar(
-            select(Transaction.id)
-            .join(
-                ReferralReward,
-                ReferralReward.source_transaction_id == Transaction.id,
-            )
+        # All reward mutation paths use Reward -> source Transaction ordering.
+        # Holding the reward row across the external side effect prevents the lease
+        # sweeper or an operator from changing its state mid-grant, while the source
+        # lock keeps a concurrent refund behind the completed grant.
+        reward = await self.session.scalar(
+            select(ReferralReward)
             .where(
                 ReferralReward.id == reward_id,
                 ReferralReward.state == ReferralRewardState.PROCESSING,
                 ReferralReward.processing_token_hash == token_hash,
-                Transaction.status == TransactionStatus.COMPLETED,
-                Transaction.fulfillment_status == TransactionFulfillmentStatus.SUCCEEDED,
             )
-            .with_for_update(of=Transaction)
+            .with_for_update()
+            .execution_options(populate_existing=True)
         )
-        if source_id is not None:
-            return True
+        if reward is None:
+            return False
+
+        if reward.source_transaction_id is not None:
+            source_id = await self.session.scalar(
+                select(Transaction.id)
+                .where(
+                    Transaction.id == reward.source_transaction_id,
+                    *paid_nontrial_referral_source_predicate(
+                        Transaction,
+                        include_refunded=False,
+                        include_legacy=False,
+                    ),
+                )
+                .with_for_update()
+            )
+            return source_id is not None
+
+        if reward.operator_recovery_manifest_sha256 is None:
+            return False
 
         operator_source = await self.session.scalar(
-            select(Transaction)
+            select(Transaction.id)
             .join(
                 ReferralRewardResolution,
                 ReferralRewardResolution.selected_source_transaction_id == Transaction.id,
             )
-            .join(
-                ReferralReward,
-                ReferralReward.id == ReferralRewardResolution.reward_id,
-            )
             .where(
-                ReferralReward.id == reward_id,
-                ReferralReward.state == ReferralRewardState.PROCESSING,
-                ReferralReward.processing_token_hash == token_hash,
-                ReferralReward.source_transaction_id.is_(None),
-                ReferralReward.operator_recovery_manifest_sha256.is_not(None),
+                ReferralRewardResolution.reward_id == reward_id,
                 ReferralRewardResolution.incident_version
-                == ReferralReward.manual_incident_version,
+                == reward.manual_incident_version,
                 ReferralRewardResolution.decision
                 == LegacyReferralRewardRecoveryAction.RETRY_OPERATOR_DIRECTED.value,
                 ReferralRewardResolution.authorization_manifest_sha256
-                == ReferralReward.operator_recovery_manifest_sha256,
+                == reward.operator_recovery_manifest_sha256,
                 *operator_directed_source_predicate(
                     ReferralRewardResolution,
                     Transaction,
