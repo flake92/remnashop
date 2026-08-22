@@ -1,11 +1,12 @@
 import asyncio
+from dataclasses import replace
 from datetime import timedelta
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from src.application.dto import ReferralRewardDto
+from src.application.dto import LegacyReferralRewardRecoveryDto, ReferralRewardDto
 from src.application.use_cases.referral.commands.attachment import (
     AttachReferral,
     AttachReferralDto,
@@ -15,11 +16,13 @@ from src.application.use_cases.referral.commands.rewards import (
     AssignReferralRewardsDto,
     GiveReferrerReward,
     GiveReferrerRewardDto,
+    RecoverLegacyReferralReward,
     ResolveManualReferralReward,
     ResolveManualReferralRewardDto,
     RetryPendingReferralRewards,
 )
 from src.core.enums import (
+    LegacyReferralRewardRecoveryAction,
     PurchaseType,
     ReferralAccrualStrategy,
     ReferralLevel,
@@ -44,6 +47,98 @@ class FakeUnitOfWork:
     async def __aexit__(self, exc_type: object, exc: object, traceback: object) -> None:
         if exc_type is not None:
             await self.rollback()
+
+
+def _legacy_recovery_dto(
+    action: LegacyReferralRewardRecoveryAction = (
+        LegacyReferralRewardRecoveryAction.RETRY_PROVEN_MISSING
+    ),
+) -> LegacyReferralRewardRecoveryDto:
+    has_policy = action == LegacyReferralRewardRecoveryAction.RETRY_PROVEN_MISSING
+    return LegacyReferralRewardRecoveryDto(
+        reward_id=8,
+        action=action,
+        expected_version=1,
+        source_transaction_id=77,
+        origin_referral_id=101,
+        level=ReferralLevel.FIRST,
+        expected_reward_amount=3,
+        accrual_strategy_snapshot=(
+            ReferralAccrualStrategy.ON_FIRST_PAYMENT if has_policy else None
+        ),
+        reward_strategy=ReferralRewardStrategy.AMOUNT if has_policy else None,
+        config_value=3 if has_policy else None,
+        operator_reference="OWNER/TICKET-123",
+        reason="Exact source and panel evidence prove the legacy outcome",
+        evidence_sha256="a" * 64,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "action",
+    [
+        LegacyReferralRewardRecoveryAction.RETRY_PROVEN_MISSING,
+        LegacyReferralRewardRecoveryAction.CONFIRM_ADMIN_COMPENSATED,
+    ],
+)
+async def test_legacy_recovery_commits_without_side_effects(
+    action: LegacyReferralRewardRecoveryAction,
+) -> None:
+    data = _legacy_recovery_dto(action)
+    uow = FakeUnitOfWork()
+    referral_dao = SimpleNamespace(recover_legacy_extra_days_reward=AsyncMock(return_value=True))
+    authorizer = SimpleNamespace(authorize=Mock(return_value="d" * 64))
+    use_case = RecoverLegacyReferralReward(uow, referral_dao, authorizer)  # type: ignore[arg-type]
+
+    await use_case._execute(SimpleNamespace(log="system"), data)  # type: ignore[arg-type]
+
+    referral_dao.recover_legacy_extra_days_reward.assert_awaited_once_with(
+        replace(data, authorization_manifest_sha256="d" * 64)
+    )
+    authorizer.authorize.assert_called_once_with(data)
+    uow.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_admin_compensation_rejects_invented_policy_snapshot() -> None:
+    data = replace(
+        _legacy_recovery_dto(LegacyReferralRewardRecoveryAction.CONFIRM_ADMIN_COMPENSATED),
+        accrual_strategy_snapshot=ReferralAccrualStrategy.ON_FIRST_PAYMENT,
+        reward_strategy=ReferralRewardStrategy.AMOUNT,
+        config_value=3,
+    )
+    referral_dao = SimpleNamespace(recover_legacy_extra_days_reward=AsyncMock())
+    authorizer = SimpleNamespace(authorize=Mock())
+    use_case = RecoverLegacyReferralReward(  # type: ignore[arg-type]
+        FakeUnitOfWork(),
+        referral_dao,
+        authorizer,
+    )
+
+    with pytest.raises(ValueError, match="must not invent"):
+        await use_case._execute(SimpleNamespace(log="system"), data)  # type: ignore[arg-type]
+
+    referral_dao.recover_legacy_extra_days_reward.assert_not_awaited()
+    authorizer.authorize.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_legacy_recovery_rejects_noncanonical_evidence_hash() -> None:
+    data = replace(_legacy_recovery_dto(), evidence_sha256="A" * 64)
+    referral_dao = SimpleNamespace(recover_legacy_extra_days_reward=AsyncMock())
+    authorizer = SimpleNamespace(authorize=Mock())
+    use_case = RecoverLegacyReferralReward(  # type: ignore[arg-type]
+        FakeUnitOfWork(),
+        referral_dao,
+        authorizer,
+    )
+
+    with pytest.raises(ValueError, match="lowercase SHA-256"):
+        await use_case._execute(SimpleNamespace(log="system"), data)  # type: ignore[arg-type]
+
+    referral_dao.recover_legacy_extra_days_reward.assert_not_awaited()
+    authorizer.authorize.assert_not_called()
 
 
 class FakeMutationLock:
@@ -235,7 +330,7 @@ async def test_missing_subscription_defers_without_repeated_failure_event() -> N
         defer_reward=AsyncMock(return_value=True),
     )
     publisher = SimpleNamespace(publish=AsyncMock())
-    remnawave = SimpleNamespace(update_user=AsyncMock())
+    remnawave = SimpleNamespace(reactivate_referral_expiry=AsyncMock())
     use_case = GiveReferrerReward(
         uow,
         SimpleNamespace(get_by_id=AsyncMock(return_value=SimpleNamespace(id=2, remna_name="r"))),
@@ -261,7 +356,7 @@ async def test_missing_subscription_defers_without_repeated_failure_event() -> N
 
     referral_dao.defer_reward.assert_awaited_once()
     publisher.publish.assert_not_awaited()
-    remnawave.update_user.assert_not_awaited()
+    remnawave.reactivate_referral_expiry.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -273,6 +368,8 @@ async def test_ambiguous_extra_days_is_not_retried_automatically() -> None:
         user_remna_id="remna-id",
         expire_at=baseline,
         is_trial=False,
+        status=SubscriptionStatus.ACTIVE,
+        disabled_by_channel_leave=False,
         current_status=SubscriptionStatus.ACTIVE,
     )
     fresh_subscription = SimpleNamespace(**subscription.__dict__)
@@ -283,11 +380,23 @@ async def test_ambiguous_extra_days_is_not_retried_automatically() -> None:
         cancel_claimed_reward=AsyncMock(),
     )
     publisher = SimpleNamespace(publish=AsyncMock())
-    remnawave = SimpleNamespace(update_user=AsyncMock(side_effect=TimeoutError("unknown")))
+    remnawave = SimpleNamespace(
+        reactivate_referral_expiry=AsyncMock(side_effect=TimeoutError("unknown")),
+        get_user_by_uuid=AsyncMock(
+            return_value=SimpleNamespace(
+                uuid="remna-id",
+                expire_at=baseline,
+                status=SubscriptionStatus.ACTIVE,
+            )
+        ),
+    )
     use_case = GiveReferrerReward(
         uow,
         SimpleNamespace(get_by_id=AsyncMock(return_value=SimpleNamespace(id=2, remna_name="r"))),
-        SimpleNamespace(get_current=AsyncMock(side_effect=[subscription, fresh_subscription])),
+        SimpleNamespace(
+            get_current=AsyncMock(side_effect=[subscription, fresh_subscription]),
+            update=AsyncMock(side_effect=lambda value: value),
+        ),
         referral_dao,
         publisher,
         remnawave,
@@ -313,7 +422,7 @@ async def test_ambiguous_extra_days_is_not_retried_automatically() -> None:
         baseline_expire_at=baseline,
         target_expire_at=baseline + timedelta(days=3),
     )
-    remnawave.update_user.assert_awaited_once()
+    remnawave.reactivate_referral_expiry.assert_awaited_once()
     referral_dao.mark_reward_manual_required.assert_awaited_once()
     assert (
         "EXTRA_DAYS_AMBIGUOUS"
@@ -331,6 +440,8 @@ async def test_extra_days_2xx_without_read_after_write_target_requires_manual_re
         user_remna_id="remna-id",
         expire_at=baseline,
         is_trial=False,
+        status=SubscriptionStatus.ACTIVE,
+        disabled_by_channel_leave=False,
         current_status=SubscriptionStatus.ACTIVE,
     )
     fresh_subscription = SimpleNamespace(**subscription.__dict__)
@@ -342,17 +453,28 @@ async def test_extra_days_2xx_without_read_after_write_target_requires_manual_re
         finish_extra_days_reward=AsyncMock(),
     )
 
-    async def update_user(**kwargs: object) -> SimpleNamespace:
-        value = kwargs["subscription"]
+    async def reactivate_referral_expiry(**kwargs: object) -> SimpleNamespace:
         return SimpleNamespace(
-            uuid=value.user_remna_id,  # type: ignore[union-attr]
-            expire_at=value.expire_at,  # type: ignore[union-attr]
+            uuid=kwargs["uuid"],
+            expire_at=kwargs["expire_at"],
+            status=SubscriptionStatus.ACTIVE,
         )
 
     remnawave = SimpleNamespace(
-        update_user=AsyncMock(side_effect=update_user),
+        reactivate_referral_expiry=AsyncMock(side_effect=reactivate_referral_expiry),
         get_user_by_uuid=AsyncMock(
-            return_value=SimpleNamespace(uuid="remna-id", expire_at=baseline)
+            side_effect=[
+                SimpleNamespace(
+                    uuid="remna-id",
+                    expire_at=baseline,
+                    status=SubscriptionStatus.ACTIVE,
+                ),
+                SimpleNamespace(
+                    uuid="remna-id",
+                    expire_at=baseline,
+                    status=SubscriptionStatus.ACTIVE,
+                ),
+            ]
         ),
     )
     use_case = GiveReferrerReward(
@@ -360,7 +482,7 @@ async def test_extra_days_2xx_without_read_after_write_target_requires_manual_re
         SimpleNamespace(get_by_id=AsyncMock(return_value=SimpleNamespace(id=2, remna_name="r"))),
         SimpleNamespace(
             get_current=AsyncMock(side_effect=[subscription, fresh_subscription]),
-            update=AsyncMock(),
+            update=AsyncMock(side_effect=lambda value: value),
         ),
         referral_dao,
         SimpleNamespace(publish=AsyncMock()),
@@ -394,11 +516,12 @@ def test_extra_days_expiry_verification_allows_panel_subsecond_normalization() -
 
 
 @pytest.mark.asyncio
-async def test_inactive_nontrial_subscription_waits_safely() -> None:
+async def test_unsafe_nontrial_subscription_waits_safely() -> None:
     uow = FakeUnitOfWork()
     subscription = SimpleNamespace(
         is_trial=False,
-        current_status=SubscriptionStatus.EXPIRED,
+        status=SubscriptionStatus.LIMITED,
+        disabled_by_channel_leave=False,
     )
     referral_dao = SimpleNamespace(defer_reward=AsyncMock(return_value=True))
     use_case = GiveReferrerReward(
@@ -407,7 +530,7 @@ async def test_inactive_nontrial_subscription_waits_safely() -> None:
         SimpleNamespace(get_current=AsyncMock(return_value=subscription)),
         referral_dao,
         SimpleNamespace(publish=AsyncMock()),
-        SimpleNamespace(update_user=AsyncMock()),
+        SimpleNamespace(reactivate_referral_expiry=AsyncMock()),
         FakeMutationLock(),  # type: ignore[arg-type]
     )
     reward = ReferralRewardDto(
@@ -424,9 +547,239 @@ async def test_inactive_nontrial_subscription_waits_safely() -> None:
     )
 
     assert (
-        referral_dao.defer_reward.await_args.kwargs["error_code"]
-        == "RECIPIENT_SUBSCRIPTION_INACTIVE"
+        referral_dao.defer_reward.await_args.kwargs["error_code"] == "RECIPIENT_SUBSCRIPTION_UNSAFE"
     )
+
+
+@pytest.mark.parametrize(
+    ("status", "is_trial", "channel_disabled", "expected"),
+    [
+        (SubscriptionStatus.ACTIVE, False, False, True),
+        (SubscriptionStatus.EXPIRED, False, False, True),
+        (SubscriptionStatus.DISABLED, False, False, False),
+        (SubscriptionStatus.LIMITED, False, False, False),
+        (SubscriptionStatus.DELETED, False, False, False),
+        (SubscriptionStatus.ACTIVE, True, False, False),
+        (SubscriptionStatus.ACTIVE, False, True, False),
+    ],
+)
+def test_extra_days_subscription_safety_gate(
+    status: SubscriptionStatus,
+    is_trial: bool,
+    channel_disabled: bool,
+    expected: bool,
+) -> None:
+    subscription = SimpleNamespace(
+        status=status,
+        is_trial=is_trial,
+        disabled_by_channel_leave=channel_disabled,
+    )
+
+    assert GiveReferrerReward._is_safe_extra_days_subscription(subscription) is expected
+
+
+@pytest.mark.asyncio
+async def test_expired_paid_subscription_is_reactivated_from_now(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixed_now = datetime_now()
+    monkeypatch.setattr(
+        "src.application.use_cases.referral.commands.rewards.datetime_now",
+        lambda: fixed_now,
+    )
+    baseline = fixed_now - timedelta(days=10)
+    target = fixed_now + timedelta(days=3)
+    subscription = SimpleNamespace(
+        id=41,
+        user_remna_id="remna-id",
+        expire_at=baseline,
+        is_trial=False,
+        status=SubscriptionStatus.EXPIRED,
+        disabled_by_channel_leave=False,
+    )
+    fresh_subscription = SimpleNamespace(**subscription.__dict__)
+    events: list[str] = []
+
+    async def update_local(value: SimpleNamespace) -> SimpleNamespace:
+        events.append("local")
+        assert value.status == SubscriptionStatus.ACTIVE
+        assert value.expire_at == target
+        return value
+
+    async def update_remote(**kwargs: object) -> SimpleNamespace:
+        events.append("remote")
+        assert kwargs == {
+            "user_id": 2,
+            "uuid": "remna-id",
+            "expire_at": target,
+        }
+        return SimpleNamespace(
+            uuid="remna-id",
+            expire_at=target,
+            status=SubscriptionStatus.ACTIVE,
+        )
+
+    referral_dao = SimpleNamespace(
+        set_extra_days_target=AsyncMock(return_value=True),
+        lock_reward_source_if_eligible=AsyncMock(return_value=True),
+        cancel_claimed_reward=AsyncMock(),
+        finish_extra_days_reward=AsyncMock(return_value=True),
+        mark_reward_manual_required=AsyncMock(),
+    )
+    subscription_dao = SimpleNamespace(
+        get_current=AsyncMock(side_effect=[subscription, fresh_subscription]),
+        update=AsyncMock(side_effect=update_local),
+    )
+    remnawave = SimpleNamespace(
+        reactivate_referral_expiry=AsyncMock(side_effect=update_remote),
+        update_user=AsyncMock(),
+        get_user_by_uuid=AsyncMock(
+            side_effect=[
+                SimpleNamespace(
+                    uuid="remna-id",
+                    expire_at=baseline,
+                    status="EXPIRED",
+                ),
+                SimpleNamespace(
+                    uuid="remna-id",
+                    expire_at=target,
+                    status="ACTIVE",
+                ),
+            ]
+        ),
+    )
+    use_case = GiveReferrerReward(
+        FakeUnitOfWork(),  # type: ignore[arg-type]
+        SimpleNamespace(
+            get_by_id=AsyncMock(return_value=SimpleNamespace(id=2, remna_name="recipient"))
+        ),
+        subscription_dao,
+        referral_dao,
+        SimpleNamespace(publish=AsyncMock()),
+        remnawave,
+        FakeMutationLock(),  # type: ignore[arg-type]
+    )
+
+    await use_case._execute(  # type: ignore[arg-type]
+        SimpleNamespace(log="system"),
+        GiveReferrerRewardDto(
+            2,
+            ReferralRewardDto(
+                id=8,
+                user_id=2,
+                type=ReferralRewardType.EXTRA_DAYS,
+                amount=3,
+                state=ReferralRewardState.PROCESSING,
+            ),
+            "payer",
+            "t" * 64,
+        ),
+    )
+
+    referral_dao.set_extra_days_target.assert_awaited_once_with(
+        8,
+        token_hash="t" * 64,
+        subscription_id=41,
+        baseline_expire_at=baseline,
+        target_expire_at=target,
+    )
+    assert events == ["local", "remote"]
+    assert fresh_subscription.status == SubscriptionStatus.ACTIVE
+    assert fresh_subscription.expire_at == target
+    referral_dao.finish_extra_days_reward.assert_awaited_once()
+    referral_dao.mark_reward_manual_required.assert_not_awaited()
+    remnawave.update_user.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_extra_days_remote_baseline_drift_manualizes_without_external_update() -> None:
+    baseline = datetime_now() + timedelta(days=10)
+    subscription = SimpleNamespace(
+        id=41,
+        user_remna_id="remna-id",
+        expire_at=baseline,
+        is_trial=False,
+        status=SubscriptionStatus.ACTIVE,
+        disabled_by_channel_leave=False,
+    )
+    fresh_subscription = SimpleNamespace(**subscription.__dict__)
+    referral_dao = SimpleNamespace(
+        set_extra_days_target=AsyncMock(return_value=True),
+        lock_reward_source_if_eligible=AsyncMock(return_value=True),
+        cancel_claimed_reward=AsyncMock(),
+        finish_extra_days_reward=AsyncMock(),
+        mark_reward_manual_required=AsyncMock(return_value=True),
+    )
+    subscription_dao = SimpleNamespace(
+        get_current=AsyncMock(side_effect=[subscription, fresh_subscription]),
+        update=AsyncMock(),
+    )
+    remnawave = SimpleNamespace(
+        get_user_by_uuid=AsyncMock(
+            return_value=SimpleNamespace(
+                uuid="remna-id",
+                expire_at=baseline + timedelta(days=1),
+                status=SubscriptionStatus.ACTIVE,
+            )
+        ),
+        reactivate_referral_expiry=AsyncMock(),
+    )
+    use_case = GiveReferrerReward(
+        FakeUnitOfWork(),  # type: ignore[arg-type]
+        SimpleNamespace(
+            get_by_id=AsyncMock(return_value=SimpleNamespace(id=2, remna_name="recipient"))
+        ),
+        subscription_dao,
+        referral_dao,
+        SimpleNamespace(publish=AsyncMock()),
+        remnawave,
+        FakeMutationLock(),  # type: ignore[arg-type]
+    )
+
+    await use_case._execute(  # type: ignore[arg-type]
+        SimpleNamespace(log="system"),
+        GiveReferrerRewardDto(
+            2,
+            ReferralRewardDto(
+                id=8,
+                user_id=2,
+                type=ReferralRewardType.EXTRA_DAYS,
+                amount=3,
+                state=ReferralRewardState.PROCESSING,
+            ),
+            "payer",
+            "t" * 64,
+        ),
+    )
+
+    referral_dao.mark_reward_manual_required.assert_awaited_once_with(
+        8,
+        token_hash="t" * 64,
+        error_code="REMOTE_BASELINE_DRIFT",
+    )
+    subscription_dao.update.assert_not_awaited()
+    remnawave.reactivate_referral_expiry.assert_not_awaited()
+    referral_dao.finish_extra_days_reward.assert_not_awaited()
+
+
+def test_extra_days_read_after_write_requires_active_remote_status() -> None:
+    target = datetime_now() + timedelta(days=3)
+
+    with pytest.raises(RuntimeError, match="target mismatch"):
+        GiveReferrerReward._verify_extra_days_target(
+            expected_uuid="remna-id",
+            expected_expire_at=target,
+            update_response=SimpleNamespace(
+                uuid="remna-id",
+                expire_at=target,
+                status="ACTIVE",
+            ),
+            observed=SimpleNamespace(
+                uuid="remna-id",
+                expire_at=target,
+                status="EXPIRED",
+            ),
+        )
 
 
 @pytest.mark.asyncio
@@ -437,6 +790,8 @@ async def test_parallel_extra_days_grants_are_serialized_and_additive() -> None:
         user_remna_id="remna-id",
         expire_at=baseline,
         is_trial=False,
+        status=SubscriptionStatus.ACTIVE,
+        disabled_by_channel_leave=False,
         current_status=SubscriptionStatus.ACTIVE,
     )
     subscription_dao = SimpleNamespace(
@@ -452,17 +807,21 @@ async def test_parallel_extra_days_grants_are_serialized_and_additive() -> None:
 
     async def delayed_update(**kwargs: object) -> SimpleNamespace:
         await asyncio.sleep(0.01)
-        value = kwargs["subscription"]
         return SimpleNamespace(
-            uuid=value.user_remna_id,  # type: ignore[union-attr]
-            expire_at=value.expire_at,  # type: ignore[union-attr]
+            uuid=kwargs["uuid"],
+            expire_at=kwargs["expire_at"],
+            status=SubscriptionStatus.ACTIVE,
         )
 
     async def get_remote(uuid: object) -> SimpleNamespace:
-        return SimpleNamespace(uuid=uuid, expire_at=subscription.expire_at)
+        return SimpleNamespace(
+            uuid=uuid,
+            expire_at=subscription.expire_at,
+            status=SubscriptionStatus.ACTIVE,
+        )
 
     remnawave = SimpleNamespace(
-        update_user=AsyncMock(side_effect=delayed_update),
+        reactivate_referral_expiry=AsyncMock(side_effect=delayed_update),
         get_user_by_uuid=AsyncMock(side_effect=get_remote),
     )
     mutation_lock = SerialMutationLock()
@@ -674,6 +1033,7 @@ async def test_operator_resolution_records_decision_without_replaying_reward() -
         observed_remote_uuid=None,
         observed_expire_at=None,
         source_status=None,
+        ack_admin_compensated_refund=False,
     )
     uow.commit.assert_awaited_once()
 
@@ -858,7 +1218,6 @@ async def test_operator_confirm_extra_days_verifies_remote_and_repairs_local_exp
         get_current=AsyncMock(return_value=subscription),
         update=AsyncMock(side_effect=lambda value: value),
     )
-    renewed_target = target + timedelta(days=5)
     use_case = ResolveManualReferralReward(
         FakeUnitOfWork(),  # type: ignore[arg-type]
         referral_dao,
@@ -868,7 +1227,7 @@ async def test_operator_confirm_extra_days_verifies_remote_and_repairs_local_exp
             get_user_by_uuid=AsyncMock(
                 return_value=SimpleNamespace(
                     uuid="remna-id",
-                    expire_at=renewed_target,
+                    expire_at=target,
                 )
             )
         ),
@@ -886,8 +1245,69 @@ async def test_operator_confirm_extra_days_verifies_remote_and_repairs_local_exp
         ),
     )
 
-    assert subscription.expire_at == renewed_target
+    assert subscription.expire_at == target
     subscription_dao.update.assert_awaited_once_with(subscription)
+
+
+@pytest.mark.asyncio
+async def test_operator_confirm_extra_days_rejects_later_expiry_without_drift_override() -> None:
+    baseline = datetime_now() + timedelta(days=10)
+    target = baseline + timedelta(days=3)
+    reward = ReferralRewardDto(
+        id=8,
+        user_id=2,
+        type=ReferralRewardType.EXTRA_DAYS,
+        amount=3,
+        state=ReferralRewardState.MANUAL_REQUIRED,
+        target_subscription_id=41,
+        baseline_expire_at=baseline,
+        target_expire_at=target,
+    )
+    referral_dao = SimpleNamespace(
+        get_reward_by_id=AsyncMock(side_effect=[reward, reward]),
+        manual_resolution_match=AsyncMock(return_value=None),
+        resolve_manual_reward=AsyncMock(),
+    )
+    subscription_dao = SimpleNamespace(
+        get_current=AsyncMock(
+            return_value=SimpleNamespace(
+                id=41,
+                user_remna_id="remna-id",
+                expire_at=baseline,
+            )
+        ),
+        update=AsyncMock(),
+    )
+    use_case = ResolveManualReferralReward(
+        FakeUnitOfWork(),  # type: ignore[arg-type]
+        referral_dao,
+        SimpleNamespace(get_by_id=AsyncMock(return_value=SimpleNamespace(id=2))),
+        subscription_dao,
+        SimpleNamespace(
+            get_user_by_uuid=AsyncMock(
+                return_value=SimpleNamespace(
+                    uuid="remna-id",
+                    expire_at=target + timedelta(days=5),
+                )
+            )
+        ),
+        FakeMutationLock(),  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(ValueError, match="does not match the durable target evidence"):
+        await use_case._execute(  # type: ignore[arg-type]
+            SimpleNamespace(log="operator"),
+            ResolveManualReferralRewardDto(
+                reward_id=8,
+                expected_version=0,
+                confirm_issued=True,
+                operator_reference="alice/TICKET-123",
+                reason="Current expiry includes a later renewal",
+            ),
+        )
+
+    subscription_dao.update.assert_not_awaited()
+    referral_dao.resolve_manual_reward.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1074,6 +1494,7 @@ async def test_operator_drift_override_snapshots_remote_evidence_and_syncs_curre
         observed_remote_uuid="replacement-remna-id",
         observed_expire_at=observed_expiry,
         source_status=None,
+        ack_admin_compensated_refund=False,
     )
 
 
@@ -1121,6 +1542,224 @@ async def test_operator_resolution_identical_retry_skips_remote_drift_check() ->
         resolved_by="ADMIN_API",
         reason="Verified remote target",
         allow_drift=True,
+        ack_admin_compensated_refund=False,
     )
     remnawave.get_user_by_uuid.assert_not_awaited()
+    referral_dao.resolve_manual_reward.assert_not_awaited()
+
+
+def _unapplied_admin_earlier_reward() -> ReferralRewardDto:
+    return ReferralRewardDto(
+        id=1500,
+        user_id=2,
+        referral_id=101,
+        source_transaction_id=9000,
+        origin_referral_id=101,
+        level=ReferralLevel.FIRST,
+        type=ReferralRewardType.EXTRA_DAYS,
+        amount=14,
+        state=ReferralRewardState.MANUAL_REQUIRED,
+        accrual_strategy_snapshot=ReferralAccrualStrategy.ON_FIRST_PAYMENT,
+        accrual_strategy=None,
+        reward_strategy=ReferralRewardStrategy.AMOUNT,
+        config_value=14,
+        manual_incident_version=1,
+        manual_cause="ADMIN_COMPENSATED_EARLIER_PAYMENT",
+        last_error="ADMIN_COMPENSATED_EARLIER_PAYMENT",
+    )
+
+
+@pytest.mark.asyncio
+async def test_operator_can_cancel_unapplied_admin_earlier_reward_without_remote_probe() -> None:
+    reward = _unapplied_admin_earlier_reward()
+    referral_dao = SimpleNamespace(
+        get_reward_by_id=AsyncMock(side_effect=[reward, reward]),
+        manual_resolution_match=AsyncMock(return_value=None),
+        lock_manual_reward_source_status=AsyncMock(return_value=TransactionStatus.COMPLETED),
+        resolve_manual_reward=AsyncMock(return_value=True),
+    )
+    subscription_dao = SimpleNamespace(get_current=AsyncMock(), update=AsyncMock())
+    remnawave = SimpleNamespace(get_user_by_uuid=AsyncMock())
+    use_case = ResolveManualReferralReward(
+        FakeUnitOfWork(),  # type: ignore[arg-type]
+        referral_dao,
+        SimpleNamespace(),
+        subscription_dao,
+        remnawave,
+        FakeMutationLock(),  # type: ignore[arg-type]
+    )
+
+    await use_case._execute(  # type: ignore[arg-type]
+        SimpleNamespace(log="operator"),
+        ResolveManualReferralRewardDto(
+            reward_id=1500,
+            expected_version=1,
+            confirm_issued=False,
+            operator_reference="INC-REF/FUTURE-CANCEL",
+            reason="Earlier ADMIN-compensated payment already consumed ON_FIRST eligibility",
+        ),
+    )
+
+    subscription_dao.get_current.assert_not_awaited()
+    remnawave.get_user_by_uuid.assert_not_awaited()
+    referral_dao.resolve_manual_reward.assert_awaited_once_with(
+        1500,
+        expected_version=1,
+        confirm_issued=False,
+        operator_reference="INC-REF/FUTURE-CANCEL",
+        resolved_by="ADMIN_API",
+        reason="Earlier ADMIN-compensated payment already consumed ON_FIRST eligibility",
+        allow_drift=False,
+        observed_subscription_id=None,
+        observed_remote_uuid=None,
+        observed_expire_at=None,
+        source_status=TransactionStatus.COMPLETED,
+        ack_admin_compensated_refund=False,
+    )
+
+
+@pytest.mark.asyncio
+async def test_targetless_extra_days_cancel_remains_closed_for_other_causes() -> None:
+    reward = replace(
+        _unapplied_admin_earlier_reward(),
+        manual_cause="OTHER_AMBIGUITY",
+        last_error="OTHER_AMBIGUITY",
+    )
+    referral_dao = SimpleNamespace(
+        get_reward_by_id=AsyncMock(side_effect=[reward, reward]),
+        manual_resolution_match=AsyncMock(return_value=None),
+        lock_manual_reward_source_status=AsyncMock(return_value=TransactionStatus.COMPLETED),
+        resolve_manual_reward=AsyncMock(),
+    )
+    use_case = ResolveManualReferralReward(
+        FakeUnitOfWork(),  # type: ignore[arg-type]
+        referral_dao,
+        SimpleNamespace(),
+        SimpleNamespace(),
+        SimpleNamespace(),
+        FakeMutationLock(),  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(ValueError, match="no durable target"):
+        await use_case._execute(  # type: ignore[arg-type]
+            SimpleNamespace(log="operator"),
+            ResolveManualReferralRewardDto(
+                reward_id=1500,
+                expected_version=1,
+                confirm_issued=False,
+                operator_reference="INC-REF/INVALID-CANCEL",
+                reason="Must not bypass external reconciliation for another cause",
+            ),
+        )
+
+    referral_dao.resolve_manual_reward.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_operator_acknowledges_exact_admin_compensation_refund_without_side_effect() -> None:
+    detected_at = datetime_now()
+    reward = ReferralRewardDto(
+        id=398,
+        user_id=2,
+        type=ReferralRewardType.EXTRA_DAYS,
+        amount=14,
+        state=ReferralRewardState.MANUAL_REQUIRED,
+        is_issued=True,
+        issued_at=detected_at - timedelta(days=1),
+        manual_incident_version=2,
+        manual_cause="SOURCE_REFUNDED_AFTER_REWARD_ISSUANCE",
+        refund_detected_at=detected_at,
+    )
+    referral_dao = SimpleNamespace(
+        get_reward_by_id=AsyncMock(side_effect=[reward, reward]),
+        manual_resolution_match=AsyncMock(return_value=None),
+        lock_manual_reward_source_status=AsyncMock(return_value=TransactionStatus.REFUNDED),
+        resolve_manual_reward=AsyncMock(return_value=True),
+    )
+    subscription_dao = SimpleNamespace(get_current=AsyncMock(), update=AsyncMock())
+    remnawave = SimpleNamespace(get_user_by_uuid=AsyncMock())
+    uow = FakeUnitOfWork()
+    use_case = ResolveManualReferralReward(
+        uow,
+        referral_dao,
+        SimpleNamespace(),
+        subscription_dao,
+        remnawave,
+        FakeMutationLock(),  # type: ignore[arg-type]
+    )
+
+    await use_case._execute(  # type: ignore[arg-type]
+        SimpleNamespace(log="operator"),
+        ResolveManualReferralRewardDto(
+            reward_id=398,
+            expected_version=2,
+            confirm_issued=False,
+            operator_reference="INC-REF-20260822/REFUND-RR-398",
+            reason="Acknowledged later refund after independently proven OWNER coverage",
+            ack_admin_compensated_refund=True,
+        ),
+    )
+
+    referral_dao.lock_manual_reward_source_status.assert_awaited_once_with(398)
+    referral_dao.resolve_manual_reward.assert_awaited_once_with(
+        398,
+        expected_version=2,
+        confirm_issued=False,
+        operator_reference="INC-REF-20260822/REFUND-RR-398",
+        resolved_by="ADMIN_API",
+        reason="Acknowledged later refund after independently proven OWNER coverage",
+        allow_drift=False,
+        observed_subscription_id=None,
+        observed_remote_uuid=None,
+        observed_expire_at=None,
+        source_status=TransactionStatus.REFUNDED,
+        ack_admin_compensated_refund=True,
+    )
+    subscription_dao.get_current.assert_not_awaited()
+    remnawave.get_user_by_uuid.assert_not_awaited()
+    uow.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_admin_compensation_refund_ack_fails_closed_if_source_is_not_refunded() -> None:
+    reward = ReferralRewardDto(
+        id=398,
+        user_id=2,
+        type=ReferralRewardType.EXTRA_DAYS,
+        amount=14,
+        state=ReferralRewardState.MANUAL_REQUIRED,
+        is_issued=True,
+        issued_at=datetime_now() - timedelta(days=1),
+        manual_incident_version=2,
+        manual_cause="SOURCE_REFUNDED_AFTER_REWARD_ISSUANCE",
+        refund_detected_at=datetime_now(),
+    )
+    referral_dao = SimpleNamespace(
+        get_reward_by_id=AsyncMock(side_effect=[reward, reward]),
+        manual_resolution_match=AsyncMock(return_value=None),
+        lock_manual_reward_source_status=AsyncMock(return_value=TransactionStatus.COMPLETED),
+        resolve_manual_reward=AsyncMock(),
+    )
+    use_case = ResolveManualReferralReward(
+        FakeUnitOfWork(),  # type: ignore[arg-type]
+        referral_dao,
+        SimpleNamespace(),
+        SimpleNamespace(),
+        SimpleNamespace(),
+        FakeMutationLock(),  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(ValueError, match="not currently refunded"):
+        await use_case._execute(  # type: ignore[arg-type]
+            SimpleNamespace(log="operator"),
+            ResolveManualReferralRewardDto(
+                reward_id=398,
+                expected_version=2,
+                confirm_issued=False,
+                operator_reference="INC-REF-20260822/REFUND-RR-398",
+                reason="Refund acknowledgment",
+                ack_admin_compensated_refund=True,
+            ),
+        )
+
     referral_dao.resolve_manual_reward.assert_not_awaited()

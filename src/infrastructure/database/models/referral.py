@@ -13,6 +13,8 @@ from src.core.enums import (
     ReferralRewardType,
 )
 from src.infrastructure.database.constraints import (
+    REFERRAL_REWARD_RESOLUTIONS_DECISION_CONSTRAINT_NAME,
+    REFERRAL_REWARD_RESOLUTIONS_DECISION_CONSTRAINT_SQL,
     REFERRAL_REWARDS_DURABLE_STATE_CONSTRAINT_NAME,
     REFERRAL_REWARDS_DURABLE_STATE_CONSTRAINT_SQL,
 )
@@ -176,13 +178,22 @@ class ReferralRewardResolution(BaseSql, TimestampMixin):
     __tablename__ = "referral_reward_resolutions"
     __table_args__ = (
         CheckConstraint(
-            "decision IN ('CONFIRM_ISSUED', 'CANCEL')",
-            name="ck_referral_reward_resolutions_decision",
+            REFERRAL_REWARD_RESOLUTIONS_DECISION_CONSTRAINT_SQL,
+            name=REFERRAL_REWARD_RESOLUTIONS_DECISION_CONSTRAINT_NAME,
         ),
         UniqueConstraint(
             "reward_id",
             "incident_version",
             name="uq_referral_reward_resolutions_reward_incident",
+        ),
+        Index(
+            "uq_referral_reward_resolutions_recovery_source_level",
+            "selected_source_transaction_id",
+            "selected_level",
+            unique=True,
+            postgresql_where=text(
+                "decision IN ('RETRY_PROVEN_MISSING', 'CONFIRM_ADMIN_COMPENSATED')"
+            ),
         ),
     )
 
@@ -201,6 +212,18 @@ class ReferralRewardResolution(BaseSql, TimestampMixin):
     observed_remote_uuid: Mapped[Optional[str]] = mapped_column(String(64))
     observed_expire_at: Mapped[Optional[datetime]]
     source_status: Mapped[Optional[str]] = mapped_column(String(32))
+    selected_provenance: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB)
+    evidence_sha256: Mapped[Optional[str]] = mapped_column(String(64))
+    selected_source_transaction_id: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey("transactions.id", ondelete="RESTRICT"),
+    )
+    selected_origin_referral_id: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey("referrals.id", ondelete="RESTRICT"),
+    )
+    selected_level: Mapped[Optional[ReferralLevel]]
+    authorization_manifest_sha256: Mapped[Optional[str]] = mapped_column(String(64))
     resolved_at: Mapped[datetime] = mapped_column(server_default=NOW_FUNC)
 
     reward: Mapped["ReferralReward"] = relationship(lazy="selectin")

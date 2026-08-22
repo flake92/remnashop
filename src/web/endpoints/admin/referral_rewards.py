@@ -3,15 +3,22 @@ from dishka.integrations.fastapi import inject
 from fastapi import APIRouter, HTTPException, Security, status
 
 from src.application.common.dao import ReferralDao
-from src.application.dto import ReferralRewardDto
+from src.application.dto import LegacyReferralRewardRecoveryDto, ReferralRewardDto
 from src.application.use_cases.referral.commands.backfill import (
     HistoricalReferralBackfillUnavailableError,
     HistoricalReferralRewardBackfillDto,
     ManageHistoricalReferralRewards,
 )
 from src.application.use_cases.referral.commands.rewards import (
+    RecoverLegacyReferralReward,
     ResolveManualReferralReward,
     ResolveManualReferralRewardDto,
+)
+from src.core.enums import (
+    LegacyReferralRewardRecoveryAction,
+    ReferralAccrualStrategy,
+    ReferralLevel,
+    ReferralRewardStrategy,
 )
 from src.web.dependencies import require_api_key
 from src.web.schemas import (
@@ -20,6 +27,7 @@ from src.web.schemas import (
     HistoricalReferralBackfillInventoryResponse,
     HistoricalReferralBackfillPreviewRequest,
     HistoricalReferralBackfillPreviewResponse,
+    LegacyReferralRewardRecoveryRequest,
     ManualReferralRewardResponse,
     ResolveManualReferralRewardRequest,
 )
@@ -31,9 +39,12 @@ router = APIRouter(
 
 
 def _manual_response(reward: ReferralRewardDto) -> ManualReferralRewardResponse:
+    if reward.referral_id is None:
+        raise RuntimeError(f"Referral reward '{reward.id}' has no referral_id")
     return ManualReferralRewardResponse(
         id=reward.id,
         user_id=reward.user_id,
+        referral_id=reward.referral_id,
         source_transaction_id=reward.source_transaction_id,
         origin_referral_id=reward.origin_referral_id,
         level=reward.level.value if reward.level else None,
@@ -59,9 +70,13 @@ def _manual_response(reward: ReferralRewardDto) -> ManualReferralRewardResponse:
 @inject
 async def list_manual_referral_rewards(
     referral_dao: FromDishka[ReferralDao],
+    limit: int = 100,
+    offset: int = 0,
     _: None = Security(require_api_key),
 ) -> list[ManualReferralRewardResponse]:
-    rewards = await referral_dao.get_manual_required_rewards(limit=100)
+    if not 1 <= limit <= 500 or offset < 0:
+        raise HTTPException(status_code=422, detail="Invalid manual reward pagination")
+    rewards = await referral_dao.get_manual_required_rewards(limit=limit, offset=offset)
     return [_manual_response(reward) for reward in rewards]
 
 
@@ -165,6 +180,51 @@ async def resolve_manual_referral_reward(
                 operator_reference=body.operator_reference,
                 reason=body.reason,
                 allow_drift=body.allow_drift,
+                ack_admin_compensated_refund=(body.resolution == "ACK_ADMIN_COMPENSATED_REFUND"),
+            )
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+
+
+@router.post(
+    "/{reward_id}/recover-legacy",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+@inject
+async def recover_legacy_referral_reward(
+    reward_id: int,
+    body: LegacyReferralRewardRecoveryRequest,
+    recover_reward: FromDishka[RecoverLegacyReferralReward],
+    _: None = Security(require_api_key),
+) -> None:
+    try:
+        await recover_reward.system(
+            LegacyReferralRewardRecoveryDto(
+                reward_id=reward_id,
+                action=LegacyReferralRewardRecoveryAction(body.action),
+                expected_version=body.expected_version,
+                source_transaction_id=body.source_transaction_id,
+                origin_referral_id=body.origin_referral_id,
+                level=ReferralLevel(body.level),
+                expected_reward_amount=body.expected_reward_amount,
+                accrual_strategy_snapshot=(
+                    ReferralAccrualStrategy(body.accrual_strategy_snapshot)
+                    if body.accrual_strategy_snapshot is not None
+                    else None
+                ),
+                reward_strategy=(
+                    ReferralRewardStrategy(body.reward_strategy)
+                    if body.reward_strategy is not None
+                    else None
+                ),
+                config_value=body.config_value,
+                operator_reference=body.operator_reference,
+                reason=body.reason,
+                evidence_sha256=body.evidence_sha256,
             )
         )
     except ValueError as exc:

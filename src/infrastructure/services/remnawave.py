@@ -152,6 +152,31 @@ class RemnawaveImpl(Remnawave):
 
         return remna_user
 
+    async def reactivate_referral_expiry(
+        self,
+        *,
+        user_id: int,
+        uuid: UUID,
+        expire_at: datetime,
+    ) -> UserResponseDto:
+        """Apply the narrow EXTRA_DAYS patch without clobbering remote-only fields."""
+
+        async with self.subscription_mutation_lock.hold(user_id):
+            request_dto = UpdateUserRequestDto(
+                uuid=uuid,
+                expire_at=expire_at,
+                status=SubscriptionStatus.ACTIVE,
+            )
+            expected_fields = {"uuid", "expire_at", "status"}
+            if request_dto.model_fields_set != expected_fields:
+                raise RuntimeError("Unsafe Remnawave referral expiry request shape")
+            remna_user = await self.sdk.users.update_user(request_dto)
+            logger.info(
+                f"Reactivated referral expiry for RemnaUser '{uuid}' through "
+                "a narrow UUID/status/expiry patch"
+            )
+            return remna_user
+
     async def apply_grace(
         self,
         uuid: UUID,

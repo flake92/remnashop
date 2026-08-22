@@ -3,6 +3,37 @@
 from typing import Final
 
 REFERRAL_REWARDS_DURABLE_STATE_CONSTRAINT_NAME: Final[str] = "ck_referral_rewards_durable_state"
+REFERRAL_REWARD_RESOLUTIONS_DECISION_CONSTRAINT_NAME: Final[str] = (
+    "ck_referral_reward_resolutions_decision"
+)
+REFERRAL_REWARD_RESOLUTIONS_DECISION_CONSTRAINT_SQL: Final[str] = (
+    "decision IN ('CONFIRM_ISSUED', 'CANCEL', 'RETRY_PROVEN_MISSING', "
+    "'CONFIRM_ADMIN_COMPENSATED', 'ACK_ADMIN_COMPENSATED_REFUND') AND "
+    "((decision IN ('RETRY_PROVEN_MISSING', 'CONFIRM_ADMIN_COMPENSATED') "
+    "AND selected_provenance IS NOT NULL "
+    "AND jsonb_typeof(selected_provenance) = 'object' "
+    "AND evidence_sha256 IS NOT NULL "
+    "AND evidence_sha256 ~ '^[0-9a-f]{64}$' "
+    "AND selected_source_transaction_id IS NOT NULL "
+    "AND selected_origin_referral_id IS NOT NULL "
+    "AND selected_level IS NOT NULL "
+    "AND authorization_manifest_sha256 IS NOT NULL "
+    "AND authorization_manifest_sha256 ~ '^[0-9a-f]{64}$') OR "
+    "(decision = 'ACK_ADMIN_COMPENSATED_REFUND' "
+    "AND selected_provenance IS NULL AND evidence_sha256 IS NULL "
+    "AND selected_source_transaction_id IS NOT NULL "
+    "AND selected_origin_referral_id IS NOT NULL "
+    "AND selected_level IS NOT NULL "
+    "AND authorization_manifest_sha256 IS NOT NULL "
+    "AND authorization_manifest_sha256 ~ '^[0-9a-f]{64}$' "
+    "AND source_status = 'REFUNDED' AND NOT allow_drift) OR "
+    "(decision IN ('CONFIRM_ISSUED', 'CANCEL') "
+    "AND selected_provenance IS NULL AND evidence_sha256 IS NULL "
+    "AND selected_source_transaction_id IS NULL "
+    "AND selected_origin_referral_id IS NULL "
+    "AND selected_level IS NULL "
+    "AND authorization_manifest_sha256 IS NULL))"
+)
 REFERRAL_REWARDS_DURABLE_STATE_CONSTRAINT_SQL: Final[str] = (
     "((state = 'ISSUED' AND is_issued AND issued_at IS NOT NULL "
     "AND processing_token_hash IS NULL AND processing_lease_expires_at IS NULL) OR "

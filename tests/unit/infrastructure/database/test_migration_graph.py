@@ -24,14 +24,14 @@ def test_migration_graph_is_unique_linear_and_preserves_production_0050_path() -
     revision_ids = [revision.revision for revision in revisions]
 
     assert len(revision_ids) == len(set(revision_ids))
-    assert scripts.get_heads() == ["0053"]
+    assert scripts.get_heads() == ["0054"]
     assert scripts.get_revision("0046").path.endswith("0046_add_password_reset_attempts.py")
     assert scripts.get_revision("0046_user_merge").down_revision == "0046"
     assert scripts.get_revision("0047").down_revision == "0046_user_merge"
 
     # Production already has the old integration meaning of 0050. Its forward
     # path must not replay user-merge/payment DDL from 0046_user_merge..0050.
-    current = "0053"
+    current = "0054"
     production_upgrade_path: list[str] = []
     while current != "0050":
         production_upgrade_path.append(current)
@@ -39,15 +39,14 @@ def test_migration_graph_is_unique_linear_and_preserves_production_0050_path() -
         assert isinstance(down_revision, str)
         current = down_revision
 
-    assert production_upgrade_path == ["0053", "0052", "0051"]
+    assert production_upgrade_path == ["0054", "0053", "0052", "0051"]
 
 
 def test_0053_reconciles_password_attempts_without_breaking_old_app_rollback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     migration = importlib.import_module(
-        "src.infrastructure.database.migrations.versions."
-        "0053_reconcile_password_reset_attempts"
+        "src.infrastructure.database.migrations.versions.0053_reconcile_password_reset_attempts"
     )
     statements: list[str] = []
     monkeypatch.setattr(migration.op, "execute", statements.append)

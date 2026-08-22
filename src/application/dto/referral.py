@@ -3,6 +3,7 @@ from datetime import datetime
 from typing import Any, Optional
 
 from src.core.enums import (
+    LegacyReferralRewardRecoveryAction,
     ReferralAccrualStrategy,
     ReferralLevel,
     ReferralRewardState,
@@ -29,6 +30,7 @@ class ReferralRewardDto(BaseDto, TrackableMixin, TimestampMixin):
     type: ReferralRewardType
     amount: int
     is_issued: bool = False
+    referral_id: Optional[int] = None
     source_transaction_id: Optional[int] = None
     origin_referral_id: Optional[int] = None
     level: Optional[ReferralLevel] = None
@@ -54,6 +56,25 @@ class ReferralRewardDto(BaseDto, TrackableMixin, TimestampMixin):
     @property
     def rewarded_at(self) -> Optional[datetime]:
         return self.issued_at or self.created_at
+
+
+@dataclass(frozen=True, kw_only=True)
+class LegacyReferralRewardRecoveryDto:
+    reward_id: int
+    action: LegacyReferralRewardRecoveryAction
+    expected_version: int
+    source_transaction_id: int
+    origin_referral_id: int
+    level: ReferralLevel
+    expected_reward_amount: int
+    accrual_strategy_snapshot: Optional[ReferralAccrualStrategy]
+    reward_strategy: Optional[ReferralRewardStrategy]
+    config_value: Optional[int]
+    operator_reference: str
+    reason: str
+    evidence_sha256: str
+    authorization_manifest_sha256: Optional[str] = None
+    resolved_by: str = "ADMIN_API"
 
 
 @dataclass(frozen=True)

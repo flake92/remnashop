@@ -57,21 +57,84 @@ does not reopen on every sweep.
 
 The resolver never adds points or days. It records an append-only audited
 decision in `referral_reward_resolutions`; an identical request is idempotent,
-while conflicting evidence is rejected. For `EXTRA_DAYS`, confirmation requires
-the current panel expiry to be at least the durable target and synchronizes the
-observed expiry locally, so a legitimate later renewal remains valid. Cancellation
-requires the panel expiry to match the stored baseline exactly and otherwise
-fails closed.
+while conflicting evidence is rejected. For `EXTRA_DAYS`, both confirmation and
+cancellation require the current panel expiry to match the relevant durable
+target exactly unless an explicit audited drift override is supplied. A later
+renewal or promotion is not causal proof that this reward reached Remnawave.
 
 An `ON_FIRST_PAYMENT` row can be confirmed only if it already owns the durable
 first-payment claim marker. A marker-less manual row must be canceled/reconciled
 at its source and left to normal atomic winner selection; manually claiming the
 marker risks a duplicate first-payment grant.
 
+## Proven legacy EXTRA_DAYS recovery
+
+Migration 0054 adds a narrowly scoped recovery path for the exact unresolved
+legacy shape created by migration 0052. Take and verify a full database backup,
+restore it into a disposable PostgreSQL instance, and rehearse the 0053 → 0054
+migration and every approved recovery request before touching production. Do not
+invoke the endpoint until the new API and reward worker version is deployed.
+
+Use `POST /api/v1/admin/referral-rewards/{id}/recover-legacy` only after an
+independent transaction, attribution, audit-log, account-merge, and current-state
+review proves one of these mutually exclusive outcomes:
+
+- `RETRY_PROVEN_MISSING`: the original effect provably did not happen. Supply
+  the exact historical source transaction, origin referral, level, accrual
+  strategy, reward strategy, and configured value. The existing row becomes a
+  durable `PENDING` intent; it is delivered by the normal worker and is not
+  applied directly by the endpoint.
+- `CONFIRM_ADMIN_COMPENSATED`: an administrator already added enough days to
+  cover the reward. Do not supply or invent a policy snapshot. The existing row
+  becomes `ISSUED`, retains null source/policy fields so it continues to block
+  unsafe historical backfill, and produces no Remnawave side effect.
+
+The endpoint is disabled by default and startup fails closed if it is enabled
+without all three exact settings:
+
+- `REFERRAL_REWARD_LEGACY_RECOVERY_ENABLED=true`;
+- an absolute `REFERRAL_REWARD_LEGACY_RECOVERY_MANIFEST_PATH` to a reviewed,
+  tracked manifest in the deployed image;
+- `REFERRAL_REWARD_LEGACY_RECOVERY_MANIFEST_SHA256` equal to the canonical
+  manifest digest.
+
+Only payloads listed byte-for-byte semantically in that manifest are authorized.
+Disable the gate and recreate the API immediately after the approved rows are
+recorded. Both actions require the exact expected reward amount, a lowercase
+SHA-256 digest of the immutable evidence bundle, an operator reference, a reason,
+the exact incident version, and the proven candidate source/referral/level. The
+DAO serializes recovery with historical backfill, locks every participant and
+candidate row, rejects merged accounts, source collisions, attribution drift,
+and conflicting replays. It stores the normalized candidate in the append-only
+resolution even when an admin-compensated reward intentionally retains null
+source/policy fields. An identical request is idempotent. Once any legacy
+recovery evidence exists, migration 0054 cannot be downgraded; recover forward
+or restore the complete pre-0054 backup.
+
+For `RETRY_PROVEN_MISSING`, keep the reward worker stopped while recording the
+approved intents. Start it only after verifying the stored provenance and audit
+rows. The worker supports safe non-trial `ACTIVE` and `EXPIRED` subscriptions:
+it uses `max(previous_expiry, grant_started_at) + reward_days`, verifies the
+remote UUID, expiry, and status before writing, and requires an exact active
+read-after-write. The panel write is a narrow PATCH containing only UUID, ACTIVE
+status, and the absolute expiry target; it never replays a stale full profile.
+Any drift enters manual review instead of retrying blindly.
+
 `ON_FIRST_PAYMENT` means the first-ever successfully fulfilled paid non-trial,
 non-test transaction. A later refund does not reopen eligibility. Pending rewards
 for a refunded source are safely superseded; a refund during processing or after
-issuance enters manual review for explicit clawback handling.
+issuance enters manual review for explicit clawback handling. Exact migration
+0049 legacy completed/refunded sources conservatively remain prior-payment
+blockers even without modern fulfillment proof. If a normalized
+`CONFIRM_ADMIN_COMPENSATED` source is later refunded, resolve its new incident
+only with the explicit `ACK_ADMIN_COMPENSATED_REFUND` decision after independent
+review; the acknowledgement preserves the issued/admin-compensated history and
+does not grant days again. The refund transition preserves the exact immutable
+migration-0049 marker, so later `ON_FIRST_PAYMENT` selection cannot forget an
+ambiguous earlier paid source. A never-applied later EXTRA_DAYS intent fenced as
+`ADMIN_COMPENSATED_EARLIER_PAYMENT` may be closed only with a no-drift `CANCEL`;
+that exact cancellation does not probe or mutate Remnawave. Other targetless
+EXTRA_DAYS incidents remain fail-closed.
 
 ## Historical reward backfill
 

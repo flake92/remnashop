@@ -17,6 +17,9 @@ from src.application.common import (
     SubscriptionMutationLock,
     XuiDbReader,
 )
+from src.application.legacy_referral_recovery import (
+    LegacyReferralRecoveryAuthorizer,
+)
 from src.application.services import (
     PaymentCursorCodec,
     PaymentIdempotencyService,
@@ -61,6 +64,9 @@ class ServicesProvider(Provider):
     payment_idempotency = provide(source=PaymentIdempotencyService, scope=Scope.REQUEST)
     payment_reconciliation = provide(source=PaymentReconciliationService, scope=Scope.REQUEST)
     payment_cursor = provide(source=PaymentCursorCodec)
+    legacy_referral_recovery_authorizer = provide(
+        source=LegacyReferralRecoveryAuthorizer,
+    )
     event_bus = provide(EventBusImpl)
     publisher = alias(source=EventBusImpl, provides=EventPublisher)
     subscriber = alias(source=EventBusImpl, provides=EventSubscriber)

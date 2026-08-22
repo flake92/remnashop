@@ -2,6 +2,7 @@ from datetime import datetime, timedelta
 from typing import Any, Optional, Protocol, runtime_checkable
 
 from src.application.dto import (
+    LegacyReferralRewardRecoveryDto,
     ReferralDto,
     ReferralRewardBackfillAuditDto,
     ReferralRewardDto,
@@ -144,6 +145,7 @@ class ReferralDao(Protocol):
         self,
         *,
         limit: int = 100,
+        offset: int = 0,
     ) -> list[ReferralRewardDto]: ...
 
     async def claim_manual_required_rewards_for_alert(
@@ -168,6 +170,7 @@ class ReferralDao(Protocol):
         observed_remote_uuid: Optional[str] = None,
         observed_expire_at: Optional[datetime] = None,
         source_status: Optional[TransactionStatus] = None,
+        ack_admin_compensated_refund: bool = False,
     ) -> bool: ...
 
     async def manual_resolution_match(
@@ -180,7 +183,13 @@ class ReferralDao(Protocol):
         resolved_by: str,
         reason: str,
         allow_drift: bool = False,
+        ack_admin_compensated_refund: bool = False,
     ) -> Optional[bool]: ...
+
+    async def recover_legacy_extra_days_reward(
+        self,
+        recovery: LegacyReferralRewardRecoveryDto,
+    ) -> bool: ...
 
     async def get_referral_chain(
         self,

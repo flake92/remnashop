@@ -21,6 +21,9 @@ from src.application.events import (
     WebhookErrorEvent,
 )
 from src.application.events.system import RemnashopWelcomeEvent
+from src.application.legacy_referral_recovery import (
+    LegacyReferralRecoveryAuthorizer,
+)
 from src.application.use_cases.gateways.commands.payment import CreateDefaultPaymentGateway
 from src.application.use_cases.settings.commands.defaults import CreateDefaultSettings
 from src.core.config import AppConfig
@@ -61,6 +64,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         create_default_settings = await startup_container.get(CreateDefaultSettings)
         redis = await startup_container.get(Redis)
         retort = await startup_container.get(Retort)
+        if config.referral_reward_legacy_recovery_enabled:
+            # Enabled recovery is intentionally a startup-fatal one-shot gate:
+            # malformed, missing, or digest-mismatched manifests must never be
+            # discovered only after an operator sends a mutation request.
+            await startup_container.get(LegacyReferralRecoveryAuthorizer)
 
         if not await bot_service.is_inline_enabled():
             logger.warning(

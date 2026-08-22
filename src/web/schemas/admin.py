@@ -36,6 +36,7 @@ class MergeUsersResponse(BaseModel):
 class ManualReferralRewardResponse(BaseModel):
     id: int
     user_id: int
+    referral_id: int
     source_transaction_id: int | None
     origin_referral_id: int | None
     level: int | None
@@ -59,11 +60,55 @@ class ManualReferralRewardResponse(BaseModel):
 class ResolveManualReferralRewardRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
-    resolution: Literal["CONFIRM_ISSUED", "CANCEL"]
+    resolution: Literal[
+        "CONFIRM_ISSUED",
+        "CANCEL",
+        "ACK_ADMIN_COMPENSATED_REFUND",
+    ]
     expected_version: int = Field(ge=0)
     operator_reference: str = Field(min_length=1, max_length=256)
     reason: str = Field(min_length=1, max_length=1024)
     allow_drift: bool = False
+
+    @model_validator(mode="after")
+    def validate_refund_ack(self) -> "ResolveManualReferralRewardRequest":
+        if self.resolution == "ACK_ADMIN_COMPENSATED_REFUND" and self.allow_drift:
+            raise ValueError("Refund acknowledgment cannot use a drift override")
+        return self
+
+
+class LegacyReferralRewardRecoveryRequest(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid", str_strip_whitespace=True)
+
+    action: Literal["RETRY_PROVEN_MISSING", "CONFIRM_ADMIN_COMPENSATED"]
+    expected_version: StrictInt = Field(ge=0)
+    source_transaction_id: StrictInt = Field(gt=0)
+    origin_referral_id: StrictInt = Field(gt=0)
+    level: Literal[1, 2]
+    expected_reward_amount: StrictInt = Field(gt=0)
+    accrual_strategy_snapshot: Literal["ON_FIRST_PAYMENT", "ON_EACH_PAYMENT"] | None = None
+    reward_strategy: Literal["AMOUNT", "PERCENT"] | None = None
+    config_value: StrictInt | None = Field(default=None, gt=0)
+    operator_reference: str = Field(min_length=1, max_length=256)
+    reason: str = Field(min_length=1, max_length=1024)
+    evidence_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def validate_action_evidence(self) -> "LegacyReferralRewardRecoveryRequest":
+        snapshot = (
+            self.accrual_strategy_snapshot,
+            self.reward_strategy,
+            self.config_value,
+        )
+        if self.action == "RETRY_PROVEN_MISSING" and any(value is None for value in snapshot):
+            raise ValueError("RETRY_PROVEN_MISSING requires the exact historical policy snapshot")
+        if self.action == "CONFIRM_ADMIN_COMPENSATED" and any(
+            value is not None for value in snapshot
+        ):
+            raise ValueError(
+                "CONFIRM_ADMIN_COMPENSATED must not invent a historical policy snapshot"
+            )
+        return self
 
 
 class HistoricalReferralBackfillIntentResponse(BaseModel):

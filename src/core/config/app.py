@@ -42,6 +42,18 @@ class AppConfig(BaseConfig, env_prefix="APP_"):
         default=False,
         validation_alias="REFERRAL_REWARD_BACKFILL_ENABLED",
     )
+    referral_reward_legacy_recovery_enabled: bool = Field(
+        default=False,
+        validation_alias="REFERRAL_REWARD_LEGACY_RECOVERY_ENABLED",
+    )
+    referral_reward_legacy_recovery_manifest_path: Optional[Path] = Field(
+        default=None,
+        validation_alias="REFERRAL_REWARD_LEGACY_RECOVERY_MANIFEST_PATH",
+    )
+    referral_reward_legacy_recovery_manifest_sha256: Optional[str] = Field(
+        default=None,
+        validation_alias="REFERRAL_REWARD_LEGACY_RECOVERY_MANIFEST_SHA256",
+    )
 
     bot: BotConfig = Field(default_factory=BotConfig)
     remnawave: RemnawaveConfig = Field(default_factory=RemnawaveConfig)
@@ -102,6 +114,24 @@ class AppConfig(BaseConfig, env_prefix="APP_"):
                 self.api_key.get_secret_value(), self.auth_service_key.get_secret_value()
             ):
                 raise ValueError("APP_AUTH_SERVICE_KEY must not reuse APP_API_KEY")
+        if self.referral_reward_legacy_recovery_enabled:
+            manifest_path = self.referral_reward_legacy_recovery_manifest_path
+            manifest_sha256 = self.referral_reward_legacy_recovery_manifest_sha256
+            if manifest_path is None or not manifest_path.is_absolute():
+                raise ValueError(
+                    "Legacy referral recovery requires an absolute trusted manifest path"
+                )
+            if (
+                manifest_sha256 is None
+                or re.fullmatch(
+                    r"[0-9a-f]{64}",
+                    manifest_sha256,
+                )
+                is None
+            ):
+                raise ValueError(
+                    "Legacy referral recovery requires a lowercase trusted manifest SHA-256"
+                )
         return self
 
     @field_validator("domain")

@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+from decimal import Decimal, InvalidOperation
 from typing import Any, Optional, cast
 
 from adaptix import Retort
@@ -12,6 +13,7 @@ from sqlalchemy.orm import aliased, selectinload
 
 from src.application.common.dao import ReferralDao
 from src.application.dto import (
+    LegacyReferralRewardRecoveryDto,
     ReferralDto,
     ReferralRewardBackfillAuditDto,
     ReferralRewardDto,
@@ -19,9 +21,12 @@ from src.application.dto import (
     UserReferralStatsDto,
 )
 from src.core.enums import (
+    LegacyReferralRewardRecoveryAction,
+    PurchaseType,
     ReferralAccrualStrategy,
     ReferralLevel,
     ReferralRewardState,
+    ReferralRewardStrategy,
     ReferralRewardType,
     TransactionFulfillmentStatus,
     TransactionStatus,
@@ -33,8 +38,16 @@ from src.infrastructure.database.models import (
     ReferralRewardBackfillAudit,
     ReferralRewardResolution,
     Transaction,
+    UserMergeAudit,
 )
 from src.infrastructure.database.models.user import User
+from src.infrastructure.database.referral_reward_source import (
+    exact_legacy_referral_source_fulfillment,
+    normalized_admin_compensated_source_evidence_at,
+    normalized_admin_compensated_source_predicate,
+    paid_nontrial_referral_source_predicate,
+    referral_source_evidence_at,
+)
 
 
 class ReferralDaoImpl(ReferralDao):
@@ -259,6 +272,10 @@ class ReferralDaoImpl(ReferralDao):
     ) -> Optional[ReferralRewardDto]:
         reward_data = self.retort.dump(reward)
         reward_data.pop("id", None)
+        # referral_id is accepted on read DTOs so operators can inspect legacy
+        # attribution. Creation still takes the authoritative relationship as an
+        # explicit argument and must not pass the dumped value twice.
+        reward_data.pop("referral_id", None)
         stmt = (
             insert(ReferralReward)
             .values(**reward_data, referral_id=referral_id)
@@ -308,7 +325,7 @@ class ReferralDaoImpl(ReferralDao):
         self,
         reward_id: int,
     ) -> Optional[TransactionStatus]:
-        return cast(
+        status = cast(
             Optional[TransactionStatus],
             await self.session.scalar(
                 select(Transaction.status)
@@ -317,6 +334,23 @@ class ReferralDaoImpl(ReferralDao):
                     ReferralReward.source_transaction_id == Transaction.id,
                 )
                 .where(ReferralReward.id == reward_id)
+                .with_for_update(of=Transaction)
+            ),
+        )
+        if status is not None:
+            return status
+        return cast(
+            Optional[TransactionStatus],
+            await self.session.scalar(
+                select(Transaction.status)
+                .join(
+                    ReferralRewardResolution,
+                    ReferralRewardResolution.selected_source_transaction_id == Transaction.id,
+                )
+                .where(
+                    ReferralRewardResolution.reward_id == reward_id,
+                    ReferralRewardResolution.decision == "CONFIRM_ADMIN_COMPENSATED",
+                )
                 .with_for_update(of=Transaction)
             ),
         )
@@ -400,6 +434,23 @@ class ReferralDaoImpl(ReferralDao):
         refunded_sources = select(Transaction.id).where(
             Transaction.status == TransactionStatus.REFUNDED
         )
+        admin_compensated_source = aliased(
+            Transaction,
+            name="admin_compensated_reward_source",
+        )
+        admin_compensated_refunded_source = (
+            select(ReferralRewardResolution.id)
+            .join(
+                admin_compensated_source,
+                admin_compensated_source.id
+                == ReferralRewardResolution.selected_source_transaction_id,
+            )
+            .where(
+                ReferralRewardResolution.reward_id == ReferralReward.id,
+                ReferralRewardResolution.decision == "CONFIRM_ADMIN_COMPENSATED",
+                admin_compensated_source.status == TransactionStatus.REFUNDED,
+            )
+        )
         resolved_current_refund_incident = select(ReferralRewardResolution.id).where(
             ReferralRewardResolution.reward_id == ReferralReward.id,
             ReferralRewardResolution.incident_version == ReferralReward.manual_incident_version,
@@ -447,7 +498,10 @@ class ReferralDaoImpl(ReferralDao):
         await self.session.execute(
             update(ReferralReward)
             .where(
-                ReferralReward.source_transaction_id.in_(refunded_sources),
+                or_(
+                    ReferralReward.source_transaction_id.in_(refunded_sources),
+                    admin_compensated_refunded_source.exists(),
+                ),
                 ReferralReward.state == ReferralRewardState.ISSUED,
                 ~resolved_current_refund_incident.exists(),
             )
@@ -489,23 +543,28 @@ class ReferralDaoImpl(ReferralDao):
         earlier_transaction = aliased(Transaction, name="earlier_successful_transaction")
         supersede_source = aliased(Transaction, name="superseded_reward_source")
         supersede_earlier = aliased(Transaction, name="superseding_earlier_transaction")
+        admin_earlier = aliased(Transaction, name="admin_compensated_earlier_transaction")
+        supersede_admin_earlier = aliased(
+            Transaction,
+            name="superseding_admin_compensated_transaction",
+        )
         active_winner = aliased(ReferralReward, name="active_first_payment_winner")
 
+        earlier_evidence_at = referral_source_evidence_at(
+            earlier_transaction,
+            include_legacy=True,
+        )
         earlier_success_exists = select(earlier_transaction.id).where(
             earlier_transaction.user_id == source_transaction.user_id,
-            earlier_transaction.status.in_(
-                (TransactionStatus.COMPLETED, TransactionStatus.REFUNDED)
+            *paid_nontrial_referral_source_predicate(
+                earlier_transaction,
+                include_refunded=True,
+                include_legacy=True,
             ),
-            earlier_transaction.fulfillment_status == TransactionFulfillmentStatus.SUCCEEDED,
-            earlier_transaction.is_test.is_(False),
-            earlier_transaction.pricing["final_amount"].astext.cast(Numeric) > 0,
-            earlier_transaction.plan_snapshot["is_trial"].astext == "false",
             or_(
-                earlier_transaction.fulfillment_completed_at
-                < source_transaction.fulfillment_completed_at,
+                earlier_evidence_at < source_transaction.fulfillment_completed_at,
                 and_(
-                    earlier_transaction.fulfillment_completed_at
-                    == source_transaction.fulfillment_completed_at,
+                    earlier_evidence_at == source_transaction.fulfillment_completed_at,
                     earlier_transaction.id < source_transaction.id,
                 ),
             ),
@@ -515,6 +574,38 @@ class ReferralDaoImpl(ReferralDao):
             active_winner.level == ReferralReward.level,
             active_winner.accrual_strategy == ReferralAccrualStrategy.ON_FIRST_PAYMENT,
             active_winner.id != ReferralReward.id,
+        )
+        admin_compensated_earlier_exists = (
+            select(ReferralRewardResolution.id)
+            .join(
+                admin_earlier,
+                admin_earlier.id == ReferralRewardResolution.selected_source_transaction_id,
+            )
+            .where(
+                ReferralRewardResolution.selected_origin_referral_id
+                == ReferralReward.origin_referral_id,
+                ReferralRewardResolution.selected_level == ReferralReward.level,
+                admin_earlier.user_id == source_transaction.user_id,
+                *normalized_admin_compensated_source_predicate(
+                    ReferralRewardResolution,
+                    admin_earlier,
+                ),
+                or_(
+                    normalized_admin_compensated_source_evidence_at(
+                        ReferralRewardResolution,
+                        admin_earlier,
+                    )
+                    < source_transaction.fulfillment_completed_at,
+                    and_(
+                        normalized_admin_compensated_source_evidence_at(
+                            ReferralRewardResolution,
+                            admin_earlier,
+                        )
+                        == source_transaction.fulfillment_completed_at,
+                        admin_earlier.id < source_transaction.id,
+                    ),
+                ),
+            )
         )
 
         earlier_success_for_reward = (
@@ -526,22 +617,144 @@ class ReferralDaoImpl(ReferralDao):
             )
             .where(
                 supersede_source.id == ReferralReward.source_transaction_id,
-                supersede_earlier.status.in_(
-                    (TransactionStatus.COMPLETED, TransactionStatus.REFUNDED)
+                *paid_nontrial_referral_source_predicate(
+                    supersede_earlier,
+                    include_refunded=True,
+                    include_legacy=False,
                 ),
-                supersede_earlier.fulfillment_status == TransactionFulfillmentStatus.SUCCEEDED,
-                supersede_earlier.is_test.is_(False),
-                supersede_earlier.pricing["final_amount"].astext.cast(Numeric) > 0,
-                supersede_earlier.plan_snapshot["is_trial"].astext == "false",
                 or_(
-                    supersede_earlier.fulfillment_completed_at
+                    referral_source_evidence_at(supersede_earlier, include_legacy=False)
                     < supersede_source.fulfillment_completed_at,
                     and_(
-                        supersede_earlier.fulfillment_completed_at
+                        referral_source_evidence_at(
+                            supersede_earlier,
+                            include_legacy=False,
+                        )
                         == supersede_source.fulfillment_completed_at,
                         supersede_earlier.id < supersede_source.id,
                     ),
                 ),
+            )
+        )
+        legacy_earlier_for_reward = (
+            select(supersede_earlier.id)
+            .select_from(supersede_source)
+            .join(
+                supersede_earlier,
+                supersede_earlier.user_id == supersede_source.user_id,
+            )
+            .where(
+                supersede_source.id == ReferralReward.source_transaction_id,
+                supersede_earlier.status.in_(
+                    (TransactionStatus.COMPLETED, TransactionStatus.REFUNDED)
+                ),
+                exact_legacy_referral_source_fulfillment(supersede_earlier),
+                supersede_earlier.is_test.is_(False),
+                supersede_earlier.pricing["final_amount"].astext.cast(Numeric) > 0,
+                supersede_earlier.plan_snapshot["is_trial"].astext == "false",
+                or_(
+                    supersede_earlier.fulfillment_started_at
+                    < supersede_source.fulfillment_completed_at,
+                    and_(
+                        supersede_earlier.fulfillment_started_at
+                        == supersede_source.fulfillment_completed_at,
+                        supersede_earlier.id < supersede_source.id,
+                    ),
+                ),
+            )
+        )
+        admin_compensated_earlier_for_reward = (
+            select(ReferralRewardResolution.id)
+            .select_from(supersede_source)
+            .join(
+                supersede_admin_earlier,
+                supersede_admin_earlier.user_id == supersede_source.user_id,
+            )
+            .join(
+                ReferralRewardResolution,
+                ReferralRewardResolution.selected_source_transaction_id
+                == supersede_admin_earlier.id,
+            )
+            .where(
+                supersede_source.id == ReferralReward.source_transaction_id,
+                ReferralRewardResolution.selected_origin_referral_id
+                == ReferralReward.origin_referral_id,
+                ReferralRewardResolution.selected_level == ReferralReward.level,
+                *normalized_admin_compensated_source_predicate(
+                    ReferralRewardResolution,
+                    supersede_admin_earlier,
+                ),
+                or_(
+                    normalized_admin_compensated_source_evidence_at(
+                        ReferralRewardResolution,
+                        supersede_admin_earlier,
+                    )
+                    < supersede_source.fulfillment_completed_at,
+                    and_(
+                        normalized_admin_compensated_source_evidence_at(
+                            ReferralRewardResolution,
+                            supersede_admin_earlier,
+                        )
+                        == supersede_source.fulfillment_completed_at,
+                        supersede_admin_earlier.id < supersede_source.id,
+                    ),
+                ),
+            )
+        )
+
+        # ADMIN compensation proves that an earlier paid source already produced
+        # the side effect, but intentionally does not claim a historical policy.
+        # A later ON_FIRST candidate therefore cannot be issued or silently
+        # superseded as if policy were known; surface it for operator review.
+        await self.session.execute(
+            update(ReferralReward)
+            .where(
+                ReferralReward.accrual_strategy_snapshot
+                == ReferralAccrualStrategy.ON_FIRST_PAYMENT,
+                ReferralReward.accrual_strategy.is_(None),
+                ReferralReward.state.in_(
+                    (
+                        ReferralRewardState.PENDING,
+                        ReferralRewardState.RETRY_WAITING,
+                    )
+                ),
+                admin_compensated_earlier_for_reward.exists(),
+            )
+            .values(
+                state=ReferralRewardState.MANUAL_REQUIRED,
+                manual_incident_version=ReferralReward.manual_incident_version + 1,
+                manual_cause="ADMIN_COMPENSATED_EARLIER_PAYMENT",
+                next_attempt_at=None,
+                last_error="ADMIN_COMPENSATED_EARLIER_PAYMENT",
+                manual_alerted_at=None,
+            )
+        )
+
+        # A pre-0049 completed source has no durable fulfillment timestamp, so
+        # it cannot safely prove or disprove historical ON_FIRST eligibility.
+        # Keep a later candidate fenced for explicit review instead of issuing
+        # a potential duplicate or silently terminalizing it.
+        await self.session.execute(
+            update(ReferralReward)
+            .where(
+                ReferralReward.accrual_strategy_snapshot
+                == ReferralAccrualStrategy.ON_FIRST_PAYMENT,
+                ReferralReward.accrual_strategy.is_(None),
+                ReferralReward.state.in_(
+                    (
+                        ReferralRewardState.PENDING,
+                        ReferralRewardState.RETRY_WAITING,
+                    )
+                ),
+                legacy_earlier_for_reward.exists(),
+            )
+            .values(
+                state=ReferralRewardState.MANUAL_REQUIRED,
+                manual_incident_version=ReferralReward.manual_incident_version + 1,
+                manual_cause="LEGACY_EARLIER_PAYMENT_REQUIRES_REVIEW",
+                next_attempt_at=None,
+                last_error="LEGACY_EARLIER_PAYMENT_REQUIRES_REVIEW",
+                manual_alerted_at=None,
             )
         )
 
@@ -614,6 +827,7 @@ class ReferralDaoImpl(ReferralDao):
                 == ReferralAccrualStrategy.ON_FIRST_PAYMENT,
                 ~earlier_success_exists.exists(),
                 ~active_winner_exists.exists(),
+                ~admin_compensated_earlier_exists.exists(),
             ),
         )
 
@@ -923,6 +1137,7 @@ class ReferralDaoImpl(ReferralDao):
         self,
         *,
         limit: int = 100,
+        offset: int = 0,
     ) -> list[ReferralRewardDto]:
         rows = cast(
             list,
@@ -932,6 +1147,7 @@ class ReferralDaoImpl(ReferralDao):
                     .where(ReferralReward.state == ReferralRewardState.MANUAL_REQUIRED)
                     .order_by(ReferralReward.updated_at.asc(), ReferralReward.id)
                     .limit(limit)
+                    .offset(offset)
                 )
             ).all(),
         )
@@ -980,7 +1196,7 @@ class ReferralDaoImpl(ReferralDao):
             .values(manual_alerted_at=datetime_now())
         )
 
-    async def resolve_manual_reward(
+    async def resolve_manual_reward(  # noqa: C901
         self,
         reward_id: int,
         *,
@@ -994,6 +1210,7 @@ class ReferralDaoImpl(ReferralDao):
         observed_remote_uuid: Optional[str] = None,
         observed_expire_at: Optional[datetime] = None,
         source_status: Optional[TransactionStatus] = None,
+        ack_admin_compensated_refund: bool = False,
     ) -> bool:
         reward = await self.session.scalar(
             select(ReferralReward).where(ReferralReward.id == reward_id).with_for_update()
@@ -1001,7 +1218,11 @@ class ReferralDaoImpl(ReferralDao):
         if reward is None:
             return False
 
-        decision = "CONFIRM_ISSUED" if confirm_issued else "CANCEL"
+        decision = (
+            "ACK_ADMIN_COMPENSATED_REFUND"
+            if ack_admin_compensated_refund
+            else ("CONFIRM_ISSUED" if confirm_issued else "CANCEL")
+        )
         existing = await self.session.scalar(
             select(ReferralRewardResolution).where(
                 ReferralRewardResolution.reward_id == reward_id,
@@ -1020,12 +1241,55 @@ class ReferralDaoImpl(ReferralDao):
             return False
         if reward.manual_incident_version != expected_version:
             return False
+        if ack_admin_compensated_refund and (
+            confirm_issued
+            or allow_drift
+            or reward.type != ReferralRewardType.EXTRA_DAYS
+            or not reward.is_issued
+            or reward.source_transaction_id is not None
+            or reward.origin_referral_id is not None
+            or reward.level is not None
+            or reward.target_subscription_id is not None
+            or reward.baseline_expire_at is not None
+            or reward.target_expire_at is not None
+            or reward.manual_cause != "SOURCE_REFUNDED_AFTER_REWARD_ISSUANCE"
+            or reward.refund_detected_at is None
+        ):
+            return False
         if (
             confirm_issued
             and reward.accrual_strategy_snapshot == ReferralAccrualStrategy.ON_FIRST_PAYMENT
             and reward.accrual_strategy != ReferralAccrualStrategy.ON_FIRST_PAYMENT
         ):
             return False
+
+        admin_evidence: ReferralRewardResolution | None = None
+        if ack_admin_compensated_refund:
+            admin_evidence = await self.session.scalar(
+                select(ReferralRewardResolution).where(
+                    ReferralRewardResolution.reward_id == reward_id,
+                    ReferralRewardResolution.decision == "CONFIRM_ADMIN_COMPENSATED",
+                )
+            )
+            if (
+                admin_evidence is None
+                or admin_evidence.selected_source_transaction_id is None
+                or admin_evidence.selected_origin_referral_id is None
+                or admin_evidence.selected_level is None
+                or admin_evidence.authorization_manifest_sha256 is None
+            ):
+                return False
+            locked_source_status = cast(
+                Optional[TransactionStatus],
+                await self.session.scalar(
+                    select(Transaction.status)
+                    .where(Transaction.id == admin_evidence.selected_source_transaction_id)
+                    .with_for_update()
+                ),
+            )
+            if locked_source_status != TransactionStatus.REFUNDED:
+                return False
+            source_status = locked_source_status
 
         self.session.add(
             ReferralRewardResolution(
@@ -1040,11 +1304,29 @@ class ReferralDaoImpl(ReferralDao):
                 observed_remote_uuid=observed_remote_uuid,
                 observed_expire_at=observed_expire_at,
                 source_status=(source_status.value if source_status is not None else None),
+                selected_source_transaction_id=(
+                    admin_evidence.selected_source_transaction_id
+                    if admin_evidence is not None
+                    else None
+                ),
+                selected_origin_referral_id=(
+                    admin_evidence.selected_origin_referral_id
+                    if admin_evidence is not None
+                    else None
+                ),
+                selected_level=(
+                    admin_evidence.selected_level if admin_evidence is not None else None
+                ),
+                authorization_manifest_sha256=(
+                    admin_evidence.authorization_manifest_sha256
+                    if admin_evidence is not None
+                    else None
+                ),
             )
         )
 
         values: dict[str, object]
-        if confirm_issued:
+        if confirm_issued or ack_admin_compensated_refund:
             values = {
                 "state": ReferralRewardState.ISSUED,
                 "is_issued": True,
@@ -1084,6 +1366,7 @@ class ReferralDaoImpl(ReferralDao):
         resolved_by: str,
         reason: str,
         allow_drift: bool = False,
+        ack_admin_compensated_refund: bool = False,
     ) -> Optional[bool]:
         existing = await self.session.scalar(
             select(ReferralRewardResolution).where(
@@ -1093,7 +1376,11 @@ class ReferralDaoImpl(ReferralDao):
         )
         if existing is None:
             return None
-        decision = "CONFIRM_ISSUED" if confirm_issued else "CANCEL"
+        decision = (
+            "ACK_ADMIN_COMPENSATED_REFUND"
+            if ack_admin_compensated_refund
+            else ("CONFIRM_ISSUED" if confirm_issued else "CANCEL")
+        )
         return bool(
             existing.decision == decision
             and existing.operator_reference == operator_reference
@@ -1101,6 +1388,561 @@ class ReferralDaoImpl(ReferralDao):
             and existing.reason == reason
             and existing.allow_drift == allow_drift
         )
+
+    async def recover_legacy_extra_days_reward(  # noqa: C901, PLR0912
+        self,
+        recovery: LegacyReferralRewardRecoveryDto,
+    ) -> bool:
+        """Atomically attach proven provenance to one legacy EXTRA_DAYS row.
+
+        True means the row was transitioned in this transaction. False is an
+        exact replay of the immutable decision. Every mismatch fails closed.
+        """
+
+        if (
+            recovery.authorization_manifest_sha256 is None
+            or len(recovery.authorization_manifest_sha256) != 64
+            or recovery.authorization_manifest_sha256
+            != recovery.authorization_manifest_sha256.lower()
+            or any(
+                character not in "0123456789abcdef"
+                for character in recovery.authorization_manifest_sha256
+            )
+        ):
+            raise ValueError("Trusted recovery manifest authorization is missing")
+        await self.acquire_historical_backfill_lock()
+        requested_provenance = self._legacy_recovery_request_provenance(recovery)
+        existing = await self.session.scalar(
+            select(ReferralRewardResolution).where(
+                ReferralRewardResolution.reward_id == recovery.reward_id,
+                ReferralRewardResolution.incident_version == recovery.expected_version,
+            )
+        )
+        if existing is not None:
+            selected = existing.selected_provenance or {}
+            if not (
+                existing.decision == recovery.action.value
+                and selected.get("request") == requested_provenance
+                and existing.operator_reference == recovery.operator_reference
+                and existing.resolved_by == recovery.resolved_by
+                and existing.reason == recovery.reason
+                and existing.evidence_sha256 == recovery.evidence_sha256
+                and existing.allow_drift is False
+                and existing.selected_source_transaction_id == recovery.source_transaction_id
+                and existing.selected_origin_referral_id == recovery.origin_referral_id
+                and existing.selected_level == recovery.level
+                and existing.authorization_manifest_sha256 == recovery.authorization_manifest_sha256
+            ):
+                raise ValueError(
+                    f"Referral reward '{recovery.reward_id}' was recovered with "
+                    "different provenance or evidence"
+                )
+            return False
+        other_resolution = await self.session.scalar(
+            select(ReferralRewardResolution.id)
+            .where(ReferralRewardResolution.reward_id == recovery.reward_id)
+            .limit(1)
+        )
+        if other_resolution is not None:
+            raise ValueError(
+                f"Referral reward '{recovery.reward_id}' already has another resolution incident"
+            )
+
+        # Hints are deliberately unlocked. They only identify the complete user lock
+        # set. After those users are locked in the same order as user-merge and the
+        # live reward writer, every mutable row is re-read under FOR UPDATE.
+        reward_hint = await self.session.get(ReferralReward, recovery.reward_id)
+        source_hint = await self.session.get(Transaction, recovery.source_transaction_id)
+        origin_hint = await self.session.get(Referral, recovery.origin_referral_id)
+        if reward_hint is None:
+            raise ValueError(f"Referral reward '{recovery.reward_id}' was not found")
+        if source_hint is None:
+            raise ValueError(f"Source transaction '{recovery.source_transaction_id}' was not found")
+        if origin_hint is None:
+            raise ValueError(f"Origin referral '{recovery.origin_referral_id}' was not found")
+        parent_hint = await self.session.scalar(
+            select(Referral).where(Referral.referred_id == origin_hint.referrer_id).limit(1)
+        )
+        participant_ids = {
+            reward_hint.user_id,
+            source_hint.user_id,
+            origin_hint.referrer_id,
+            origin_hint.referred_id,
+        }
+        if parent_hint is not None:
+            participant_ids.update((parent_hint.referrer_id, parent_hint.referred_id))
+        locked_user_ids = set(
+            (
+                await self.session.scalars(
+                    select(User.id)
+                    .where(User.id.in_(sorted(participant_ids)))
+                    .order_by(User.id)
+                    .with_for_update()
+                )
+            ).all()
+        )
+        if locked_user_ids != participant_ids:
+            raise ValueError("Legacy reward participants changed or no longer exist")
+        real_merge = await self.session.scalar(
+            select(UserMergeAudit.id)
+            .where(
+                UserMergeAudit.dry_run.is_(False),
+                or_(
+                    UserMergeAudit.source_user_id.in_(participant_ids),
+                    UserMergeAudit.target_user_id.in_(participant_ids),
+                ),
+            )
+            .limit(1)
+        )
+        if real_merge is not None:
+            raise ValueError("Legacy reward participants have real user-merge history")
+
+        reward = await self.session.scalar(
+            select(ReferralReward)
+            .where(ReferralReward.id == recovery.reward_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if reward is None:
+            raise ValueError(f"Referral reward '{recovery.reward_id}' was not found")
+        self._validate_0052_legacy_reward_shape(reward, recovery)
+
+        source = await self.session.scalar(
+            select(Transaction)
+            .where(Transaction.id == recovery.source_transaction_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if source is None:
+            raise ValueError(f"Source transaction '{recovery.source_transaction_id}' was not found")
+        self._validate_legacy_recovery_source(source, recovery.action)
+        source_timestamp_kind, source_evidence_at = self._legacy_recovery_source_evidence_timestamp(
+            source
+        )
+
+        origin = await self.session.scalar(
+            select(Referral)
+            .where(Referral.id == recovery.origin_referral_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if origin is None or origin.referred_id != source.user_id:
+            raise ValueError("Origin referral does not exactly attribute the source payer")
+        direct = await self.session.scalar(
+            select(Referral)
+            .where(Referral.referred_id == source.user_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if direct is None or direct.id != origin.id:
+            raise ValueError("Direct referral attribution changed")
+
+        selected_referral = direct
+        if recovery.level == ReferralLevel.SECOND:
+            parent = await self.session.scalar(
+                select(Referral)
+                .where(Referral.referred_id == direct.referrer_id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+            if parent is None:
+                raise ValueError("Exact second-level referral attribution was not found")
+            selected_referral = parent
+
+        # L2 exists in two exact historical shapes. Before cf35a93 it retained
+        # the direct/origin referral while selecting the parent's referrer as
+        # recipient; newer legacy rows (including rr1486) stored the parent
+        # referral. Preserve and audit whichever exact shape is present.
+        if reward.referral_id == direct.id:
+            stored_referral_shape = "DIRECT_ORIGIN"
+        elif recovery.level == ReferralLevel.SECOND and reward.referral_id == selected_referral.id:
+            stored_referral_shape = "PARENT_RECIPIENT"
+        else:
+            stored_referral_shape = None
+        if stored_referral_shape is None or reward.user_id != selected_referral.referrer_id:
+            raise ValueError("Legacy reward recipient does not match the exact referral chain")
+        self._validate_legacy_reward_source_window(reward, source_evidence_at)
+        if origin.created_at is None or origin.created_at > source_evidence_at:
+            raise ValueError("Origin referral does not predate the source fulfillment")
+        if recovery.level == ReferralLevel.SECOND and (
+            selected_referral.created_at is None
+            or selected_referral.created_at > source_evidence_at
+        ):
+            raise ValueError("Second-level referral does not predate the source fulfillment")
+
+        collision = await self.session.scalar(
+            select(ReferralReward.id)
+            .where(
+                ReferralReward.id != reward.id,
+                ReferralReward.source_transaction_id == source.id,
+                ReferralReward.level == recovery.level,
+            )
+            .with_for_update()
+        )
+        if collision is not None:
+            raise ValueError("A durable reward already owns the selected provenance")
+        recovery_collision = await self.session.scalar(
+            select(ReferralRewardResolution.id)
+            .where(
+                ReferralRewardResolution.selected_source_transaction_id == source.id,
+                ReferralRewardResolution.selected_level == recovery.level,
+            )
+            .limit(1)
+        )
+        if recovery_collision is not None:
+            raise ValueError("A recovered reward already owns the selected source and level")
+
+        if (
+            recovery.action == LegacyReferralRewardRecoveryAction.RETRY_PROVEN_MISSING
+            and recovery.accrual_strategy_snapshot == ReferralAccrualStrategy.ON_FIRST_PAYMENT
+        ):
+            fulfilled_at = source.fulfillment_completed_at
+            if fulfilled_at is None:
+                raise ValueError(
+                    "ON_FIRST legacy recovery requires a durable fulfillment timestamp"
+                )
+            if source.purchase_type != PurchaseType.NEW:
+                raise ValueError("ON_FIRST legacy recovery requires a NEW purchase source")
+            earlier_source = aliased(Transaction, name="legacy_recovery_earlier_source")
+            earlier_evidence_at = referral_source_evidence_at(
+                earlier_source,
+                include_legacy=True,
+            )
+            earlier = await self.session.scalar(
+                select(earlier_source.id).where(
+                    earlier_source.user_id == source.user_id,
+                    earlier_source.id != source.id,
+                    *paid_nontrial_referral_source_predicate(
+                        earlier_source,
+                        include_refunded=True,
+                        include_legacy=True,
+                    ),
+                    or_(
+                        earlier_evidence_at < fulfilled_at,
+                        and_(
+                            earlier_evidence_at == fulfilled_at,
+                            earlier_source.id < source.id,
+                        ),
+                    ),
+                )
+            )
+            if earlier is not None:
+                raise ValueError("Source is not the first successful paid transaction")
+            winner = await self.session.scalar(
+                select(ReferralReward.id)
+                .where(
+                    ReferralReward.id != reward.id,
+                    ReferralReward.origin_referral_id == origin.id,
+                    ReferralReward.level == recovery.level,
+                    ReferralReward.accrual_strategy == ReferralAccrualStrategy.ON_FIRST_PAYMENT,
+                )
+                .with_for_update()
+            )
+            if winner is not None:
+                raise ValueError("Another durable reward already won ON_FIRST_PAYMENT")
+
+        if recovery.action == LegacyReferralRewardRecoveryAction.RETRY_PROVEN_MISSING:
+            if (
+                recovery.accrual_strategy_snapshot is None
+                or recovery.reward_strategy is None
+                or recovery.config_value is None
+            ):
+                raise ValueError(
+                    "RETRY_PROVEN_MISSING requires the exact historical policy snapshot"
+                )
+            expected_amount = self._legacy_recovery_extra_days_amount(
+                source,
+                recovery.reward_strategy,
+                recovery.config_value,
+            )
+            if reward.amount != expected_amount:
+                raise ValueError(
+                    f"Legacy reward amount '{reward.amount}' does not match the historical "
+                    f"snapshot amount '{expected_amount}'"
+                )
+        elif any(
+            value is not None
+            for value in (
+                recovery.accrual_strategy_snapshot,
+                recovery.reward_strategy,
+                recovery.config_value,
+            )
+        ):
+            raise ValueError(
+                "CONFIRM_ADMIN_COMPENSATED must not invent a historical policy snapshot"
+            )
+
+        selected_provenance = {
+            "request": requested_provenance,
+            "selected": {
+                "payer_user_id": source.user_id,
+                "recipient_user_id": reward.user_id,
+                "stored_reward_referral_id": reward.referral_id,
+                "recipient_referral_id": selected_referral.id,
+                "stored_reward_referral_shape": stored_referral_shape,
+                "reward_type": reward.type.value,
+                "reward_amount": reward.amount,
+                "legacy_reward_created_at": (
+                    reward.created_at.isoformat() if reward.created_at is not None else None
+                ),
+                "origin_referral_created_at": origin.created_at.isoformat(),
+                "source_purchase_type": source.purchase_type.value,
+                "source_fulfillment_status": source.fulfillment_status.value,
+                "source_fulfillment_completed_at": (
+                    source.fulfillment_completed_at.isoformat()
+                    if source.fulfillment_completed_at is not None
+                    else None
+                ),
+                "source_evidence_timestamp_kind": source_timestamp_kind,
+                "source_evidence_timestamp": source_evidence_at.isoformat(),
+            },
+        }
+        self.session.add(
+            ReferralRewardResolution(
+                reward_id=reward.id,
+                incident_version=recovery.expected_version,
+                decision=recovery.action.value,
+                operator_reference=recovery.operator_reference,
+                resolved_by=recovery.resolved_by,
+                reason=recovery.reason,
+                allow_drift=False,
+                source_status=source.status.value,
+                selected_provenance=selected_provenance,
+                evidence_sha256=recovery.evidence_sha256,
+                selected_source_transaction_id=source.id,
+                selected_origin_referral_id=origin.id,
+                selected_level=recovery.level,
+                authorization_manifest_sha256=recovery.authorization_manifest_sha256,
+            )
+        )
+
+        confirm_compensated = (
+            recovery.action == LegacyReferralRewardRecoveryAction.CONFIRM_ADMIN_COMPENSATED
+        )
+        values = self._legacy_recovery_transition_values(
+            recovery,
+            source_transaction_id=source.id,
+            origin_referral_id=origin.id,
+            issued_at=datetime_now() if confirm_compensated else None,
+        )
+        result = await self.session.execute(
+            update(ReferralReward)
+            .where(
+                ReferralReward.id == reward.id,
+                ReferralReward.state == ReferralRewardState.MANUAL_REQUIRED,
+                ReferralReward.manual_incident_version == recovery.expected_version,
+                ReferralReward.source_transaction_id.is_(None),
+            )
+            .values(**values)
+        )
+        if not getattr(result, "rowcount", 0):
+            raise ValueError("Legacy reward recovery fence changed before transition")
+        return True
+
+    @staticmethod
+    def _legacy_recovery_request_provenance(
+        recovery: LegacyReferralRewardRecoveryDto,
+    ) -> dict[str, object]:
+        return {
+            "reward_id": recovery.reward_id,
+            "action": recovery.action.value,
+            "expected_version": recovery.expected_version,
+            "source_transaction_id": recovery.source_transaction_id,
+            "origin_referral_id": recovery.origin_referral_id,
+            "level": recovery.level.value,
+            "expected_reward_amount": recovery.expected_reward_amount,
+            "accrual_strategy_snapshot": (
+                recovery.accrual_strategy_snapshot.value
+                if recovery.accrual_strategy_snapshot is not None
+                else None
+            ),
+            "reward_strategy": (
+                recovery.reward_strategy.value if recovery.reward_strategy is not None else None
+            ),
+            "config_value": recovery.config_value,
+            "operator_reference": recovery.operator_reference,
+            "reason": recovery.reason,
+            "resolved_by": recovery.resolved_by,
+            "evidence_sha256": recovery.evidence_sha256,
+            "authorization_manifest_sha256": recovery.authorization_manifest_sha256,
+        }
+
+    @staticmethod
+    def _legacy_recovery_transition_values(
+        recovery: LegacyReferralRewardRecoveryDto,
+        *,
+        source_transaction_id: int,
+        origin_referral_id: int,
+        issued_at: Optional[datetime],
+    ) -> dict[str, object]:
+        confirm_compensated = (
+            recovery.action == LegacyReferralRewardRecoveryAction.CONFIRM_ADMIN_COMPENSATED
+        )
+        values: dict[str, object] = {
+            "state": (
+                ReferralRewardState.ISSUED if confirm_compensated else ReferralRewardState.PENDING
+            ),
+            "is_issued": confirm_compensated,
+            "issued_at": issued_at if confirm_compensated else None,
+            "attempt_count": 0,
+            "next_attempt_at": None,
+            "processing_token_hash": None,
+            "processing_lease_expires_at": None,
+            "last_error": None,
+            "manual_alerted_at": None,
+            "manual_cause": None,
+            "refund_detected_at": None,
+        }
+        if not confirm_compensated:
+            values.update(
+                source_transaction_id=source_transaction_id,
+                origin_referral_id=origin_referral_id,
+                level=recovery.level,
+                accrual_strategy_snapshot=recovery.accrual_strategy_snapshot,
+                # Claim the proven historical ON_FIRST winner now. The partial
+                # unique index keeps it stable until the worker runs.
+                accrual_strategy=recovery.accrual_strategy_snapshot,
+                reward_strategy=recovery.reward_strategy,
+                config_value=recovery.config_value,
+            )
+        return values
+
+    @staticmethod
+    def _validate_0052_legacy_reward_shape(
+        reward: ReferralReward,
+        recovery: LegacyReferralRewardRecoveryDto,
+    ) -> None:
+        if (
+            reward.state != ReferralRewardState.MANUAL_REQUIRED
+            or recovery.expected_version != 1
+            or reward.manual_incident_version != recovery.expected_version
+            or reward.manual_cause != "LEGACY_AMBIGUOUS_ISSUANCE"
+            or reward.last_error != "LEGACY_AMBIGUOUS_ISSUANCE"
+            or reward.type != ReferralRewardType.EXTRA_DAYS
+            or isinstance(reward.amount, bool)
+            or reward.amount <= 0
+            or reward.amount != recovery.expected_reward_amount
+            or reward.is_issued
+            or reward.issued_at is not None
+            or reward.attempt_count != 0
+            or reward.next_attempt_at is not None
+            or reward.processing_token_hash is not None
+            or reward.processing_lease_expires_at is not None
+            or reward.source_transaction_id is not None
+            or reward.origin_referral_id is not None
+            or reward.level is not None
+            or reward.accrual_strategy_snapshot is not None
+            or reward.accrual_strategy is not None
+            or reward.reward_strategy is not None
+            or reward.config_value is not None
+            or reward.target_subscription_id is not None
+            or reward.baseline_expire_at is not None
+            or reward.target_expire_at is not None
+            or reward.refund_detected_at is not None
+        ):
+            raise ValueError(
+                f"Referral reward '{recovery.reward_id}' is not the exact unresolved "
+                "0052 legacy EXTRA_DAYS shape"
+            )
+
+    @staticmethod
+    def _validate_legacy_reward_source_window(
+        reward: ReferralReward,
+        source_evidence_at: datetime,
+    ) -> None:
+        if reward.created_at is None:
+            raise ValueError("Legacy reward/source timestamps are missing")
+        try:
+            delay = reward.created_at - source_evidence_at
+        except TypeError as exc:
+            raise ValueError("Legacy reward/source timestamps are incompatible") from exc
+        if abs(delay) > timedelta(minutes=5):
+            raise ValueError("Legacy reward creation is outside the proven fulfillment window")
+
+    @staticmethod
+    def _legacy_recovery_source_evidence_timestamp(
+        source: Transaction,
+    ) -> tuple[str, datetime]:
+        for kind, value in (
+            ("fulfillment_completed_at", source.fulfillment_completed_at),
+            ("fulfillment_started_at", source.fulfillment_started_at),
+            ("created_at", source.created_at),
+        ):
+            if value is not None:
+                return kind, value
+        raise ValueError("Legacy source evidence timestamp is missing")
+
+    @classmethod
+    def _validate_legacy_recovery_source(
+        cls,
+        source: Transaction,
+        action: LegacyReferralRewardRecoveryAction,
+    ) -> None:
+        try:
+            final_amount = Decimal(str(source.pricing["final_amount"]))
+        except (InvalidOperation, KeyError, TypeError, ValueError) as exc:
+            raise ValueError("Source paid amount is invalid") from exc
+        if (
+            source.status != TransactionStatus.COMPLETED
+            or source.is_test
+            or final_amount <= 0
+            or not isinstance(source.plan_snapshot, dict)
+            or source.plan_snapshot.get("is_trial") is not False
+        ):
+            raise ValueError(
+                "Source must be completed, fulfilled, non-test, paid, non-trial, and non-refunded"
+            )
+        if action == LegacyReferralRewardRecoveryAction.RETRY_PROVEN_MISSING:
+            if (
+                source.fulfillment_status != TransactionFulfillmentStatus.SUCCEEDED
+                or source.fulfillment_completed_at is None
+            ):
+                raise ValueError(
+                    "RETRY_PROVEN_MISSING requires a succeeded source with a durable "
+                    "fulfillment timestamp"
+                )
+        elif not (
+            (
+                source.fulfillment_status == TransactionFulfillmentStatus.SUCCEEDED
+                and source.fulfillment_completed_at is not None
+            )
+            or (
+                source.fulfillment_status == TransactionFulfillmentStatus.MANUAL_REQUIRED
+                and source.fulfillment_completed_at is None
+                and source.fulfillment_last_error == "LEGACY_COMPLETED_WITHOUT_PROOF"
+                and source.fulfillment_started_at is not None
+                and source.fulfillment_token_hash is None
+                and source.fulfillment_lease_expires_at is None
+            )
+        ):
+            raise ValueError(
+                "CONFIRM_ADMIN_COMPENSATED requires a succeeded source or the exact "
+                "legacy manual-required source shape"
+            )
+        cls._legacy_recovery_source_evidence_timestamp(source)
+
+    @staticmethod
+    def _legacy_recovery_extra_days_amount(
+        source: Transaction,
+        strategy: ReferralRewardStrategy,
+        config_value: int,
+    ) -> int:
+        if isinstance(config_value, bool) or config_value <= 0:
+            raise ValueError("Historical reward config must be a positive integer")
+        if strategy == ReferralRewardStrategy.AMOUNT:
+            return config_value
+        if strategy != ReferralRewardStrategy.PERCENT:
+            raise ValueError("Unsupported historical reward strategy")
+        duration = source.plan_snapshot.get("duration")
+        if isinstance(duration, bool):
+            raise ValueError("Source plan duration is invalid")
+        try:
+            duration_value = Decimal(str(duration))
+        except (InvalidOperation, TypeError, ValueError) as exc:
+            raise ValueError("Source plan duration is invalid") from exc
+        if duration_value <= 0:
+            raise ValueError("Source plan duration is invalid")
+        return max(1, int(duration_value * Decimal(config_value) / Decimal(100)))
 
     async def get_referral_chain(
         self,
