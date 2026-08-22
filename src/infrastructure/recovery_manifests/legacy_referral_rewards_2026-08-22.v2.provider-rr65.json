@@ -1,5 +1,5 @@
 {
-  "checked_at": "2026-08-22T07:00:10+00:00",
+  "checked_at": "2026-08-22T08:18:06+00:00",
   "gateway": "YOOKASSA",
   "http_status": 200,
   "incident": "REMNASHOP-LEGACY-REFERRAL-REMEDIATION-2026-08-22",
@@ -7,7 +7,7 @@
   "local_fulfillment_status": "MANUAL_REQUIRED",
   "local_transaction_status": "FAILED",
   "paid": true,
-  "payment_id_sha256": "de161283e1c0bd0deff0bd772895cd33b3e67be7c32343d68c96754359629cd1",
+  "payment_id_sha256": "1957bef8ddf42286a8fe7ee0a61f4fd85cf6ff57ecde29581077130923edf172",
   "plan_is_trial": false,
   "provider_amount": {
     "currency": "RUB",

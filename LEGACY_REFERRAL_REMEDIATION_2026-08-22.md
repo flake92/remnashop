@@ -33,7 +33,7 @@ reduce the most recent administrator tranches first.
 The canonical audit object is
 `src/infrastructure/recovery_manifests/legacy_referral_rewards_2026-08-22.v2.audit.json`.
 Its sorted-key compact-JSON SHA-256 is
-`31e11a4fb6c59e891dca9fc9b0be5ff1a463e8f3356c06401927bae9e7151e28`.
+`dfac82651078009491e19be3d01f0af2a7c6e709b82f414a28754951c20b8beb`.
 
 ## User-merge lineage audit
 
@@ -76,8 +76,10 @@ are first-level 14-day rewards and 174 are second-level 7-day rewards.
 Reward `65` is the only provider-evidence exception. Its local YooKassa
 transaction became `FAILED` 142 ms after the reward was created, but a read-only
 YooKassa verification returned HTTP 200, `succeeded`, `paid=true`, and refunded
-amount `0.00 RUB`. The canonical redacted evidence SHA-256 is
-`0acb95beed542b1f44dd8797171400de1e362018df313cdbdfbd035d5486cffa`.
+amount `0.00 RUB` at `2026-08-22T08:18:06+00:00`. The local and provider
+payment identifiers matched; the evidence stores only the SHA-256 of their
+canonical string form. The canonical redacted evidence SHA-256 is
+`16c080ccfd92d6adc1e82f56214fd71190aca28077942a625a991a1544ff935e`.
 The redacted evidence object is tracked at
 `src/infrastructure/recovery_manifests/legacy_referral_rewards_2026-08-22.v2.provider-rr65.json`.
 The provider must be checked again immediately before the reward worker starts.
@@ -107,7 +109,7 @@ It deliberately leaves the reward's historical policy fields null.
 - Path:
   `src/infrastructure/recovery_manifests/legacy_referral_rewards_2026-08-22.v2.json`
 - Canonical sorted-key compact-JSON SHA-256:
-  `efb2ee92b7423a58e1a854ff4f5474807e8426680261e036ea5cf4c80c602362`
+  `85bd8c980abc52f6457c015f17ae635f86e3f5c42e8dc1105f6dfc82292fb23c`
 - Source export SHA-256:
   `5acaddd1e01886e68d1e4a28f7b82770e875a787fcb153f4c4d346b0f2014be1`
 

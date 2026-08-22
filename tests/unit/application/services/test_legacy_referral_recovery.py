@@ -412,16 +412,16 @@ def test_tracked_v2_operator_manifest_and_audit_are_exact_and_reproducible() -> 
     provider_evidence = json.loads(provider_path.read_text(encoding="utf-8"))
 
     assert canonical_legacy_recovery_manifest_sha256(manifest) == (
-        "efb2ee92b7423a58e1a854ff4f5474807e8426680261e036ea5cf4c80c602362"
+        "85bd8c980abc52f6457c015f17ae635f86e3f5c42e8dc1105f6dfc82292fb23c"
     )
     assert canonical_legacy_recovery_manifest_sha256(audit) == (
-        "31e11a4fb6c59e891dca9fc9b0be5ff1a463e8f3356c06401927bae9e7151e28"
+        "dfac82651078009491e19be3d01f0af2a7c6e709b82f414a28754951c20b8beb"
     )
     assert canonical_legacy_recovery_manifest_sha256(provider_evidence) == (
         PROVIDER_SUCCEEDED_REFERRAL_EVIDENCE_SHA256
     )
     assert manifest["audit_evidence_sha256"] == (
-        "31e11a4fb6c59e891dca9fc9b0be5ff1a463e8f3356c06401927bae9e7151e28"
+        "dfac82651078009491e19be3d01f0af2a7c6e709b82f414a28754951c20b8beb"
     )
     assert manifest["entry_count"] == len(manifest["entries"]) == 759
     assert sum(entry["expected_reward_amount"] for entry in manifest["entries"]) == 9408
@@ -470,7 +470,7 @@ def test_tracked_v2_operator_manifest_and_audit_are_exact_and_reproducible() -> 
         referral_reward_legacy_recovery_enabled=True,
         referral_reward_legacy_recovery_manifest_path=manifest_path.resolve(),
         referral_reward_legacy_recovery_manifest_sha256=(
-            "efb2ee92b7423a58e1a854ff4f5474807e8426680261e036ea5cf4c80c602362"
+            "85bd8c980abc52f6457c015f17ae635f86e3f5c42e8dc1105f6dfc82292fb23c"
         ),
     )
     authorizer = LegacyReferralRecoveryAuthorizer(config)  # type: ignore[arg-type]
@@ -500,5 +500,5 @@ def test_tracked_v2_operator_manifest_and_audit_are_exact_and_reproducible() -> 
             ),
         )
         assert authorizer.authorize(recovery) == (
-            "efb2ee92b7423a58e1a854ff4f5474807e8426680261e036ea5cf4c80c602362"
+            "85bd8c980abc52f6457c015f17ae635f86e3f5c42e8dc1105f6dfc82292fb23c"
         )

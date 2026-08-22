@@ -150,9 +150,11 @@ The two source classes are deliberately narrow:
   shape. Its entry evidence must equal the top-level frozen audit digest.
 - `PROVIDER_SUCCEEDED` is pinned only to reward `65`, source `1761`, YooKassa,
   and the redacted provider artifact digest
-  `0acb95beed542b1f44dd8797171400de1e362018df313cdbdfbd035d5486cffa`.
-  Recheck that payment read-only at YooKassa immediately before starting the
-  worker; any status, paid amount, or refund drift is a stop condition.
+  `16c080ccfd92d6adc1e82f56214fd71190aca28077942a625a991a1544ff935e`.
+  Its last read-only check was `2026-08-22T08:18:06+00:00`; local and provider
+  identifiers matched and the artifact pins the SHA-256 of their canonical
+  string form. Recheck the payment immediately before starting the worker; any
+  status, paid amount, identifier, or refund drift is a stop condition.
 
 Seventy entries touch a verified user-merge lineage. Their 33 current and
 historical aliases were included in the administrator-duration audit, with no
@@ -167,12 +169,12 @@ lineage is frozen in the audit artifact with SHA-256
 The tracked v2 artifacts are:
 
 - `legacy_referral_rewards_2026-08-22.v2.audit.json`, canonical SHA-256
-  `31e11a4fb6c59e891dca9fc9b0be5ff1a463e8f3356c06401927bae9e7151e28`;
+  `dfac82651078009491e19be3d01f0af2a7c6e709b82f414a28754951c20b8beb`;
 - `legacy_referral_rewards_2026-08-22.v2.provider-rr65.json`, canonical SHA-256
-  `0acb95beed542b1f44dd8797171400de1e362018df313cdbdfbd035d5486cffa`;
+  `16c080ccfd92d6adc1e82f56214fd71190aca28077942a625a991a1544ff935e`;
 - `legacy_referral_rewards_2026-08-22.v2.json`, 759 entries / 9408 days,
   canonical SHA-256
-  `efb2ee92b7423a58e1a854ff4f5474807e8426680261e036ea5cf4c80c602362`.
+  `85bd8c980abc52f6457c015f17ae635f86e3f5c42e8dc1105f6dfc82292fb23c`.
 
 Apply the exact entries through
 `POST /api/v1/admin/referral-rewards/recover-legacy-batch` while the recovery

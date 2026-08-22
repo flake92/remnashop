@@ -68,7 +68,7 @@
     "proven_missing_rewards": 2
   },
   "provider_exception": {
-    "evidence_sha256": "0acb95beed542b1f44dd8797171400de1e362018df313cdbdfbd035d5486cffa",
+    "evidence_sha256": "16c080ccfd92d6adc1e82f56214fd71190aca28077942a625a991a1544ff935e",
     "local_source_status": "FAILED",
     "provider": "YOOKASSA",
     "provider_paid": true,
