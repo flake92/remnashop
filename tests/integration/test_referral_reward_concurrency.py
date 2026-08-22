@@ -7,6 +7,14 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from src.application.dto import ReferralRewardDto
+from src.core.enums import (
+    ReferralAccrualStrategy,
+    ReferralLevel,
+    ReferralRewardState,
+    ReferralRewardStrategy,
+    ReferralRewardType,
+)
 from src.infrastructure.database.dao.referral import ReferralDaoImpl
 
 TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL")
@@ -32,10 +40,29 @@ def _dao(session: AsyncSession) -> ReferralDaoImpl:
     return dao
 
 
+class _DtoDumpRetort:
+    def dump(self, reward: ReferralRewardDto) -> dict[str, object]:
+        return {
+            key: value
+            for key, value in vars(reward).items()
+            if not key.startswith("_")
+        }
+
+
+def _creation_dao(session: AsyncSession) -> ReferralDaoImpl:
+    dao = _dao(session)
+    dao.retort = _DtoDumpRetort()  # type: ignore[assignment]
+    dao._convert_to_reward_dto = lambda reward: reward  # type: ignore[method-assign]
+    return dao
+
+
 async def _delete_fixture_rows(session: AsyncSession) -> None:
     await session.execute(
-        text("DELETE FROM referral_rewards WHERE id = ANY(:ids)"),
-        {"ids": list(REWARD_IDS)},
+        text(
+            "DELETE FROM referral_rewards "
+            "WHERE id = ANY(:ids) OR source_transaction_id = ANY(:transaction_ids)"
+        ),
+        {"ids": list(REWARD_IDS), "transaction_ids": list(TRANSACTION_IDS)},
     )
     await session.execute(
         text("DELETE FROM transactions WHERE id = ANY(:ids)"),
@@ -307,6 +334,51 @@ async def test_two_concurrent_claimants_skip_stale_recipient_candidate() -> None
         async with sessions() as cleanup:
             await _delete_fixture_rows(cleanup)
             await _remove_recipient_scan_barrier(cleanup)
+            await cleanup.commit()
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_create_reward_uses_database_owned_timestamps() -> None:
+    assert TEST_DATABASE_URL is not None
+    engine = create_async_engine(TEST_DATABASE_URL)
+    sessions = async_sessionmaker(engine, expire_on_commit=False, autoflush=False)
+
+    try:
+        async with sessions() as setup:
+            await _seed_two_rewards_for_one_recipient(setup)
+            await setup.execute(
+                text("DELETE FROM referral_rewards WHERE source_transaction_id = ANY(:ids)"),
+                {"ids": list(TRANSACTION_IDS)},
+            )
+            await setup.commit()
+
+        async with sessions() as session:
+            created = await _creation_dao(session).create_reward(
+                ReferralRewardDto(
+                    user_id=RECIPIENT_ID,
+                    type=ReferralRewardType.EXTRA_DAYS,
+                    amount=14,
+                    source_transaction_id=TRANSACTION_IDS[0],
+                    origin_referral_id=REFERRAL_IDS[0],
+                    level=ReferralLevel.FIRST,
+                    accrual_strategy_snapshot=ReferralAccrualStrategy.ON_FIRST_PAYMENT,
+                    accrual_strategy=None,
+                    reward_strategy=ReferralRewardStrategy.AMOUNT,
+                    config_value=14,
+                    state=ReferralRewardState.PENDING,
+                ),
+                referral_id=REFERRAL_IDS[0],
+            )
+            await session.commit()
+
+            assert created is not None
+            assert created.created_at is not None
+            assert created.updated_at is not None
+            assert created.updated_at >= created.created_at
+    finally:
+        async with sessions() as cleanup:
+            await _delete_fixture_rows(cleanup)
             await cleanup.commit()
         await engine.dispose()
 

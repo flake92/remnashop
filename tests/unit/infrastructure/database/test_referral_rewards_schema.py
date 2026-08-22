@@ -705,6 +705,7 @@ class _DumpRetort:
             "target_subscription_id": None,
             "baseline_expire_at": None,
             "target_expire_at": None,
+            "operator_recovery_manifest_sha256": None,
             "created_at": None,
             "updated_at": None,
         }
@@ -778,6 +779,11 @@ async def test_idempotent_create_only_returns_the_exact_same_intent() -> None:
     insert_params = session.statements[1].compile(dialect=postgresql.dialect()).params  # type: ignore[attr-defined]
     assert 202 in insert_params.values()
     assert 999 not in insert_params.values()
+    insert_sql = str(
+        session.statements[1].compile(dialect=postgresql.dialect())  # type: ignore[attr-defined]
+    ).upper()
+    assert "CREATED_AT" not in insert_sql
+    assert "UPDATED_AT" not in insert_sql
     exact_sql = str(session.statements[2].compile(dialect=postgresql.dialect())).upper()  # type: ignore[attr-defined]
     assert "SOURCE_TRANSACTION_ID" in exact_sql
     assert "ORIGIN_REFERRAL_ID" in exact_sql

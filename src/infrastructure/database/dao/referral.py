@@ -52,6 +52,40 @@ from src.infrastructure.database.referral_reward_source import (
     referral_source_evidence_at,
 )
 
+# Creation accepts only business fields. DTO audit/identity fields are read-side
+# metadata; passing their default None values to a Core INSERT would override the
+# database-owned NOT NULL timestamp defaults.
+_REFERRAL_REWARD_CREATE_FIELDS = frozenset(
+    {
+        "user_id",
+        "type",
+        "amount",
+        "is_issued",
+        "source_transaction_id",
+        "origin_referral_id",
+        "level",
+        "accrual_strategy_snapshot",
+        "accrual_strategy",
+        "reward_strategy",
+        "config_value",
+        "state",
+        "attempt_count",
+        "next_attempt_at",
+        "processing_token_hash",
+        "processing_lease_expires_at",
+        "last_error",
+        "manual_alerted_at",
+        "refund_detected_at",
+        "manual_incident_version",
+        "manual_cause",
+        "issued_at",
+        "target_subscription_id",
+        "baseline_expire_at",
+        "target_expire_at",
+        "operator_recovery_manifest_sha256",
+    }
+)
+
 
 class ReferralDaoImpl(ReferralDao):
     def __init__(
@@ -301,12 +335,15 @@ class ReferralDaoImpl(ReferralDao):
                 )
                 return None
 
-        reward_data = self.retort.dump(reward)
-        reward_data.pop("id", None)
+        reward_data = {
+            field: value
+            for field, value in self.retort.dump(reward).items()
+            if field in _REFERRAL_REWARD_CREATE_FIELDS
+        }
         # referral_id is accepted on read DTOs so operators can inspect legacy
         # attribution. Creation still takes the authoritative relationship as an
-        # explicit argument and must not pass the dumped value twice.
-        reward_data.pop("referral_id", None)
+        # explicit argument. Database-owned identity/audit fields are deliberately
+        # outside the allowlist so their defaults cannot be overridden by DTO None.
         stmt = (
             insert(ReferralReward)
             .values(**reward_data, referral_id=referral_id)
