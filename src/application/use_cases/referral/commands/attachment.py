@@ -56,7 +56,7 @@ class AttachReferral(Interactor[AttachReferralDto, Optional[UserDto]]):
                 data.user_id,
                 (referrer.id,),
             )
-            existing, parent = await self.referral_dao.get_referral_chain(data.user_id)
+            existing, _ = await self.referral_dao.get_referral_chain(data.user_id)
             if existing:
                 logger.info(f"Referral skipped: user '{data.user_id}' already referred")
                 await self.uow.commit()
@@ -68,16 +68,17 @@ class AttachReferral(Interactor[AttachReferralDto, Optional[UserDto]]):
                 await self.uow.commit()
                 return None
 
-            level = self._define_referral_level(parent.level if parent else None)
-
             logger.info(
                 f"Referral detected '{referrer.remna_name}' -> "
-                f"'{data.user_id}' with level '{level.name}'"
+                f"'{data.user_id}'"
             )
 
             await self.referral_dao.create_referral(
                 ReferralDto(
-                    level=level,
+                    # A stored referral is always the direct attribution edge.
+                    # L2 is relative to the viewer/reward recipient and must be
+                    # derived by traversing the chain, not persisted on this edge.
+                    level=ReferralLevel.FIRST,
                     referrer=referrer,
                     referred=referred,
                 )
@@ -87,15 +88,3 @@ class AttachReferral(Interactor[AttachReferralDto, Optional[UserDto]]):
         await self.event_publisher.publish(ReferralAttachedEvent(user=referrer, name=referred.name))
 
         return referrer
-
-    def _define_referral_level(self, parent_level: Optional[ReferralLevel]) -> ReferralLevel:
-        if parent_level is None:
-            return ReferralLevel.FIRST
-
-        next_level_value = parent_level.value + 1
-        max_level_value = max(item.value for item in ReferralLevel)
-
-        if next_level_value > max_level_value:
-            return ReferralLevel(parent_level.value)
-
-        return ReferralLevel(next_level_value)

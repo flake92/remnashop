@@ -427,6 +427,8 @@ async def test_attach_referral_locks_users_before_existing_check_and_insert() ->
     assert result is referrer
     assert events == ["lock", "chain", "create"]
     referral_dao.lock_referral_attribution.assert_awaited_once_with(9, (2,))
+    created_referral = referral_dao.create_referral.await_args.args[0]
+    assert created_referral.level is ReferralLevel.FIRST
     publisher.publish.assert_awaited_once()
     uow.commit.assert_awaited_once()
 

@@ -10,6 +10,7 @@ from sqlalchemy import Numeric, and_, case, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, selectinload
+from sqlalchemy.sql import Select
 
 from src.application.common.dao import ReferralDao
 from src.application.dto import (
@@ -2489,17 +2490,45 @@ class ReferralDaoImpl(ReferralDao):
             .with_for_update()
         )
 
-    async def get_stats(self) -> ReferralStatisticsDto:
-        stmt = select(
-            func.count().label("total_referrals"),
-            func.sum(case((Referral.level == ReferralLevel.FIRST, 1), else_=0)).label(
-                "level_1_count"
-            ),
-            func.sum(case((Referral.level == ReferralLevel.SECOND, 1), else_=0)).label(
-                "level_2_count"
-            ),
-            func.count(func.distinct(Referral.referrer_id)).label("unique_referrers"),
+    @staticmethod
+    def _referral_network_stats_statement() -> Select[Any]:
+        # A referral row stores one direct attribution edge. Whether that edge also
+        # represents an L2 referral depends on the referrer's own attribution, so it
+        # must be derived from the graph instead of Referral.level legacy metadata.
+        referrer_attribution = aliased(Referral, name="referrer_attribution")
+        return (
+            select(
+                func.count(Referral.id).label("total_referrals"),
+                func.count(Referral.id).label("level_1_count"),
+                func.count(referrer_attribution.id).label("level_2_count"),
+                func.count(func.distinct(Referral.referrer_id)).label("unique_referrers"),
+            )
+            .select_from(Referral)
+            .outerjoin(
+                referrer_attribution,
+                referrer_attribution.referred_id == Referral.referrer_id,
+            )
         )
+
+    @staticmethod
+    def _user_referral_network_stats_statement(user_id: int) -> Select[Any]:
+        direct_referral = aliased(Referral, name="direct_referral")
+        second_level_referral = aliased(Referral, name="second_level_referral")
+        return (
+            select(
+                func.count(func.distinct(direct_referral.id)).label("level_1"),
+                func.count(second_level_referral.id).label("level_2"),
+            )
+            .select_from(direct_referral)
+            .outerjoin(
+                second_level_referral,
+                second_level_referral.referrer_id == direct_referral.referred_id,
+            )
+            .where(direct_referral.referrer_id == user_id)
+        )
+
+    async def get_stats(self) -> ReferralStatisticsDto:
+        stmt = self._referral_network_stats_statement()
 
         rewards_stmt = select(
             func.sum(case((ReferralReward.is_issued.is_(True), 1), else_=0)).label(
@@ -2568,10 +2597,7 @@ class ReferralDaoImpl(ReferralDao):
             .where(Referral.referred_id == user_id)
         )
 
-        invited_stmt = select(
-            func.sum(case((Referral.level == ReferralLevel.FIRST, 1), else_=0)).label("level_1"),
-            func.sum(case((Referral.level == ReferralLevel.SECOND, 1), else_=0)).label("level_2"),
-        ).where(Referral.referrer_id == user_id)
+        invited_stmt = self._user_referral_network_stats_statement(user_id)
 
         rewards_stmt = select(
             func.sum(

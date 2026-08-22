@@ -338,10 +338,10 @@ msg-statistics-referrals =
     <b>👪 Статистика по рефералам</b>
 
     <blockquote>
-    • <b>Всего рефералов</b>: { $total_referrals }
-    • <b>Уровень 1</b>: { $level_1_count }
-    • <b>Уровень 2</b>: { $level_2_count }
-    • <b>Уникальных реферреров</b>: { $unique_referrers }
+    • <b>Регистраций по реферальным ссылкам</b>: { $total_referrals }
+    • <b>Приглашено напрямую (ур. 1)</b>: { $level_1_count }
+    • <b>Приглашено рефералами (ур. 2)</b>: { $level_2_count }
+    • <b>Уникальных рефереров</b>: { $unique_referrers }
     { $top_referrer_id ->
         [0] { empty }
         *[HAS] • <b>Топ реферрер</b>: { $top_referrer_telegram_id ->
@@ -534,8 +534,8 @@ msg-user-statistics =
             *[HAS] <a href="tg://user?id={ $referrer_telegram_id }">@{ $referrer_username }</a>
         }
     }
-    • <b>Приглашенных (ур. 1)</b>: { $referrals_level_1 }
-    • <b>Приглашенных (ур. 2)</b>: { $referrals_level_2 }
+    • <b>Приглашено напрямую (ур. 1)</b>: { $referrals_level_1 }
+    • <b>Приглашено рефералами (ур. 2)</b>: { $referrals_level_2 }
     • <b>Получено поинтов</b>: { $reward_points }
     • <b>Получено дней</b>: { $reward_days }
     </blockquote>

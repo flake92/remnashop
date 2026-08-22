@@ -42,6 +42,8 @@ class Referral(BaseSql, TimestampMixin):
         unique=True,
     )
 
+    # Legacy, non-null edge metadata. New rows store FIRST because every row is
+    # a direct attribution; relative L2 is derived by traversing referral edges.
     level: Mapped[ReferralLevel]
 
     referrer: Mapped["User"] = relationship(
