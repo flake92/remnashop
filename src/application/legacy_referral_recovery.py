@@ -125,12 +125,24 @@ class _ManifestEntryV2(BaseModel):
     expected_referral_id: StrictInt = Field(gt=0)
     expected_reward_amount: StrictInt = Field(gt=0)
     expected_created_at: str = Field(min_length=20, max_length=64)
+    expected_participant_merge_audit_ids: list[StrictInt] = Field(
+        default_factory=list,
+        max_length=5000,
+    )
     operator_reference: str = Field(min_length=1, max_length=256)
     reason: str = Field(min_length=1, max_length=1024)
     evidence_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
     @model_validator(mode="after")
     def validate_canonical_timestamp(self) -> "_ManifestEntryV2":
+        if (
+            any(audit_id <= 0 for audit_id in self.expected_participant_merge_audit_ids)
+            or self.expected_participant_merge_audit_ids
+            != sorted(set(self.expected_participant_merge_audit_ids))
+        ):
+            raise ValueError(
+                "expected_participant_merge_audit_ids must be positive, sorted, and unique"
+            )
         try:
             parsed = datetime.fromisoformat(self.expected_created_at)
         except ValueError as exc:
@@ -246,6 +258,9 @@ class LegacyReferralRecoveryAuthorizer:
                     recovery.expected_created_at.isoformat()
                     if recovery.expected_created_at is not None
                     else None
+                ),
+                "expected_participant_merge_audit_ids": list(
+                    recovery.expected_participant_merge_audit_ids
                 ),
                 "operator_reference": recovery.operator_reference,
                 "reason": recovery.reason,

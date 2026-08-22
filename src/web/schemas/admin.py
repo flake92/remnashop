@@ -100,6 +100,10 @@ class LegacyReferralRewardRecoveryRequest(BaseModel):
     expected_user_id: StrictInt | None = Field(default=None, gt=0)
     expected_referral_id: StrictInt | None = Field(default=None, gt=0)
     expected_created_at: datetime | None = None
+    expected_participant_merge_audit_ids: list[StrictInt] = Field(
+        default_factory=list,
+        max_length=5000,
+    )
 
     @model_validator(mode="after")
     def validate_action_evidence(self) -> "LegacyReferralRewardRecoveryRequest":
@@ -114,6 +118,14 @@ class LegacyReferralRewardRecoveryRequest(BaseModel):
             self.expected_referral_id,
             self.expected_created_at,
         )
+        merge_audit_ids = self.expected_participant_merge_audit_ids
+        if (
+            any(audit_id <= 0 for audit_id in merge_audit_ids)
+            or merge_audit_ids != sorted(set(merge_audit_ids))
+        ):
+            raise ValueError(
+                "expected_participant_merge_audit_ids must be positive, sorted, and unique"
+            )
         if self.action == "RETRY_PROVEN_MISSING":
             if any(value is None for value in (*source, *snapshot)):
                 raise ValueError(
@@ -122,13 +134,16 @@ class LegacyReferralRewardRecoveryRequest(BaseModel):
             if (
                 any(value is not None for value in expected_row)
                 or self.source_validation is not None
+                or merge_audit_ids
             ):
                 raise ValueError("Source-backed recovery must not include operator row hints")
         elif self.action == "CONFIRM_ADMIN_COMPENSATED":
             if any(value is None for value in source):
                 raise ValueError("CONFIRM_ADMIN_COMPENSATED requires exact source evidence")
-            if any(value is not None for value in (*snapshot, *expected_row)) or (
-                self.source_validation is not None
+            if (
+                any(value is not None for value in (*snapshot, *expected_row))
+                or self.source_validation is not None
+                or merge_audit_ids
             ):
                 raise ValueError(
                     "CONFIRM_ADMIN_COMPENSATED must not invent a historical policy snapshot"

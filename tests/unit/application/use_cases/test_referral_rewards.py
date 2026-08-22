@@ -120,6 +120,7 @@ async def test_operator_directed_recovery_commits_source_evidence_without_policy
         expected_user_id=222,
         expected_referral_id=1500,
         expected_created_at=datetime(2026, 7, 20, tzinfo=timezone.utc),
+        expected_participant_merge_audit_ids=(3, 17),
         source_validation=LegacyReferralRewardSourceValidation.LOCAL_COMPLETED,
     )
     uow = FakeUnitOfWork()
@@ -133,6 +134,37 @@ async def test_operator_directed_recovery_commits_source_evidence_without_policy
         replace(data, authorization_manifest_sha256="d" * 64)
     )
     uow.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "merge_audit_ids",
+    [(17, 3), (3, 3), (0,), [3]],
+)
+async def test_operator_recovery_rejects_noncanonical_merge_audit_ids(
+    merge_audit_ids: object,
+) -> None:
+    data = replace(
+        _legacy_recovery_dto(LegacyReferralRewardRecoveryAction.RETRY_OPERATOR_DIRECTED),
+        expected_user_id=222,
+        expected_referral_id=1500,
+        expected_created_at=datetime(2026, 7, 20, tzinfo=timezone.utc),
+        expected_participant_merge_audit_ids=merge_audit_ids,  # type: ignore[arg-type]
+        source_validation=LegacyReferralRewardSourceValidation.LOCAL_COMPLETED,
+    )
+    referral_dao = SimpleNamespace(recover_legacy_extra_days_reward=AsyncMock())
+    authorizer = SimpleNamespace(authorize=Mock())
+    use_case = RecoverLegacyReferralReward(  # type: ignore[arg-type]
+        FakeUnitOfWork(),
+        referral_dao,
+        authorizer,
+    )
+
+    with pytest.raises(ValueError, match="positive, sorted, unique tuple"):
+        await use_case._execute(SimpleNamespace(log="system"), data)  # type: ignore[arg-type]
+
+    referral_dao.recover_legacy_extra_days_reward.assert_not_awaited()
+    authorizer.authorize.assert_not_called()
 
 
 @pytest.mark.asyncio

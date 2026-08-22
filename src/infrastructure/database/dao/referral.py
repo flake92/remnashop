@@ -1682,19 +1682,45 @@ class ReferralDaoImpl(ReferralDao):
         )
         if locked_user_ids != participant_ids:
             raise ValueError("Legacy reward participants changed or no longer exist")
-        real_merge = await self.session.scalar(
-            select(UserMergeAudit.id)
-            .where(
-                UserMergeAudit.dry_run.is_(False),
-                or_(
-                    UserMergeAudit.source_user_id.in_(participant_ids),
-                    UserMergeAudit.target_user_id.in_(participant_ids),
-                ),
+        participant_merge_audit_ids: tuple[int, ...] = ()
+        if recovery.action == LegacyReferralRewardRecoveryAction.RETRY_OPERATOR_DIRECTED:
+            participant_merge_audit_ids = tuple(
+                (
+                    await self.session.scalars(
+                        self._operator_recovery_participant_merge_audit_ids_query(
+                            participant_ids
+                        )
+                    )
+                ).all()
             )
-            .limit(1)
-        )
-        if real_merge is not None:
-            raise ValueError("Legacy reward participants have real user-merge history")
+            if (
+                participant_merge_audit_ids
+                != recovery.expected_participant_merge_audit_ids
+            ):
+                raise ValueError(
+                    "Legacy reward participant merge history drifted from the frozen manifest"
+                )
+            merge_conflict = await self.session.scalar(
+                self._operator_recovery_merge_conflict_query(participant_ids)
+            )
+            if merge_conflict is not None:
+                raise ValueError(
+                    "Legacy reward participants have non-canonical user-merge history"
+                )
+        else:
+            real_merge = await self.session.scalar(
+                select(UserMergeAudit.id)
+                .where(
+                    UserMergeAudit.dry_run.is_(False),
+                    or_(
+                        UserMergeAudit.source_user_id.in_(participant_ids),
+                        UserMergeAudit.target_user_id.in_(participant_ids),
+                    ),
+                )
+                .limit(1)
+            )
+            if real_merge is not None:
+                raise ValueError("Legacy reward participants have real user-merge history")
 
         reward = await self.session.scalar(
             select(ReferralReward)
@@ -1918,6 +1944,9 @@ class ReferralDaoImpl(ReferralDao):
                 if recovery.source_validation is not None
                 else None
             )
+            selected_provenance["selected"]["participant_merge_audit_ids"] = list(
+                participant_merge_audit_ids
+            )
         self.session.add(
             ReferralRewardResolution(
                 reward_id=reward.id,
@@ -1961,6 +1990,110 @@ class ReferralDaoImpl(ReferralDao):
         return True
 
     @staticmethod
+    def _operator_recovery_participant_merge_audit_ids_query(
+        participant_ids: set[int],
+    ) -> Any:
+        """Return the exact ordered real-merge lineage touching participants."""
+
+        return (
+            select(UserMergeAudit.id)
+            .where(
+                UserMergeAudit.dry_run.is_(False),
+                or_(
+                    UserMergeAudit.source_user_id.in_(sorted(participant_ids)),
+                    UserMergeAudit.target_user_id.in_(sorted(participant_ids)),
+                ),
+            )
+            .order_by(UserMergeAudit.id)
+        )
+
+    @staticmethod
+    def _operator_recovery_merge_conflict_query(participant_ids: set[int]) -> Any:
+        """Find a merge participant that is not a canonical current target.
+
+        A successful user merge rewrites referral, reward, and transaction foreign
+        keys to the target. Consequently a frozen operator manifest can legitimately
+        name that target. It must never name a source tombstone, though, and every
+        inbound audit edge must still agree with the source's immutable merge marker.
+
+        Participant rows are already locked in ascending order by the caller. The
+        inbound source rows are deliberately read without an extra lock: their
+        ``merged_into_user_id`` is database-immutable, while locking them after the
+        targets would invert the user-merge lock order and introduce a deadlock.
+        """
+
+        merge_source = aliased(User, name="legacy_recovery_merge_source")
+        merge_marker_source = aliased(User, name="legacy_recovery_merge_marker_source")
+        merge_marker_audit = aliased(
+            UserMergeAudit,
+            name="legacy_recovery_merge_marker_audit",
+        )
+        marker_has_real_audit = (
+            select(merge_marker_audit.id)
+            .where(
+                merge_marker_audit.dry_run.is_(False),
+                merge_marker_audit.source_user_id == merge_marker_source.id,
+                merge_marker_audit.target_user_id == User.id,
+            )
+            .correlate(User, merge_marker_source)
+            .exists()
+        )
+        unattested_inbound_marker = (
+            select(merge_marker_source.id)
+            .where(
+                merge_marker_source.merged_into_user_id == User.id,
+                ~marker_has_real_audit,
+            )
+            .correlate(User)
+            .exists()
+        )
+        return (
+            select(User.id)
+            .outerjoin(
+                UserMergeAudit,
+                and_(
+                    UserMergeAudit.dry_run.is_(False),
+                    or_(
+                        UserMergeAudit.source_user_id == User.id,
+                        UserMergeAudit.target_user_id == User.id,
+                    ),
+                ),
+            )
+            .outerjoin(
+                merge_source,
+                merge_source.id == UserMergeAudit.source_user_id,
+            )
+            .where(
+                User.id.in_(sorted(participant_ids)),
+                or_(
+                    # A current participant must be the final merge target, never
+                    # a source or a target that was subsequently merged onward.
+                    User.merged_into_user_id.is_not(None),
+                    User.merged_at.is_not(None),
+                    UserMergeAudit.source_user_id == User.id,
+                    # A source marker without the corresponding immutable audit
+                    # edge is inconsistent even though the target itself is live.
+                    unattested_inbound_marker,
+                    and_(
+                        UserMergeAudit.target_user_id == User.id,
+                        or_(
+                            # A valid inbound edge ends at this exact target and
+                            # retains the canonical, empty source tombstone.
+                            merge_source.id.is_(None),
+                            merge_source.merged_into_user_id.is_distinct_from(User.id),
+                            merge_source.merged_at.is_(None),
+                            merge_source.is_blocked.is_not(True),
+                            merge_source.telegram_id.is_not(None),
+                            merge_source.email.is_not(None),
+                            merge_source.current_subscription_id.is_not(None),
+                        ),
+                    ),
+                ),
+            )
+            .limit(1)
+        )
+
+    @staticmethod
     def _legacy_recovery_request_provenance(
         recovery: LegacyReferralRewardRecoveryDto,
     ) -> dict[str, object]:
@@ -1995,6 +2128,9 @@ class ReferralDaoImpl(ReferralDao):
                     recovery.expected_created_at.isoformat()
                     if recovery.expected_created_at is not None
                     else None
+                ),
+                expected_participant_merge_audit_ids=list(
+                    recovery.expected_participant_merge_audit_ids
                 ),
                 source_validation=(
                     recovery.source_validation.value

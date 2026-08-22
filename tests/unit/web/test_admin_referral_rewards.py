@@ -97,6 +97,7 @@ def _operator_recovery_payload(reward_id: int = 1342) -> dict[str, object]:
         "expected_user_id": 222,
         "expected_referral_id": 1500,
         "expected_created_at": datetime(2026, 7, 20, tzinfo=timezone.utc),
+        "expected_participant_merge_audit_ids": [3, 17],
         "operator_reference": "OWNER/INCIDENT-2026-08-22-FULL-AUDIT",
         "reason": "FIFO timeline audit found no ADMIN day allocation",
         "evidence_sha256": "e" * 64,
@@ -196,6 +197,7 @@ async def test_operator_recovery_endpoint_dispatches_source_and_exact_row_hints(
     assert request.expected_user_id == 222
     assert request.expected_referral_id == 1500
     assert request.expected_created_at == datetime(2026, 7, 20, tzinfo=timezone.utc)
+    assert request.expected_participant_merge_audit_ids == (3, 17)
     assert request.accrual_strategy_snapshot is None
     assert request.reward_strategy is None
     assert request.config_value is None
@@ -230,6 +232,29 @@ def test_legacy_recovery_schema_rejects_ambiguous_evidence(
     payload: dict[str, object],
 ) -> None:
     with pytest.raises(ValidationError):
+        LegacyReferralRewardRecoveryRequest.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    "merge_audit_ids",
+    [[17, 3], [3, 3], [0], [-1]],
+)
+def test_operator_recovery_schema_requires_canonical_merge_audit_ids(
+    merge_audit_ids: list[int],
+) -> None:
+    payload = _operator_recovery_payload()
+    payload.pop("reward_id")
+    payload["expected_participant_merge_audit_ids"] = merge_audit_ids
+
+    with pytest.raises(ValidationError, match="positive, sorted, and unique"):
+        LegacyReferralRewardRecoveryRequest.model_validate(payload)
+
+
+def test_nonoperator_recovery_rejects_participant_merge_audit_ids() -> None:
+    payload = _legacy_recovery_payload()
+    payload["expected_participant_merge_audit_ids"] = [3]
+
+    with pytest.raises(ValidationError, match="operator row hints"):
         LegacyReferralRewardRecoveryRequest.model_validate(payload)
 
 

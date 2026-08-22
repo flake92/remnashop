@@ -106,6 +106,9 @@ def _operator_manifest(recovery: LegacyReferralRewardRecoveryDto) -> dict[str, o
                 "expected_referral_id": recovery.expected_referral_id,
                 "expected_reward_amount": recovery.expected_reward_amount,
                 "expected_created_at": recovery.expected_created_at.isoformat(),
+                "expected_participant_merge_audit_ids": list(
+                    recovery.expected_participant_merge_audit_ids
+                ),
                 "operator_reference": recovery.operator_reference,
                 "reason": recovery.reason,
                 "evidence_sha256": recovery.evidence_sha256,
@@ -237,6 +240,7 @@ def test_v2_manifest_authorizes_only_exact_operator_directed_row(tmp_path: Path)
         replace(recovery, expected_user_id=223),
         replace(recovery, expected_referral_id=1501),
         replace(recovery, expected_reward_amount=7),
+        replace(recovery, expected_participant_merge_audit_ids=(3,)),
         replace(
             recovery,
             expected_created_at=datetime(2026, 7, 20, 12, 34, 57, tzinfo=timezone.utc),
@@ -408,16 +412,16 @@ def test_tracked_v2_operator_manifest_and_audit_are_exact_and_reproducible() -> 
     provider_evidence = json.loads(provider_path.read_text(encoding="utf-8"))
 
     assert canonical_legacy_recovery_manifest_sha256(manifest) == (
-        "e4fb74b04bd6087f84b43ce5def154246c824938ac252234b7e0cd25115d98f1"
+        "efb2ee92b7423a58e1a854ff4f5474807e8426680261e036ea5cf4c80c602362"
     )
     assert canonical_legacy_recovery_manifest_sha256(audit) == (
-        "c4562274a3049cade2bb5bc1f116389ee74afa48f19612df55f103c35243296e"
+        "31e11a4fb6c59e891dca9fc9b0be5ff1a463e8f3356c06401927bae9e7151e28"
     )
     assert canonical_legacy_recovery_manifest_sha256(provider_evidence) == (
         PROVIDER_SUCCEEDED_REFERRAL_EVIDENCE_SHA256
     )
     assert manifest["audit_evidence_sha256"] == (
-        "c4562274a3049cade2bb5bc1f116389ee74afa48f19612df55f103c35243296e"
+        "31e11a4fb6c59e891dca9fc9b0be5ff1a463e8f3356c06401927bae9e7151e28"
     )
     assert manifest["entry_count"] == len(manifest["entries"]) == 759
     assert sum(entry["expected_reward_amount"] for entry in manifest["entries"]) == 9408
@@ -436,6 +440,26 @@ def test_tracked_v2_operator_manifest_and_audit_are_exact_and_reproducible() -> 
         for entry in manifest["entries"]
         if entry["source_validation"] == "LOCAL_COMPLETED"
     )
+    direct_merge_mapping = {
+        str(entry["reward_id"]): entry["expected_participant_merge_audit_ids"]
+        for entry in manifest["entries"]
+        if entry.get("expected_participant_merge_audit_ids")
+    }
+    assert len(direct_merge_mapping) == 70
+    assert sum(len(audit_ids) for audit_ids in direct_merge_mapping.values()) == 71
+    assert canonical_legacy_recovery_manifest_sha256(direct_merge_mapping) == (
+        "5e77ef5c3cd03a23b236886d30743bd59f360cfd8457857108676bad1ab74060"
+    )
+    assert audit["schema_version"] == 2
+    assert audit["user_merge_lineage_audit"]["canonical_inbound_rewards"] == 70
+    assert audit["user_merge_lineage_audit"]["outbound_rewards"] == 0
+    assert audit["user_merge_lineage_audit"]["invalid_rewards"] == 0
+    assert audit["user_merge_lineage_audit"]["direct_reward_audit_mapping_sha256"] == (
+        "5e77ef5c3cd03a23b236886d30743bd59f360cfd8457857108676bad1ab74060"
+    )
+    assert audit["admin_duration_audit"][
+        "retained_positive_events_to_merged_recipient_aliases"
+    ] == 0
     source_levels = {
         (entry["source_transaction_id"], entry["level"])
         for entry in manifest["entries"]
@@ -446,7 +470,7 @@ def test_tracked_v2_operator_manifest_and_audit_are_exact_and_reproducible() -> 
         referral_reward_legacy_recovery_enabled=True,
         referral_reward_legacy_recovery_manifest_path=manifest_path.resolve(),
         referral_reward_legacy_recovery_manifest_sha256=(
-            "e4fb74b04bd6087f84b43ce5def154246c824938ac252234b7e0cd25115d98f1"
+            "efb2ee92b7423a58e1a854ff4f5474807e8426680261e036ea5cf4c80c602362"
         ),
     )
     authorizer = LegacyReferralRecoveryAuthorizer(config)  # type: ignore[arg-type]
@@ -468,10 +492,13 @@ def test_tracked_v2_operator_manifest_and_audit_are_exact_and_reproducible() -> 
             expected_user_id=entry["expected_user_id"],
             expected_referral_id=entry["expected_referral_id"],
             expected_created_at=datetime.fromisoformat(entry["expected_created_at"]),
+            expected_participant_merge_audit_ids=tuple(
+                entry.get("expected_participant_merge_audit_ids", [])
+            ),
             source_validation=LegacyReferralRewardSourceValidation(
                 entry["source_validation"]
             ),
         )
         assert authorizer.authorize(recovery) == (
-            "e4fb74b04bd6087f84b43ce5def154246c824938ac252234b7e0cd25115d98f1"
+            "efb2ee92b7423a58e1a854ff4f5474807e8426680261e036ea5cf4c80c602362"
         )

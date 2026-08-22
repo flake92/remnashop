@@ -154,15 +154,25 @@ The two source classes are deliberately narrow:
   Recheck that payment read-only at YooKassa immediately before starting the
   worker; any status, paid amount, or refund drift is a stop condition.
 
+Seventy entries touch a verified user-merge lineage. Their 33 current and
+historical aliases were included in the administrator-duration audit, with no
+positive event found for the remaining cohort. Each manifest entry pins the
+exact sorted real merge-audit IDs touching its locked participants. The DAO
+then verifies that exact set and accepts only canonical current inbound targets;
+new edges, outbound or merged-onward participants, missing audit/source rows,
+marker drift, and damaged source tombstones fail closed. The full transitive
+lineage is frozen in the audit artifact with SHA-256
+`d79e035d3f47489b664d1a15a4fbc59dbbbd341735c4f0b6ae413680a9536977`.
+
 The tracked v2 artifacts are:
 
 - `legacy_referral_rewards_2026-08-22.v2.audit.json`, canonical SHA-256
-  `c4562274a3049cade2bb5bc1f116389ee74afa48f19612df55f103c35243296e`;
+  `31e11a4fb6c59e891dca9fc9b0be5ff1a463e8f3356c06401927bae9e7151e28`;
 - `legacy_referral_rewards_2026-08-22.v2.provider-rr65.json`, canonical SHA-256
   `0acb95beed542b1f44dd8797171400de1e362018df313cdbdfbd035d5486cffa`;
 - `legacy_referral_rewards_2026-08-22.v2.json`, 759 entries / 9408 days,
   canonical SHA-256
-  `e4fb74b04bd6087f84b43ce5def154246c824938ac252234b7e0cd25115d98f1`.
+  `efb2ee92b7423a58e1a854ff4f5474807e8426680261e036ea5cf4c80c602362`.
 
 Apply the exact entries through
 `POST /api/v1/admin/referral-rewards/recover-legacy-batch` while the recovery

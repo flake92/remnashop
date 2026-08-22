@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import create_engine, select, text
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import aliased
 
@@ -894,12 +894,17 @@ class _FullRecoverySession(_ResolutionSession):
         source: object,
         origin: object,
         participant_ids: list[int],
+        participant_merge_audit_ids: list[int] | None = None,
     ) -> None:
         super().__init__(scalar_values)
         self.reward = reward
         self.source = source
         self.origin = origin
         self.participant_ids = participant_ids
+        self.scalar_row_values = [
+            participant_ids,
+            participant_merge_audit_ids or [],
+        ]
 
     async def get(self, model: object, object_id: int) -> object:
         if model is ReferralReward:
@@ -911,7 +916,7 @@ class _FullRecoverySession(_ResolutionSession):
         raise AssertionError((model, object_id))
 
     async def scalars(self, statement: object) -> _ScalarRows:
-        return _ScalarRows(self.participant_ids)
+        return _ScalarRows(self.scalar_row_values.pop(0))
 
 
 def _recovery(
@@ -1128,7 +1133,11 @@ async def test_operator_recovery_keeps_reward_source_less_and_audits_validation_
     assert resolution.decision == "RETRY_OPERATOR_DIRECTED"
     assert resolution.selected_source_transaction_id == 77
     assert resolution.selected_provenance["request"]["source_validation"] == "LOCAL_COMPLETED"
+    assert resolution.selected_provenance["request"][
+        "expected_participant_merge_audit_ids"
+    ] == []
     assert resolution.selected_provenance["selected"]["source_validation"] == "LOCAL_COMPLETED"
+    assert resolution.selected_provenance["selected"]["participant_merge_audit_ids"] == []
     values = ReferralDaoImpl._legacy_recovery_transition_values(
         recovery,
         source_transaction_id=77,
@@ -1264,6 +1273,276 @@ async def test_legacy_recovery_rejects_any_real_participant_merge() -> None:
     dao.session = session  # type: ignore[assignment]
 
     with pytest.raises(ValueError, match="user-merge history"):
+        await dao.recover_legacy_extra_days_reward(recovery)
+
+    assert session.added == []
+    assert session.executed == []
+
+
+def test_operator_recovery_pins_exact_real_participant_merge_ids() -> None:
+    statement = ReferralDaoImpl._operator_recovery_participant_merge_audit_ids_query(
+        {2, 7}
+    )
+    compiled = statement.compile(dialect=postgresql.dialect())  # type: ignore[attr-defined]
+    sql = str(compiled).upper()
+
+    assert "USER_MERGE_AUDIT.DRY_RUN IS FALSE" in sql
+    assert "USER_MERGE_AUDIT.SOURCE_USER_ID IN" in sql
+    assert "USER_MERGE_AUDIT.TARGET_USER_ID IN" in sql
+    assert "ORDER BY USER_MERGE_AUDIT.ID" in sql
+    assert sorted(compiled.params["source_user_id_1"]) == [2, 7]
+    assert sorted(compiled.params["target_user_id_1"]) == [2, 7]
+
+
+@pytest.mark.asyncio
+async def test_operator_recovery_accepts_exact_pinned_merge_ids_and_audits_them() -> None:
+    reward, source, origin = _recovery_entities()
+    recovery = replace(
+        _operator_recovery(reward),
+        expected_participant_merge_audit_ids=(3, 17),
+    )
+    session = _FullRecoverySession(
+        [None, None, None, None, None, reward, source, origin, origin, None, None],
+        reward=reward,
+        source=source,
+        origin=origin,
+        participant_ids=[2, 7],
+        participant_merge_audit_ids=[3, 17],
+    )
+    dao = ReferralDaoImpl.__new__(ReferralDaoImpl)
+    dao.session = session  # type: ignore[assignment]
+
+    assert await dao.recover_legacy_extra_days_reward(recovery)
+
+    resolution = session.added[0]
+    assert resolution.selected_provenance["request"][
+        "expected_participant_merge_audit_ids"
+    ] == [3, 17]
+    assert resolution.selected_provenance["selected"][
+        "participant_merge_audit_ids"
+    ] == [3, 17]
+
+
+@pytest.mark.asyncio
+async def test_operator_recovery_rejects_participant_merge_id_drift_before_lineage_guard() -> None:
+    reward, source, origin = _recovery_entities()
+    recovery = replace(
+        _operator_recovery(reward),
+        expected_participant_merge_audit_ids=(3,),
+    )
+    session = _FullRecoverySession(
+        [None, None, None, None],
+        reward=reward,
+        source=source,
+        origin=origin,
+        participant_ids=[2, 7],
+        participant_merge_audit_ids=[3, 17],
+    )
+    dao = ReferralDaoImpl.__new__(ReferralDaoImpl)
+    dao.session = session  # type: ignore[assignment]
+
+    with pytest.raises(ValueError, match="merge history drifted"):
+        await dao.recover_legacy_extra_days_reward(recovery)
+
+    assert session.scalar_values == []
+    assert session.added == []
+    assert session.executed == []
+
+
+def test_operator_recovery_merge_guard_allows_only_canonical_inbound_targets() -> None:
+    statement = ReferralDaoImpl._operator_recovery_merge_conflict_query({2, 7})
+    compiled = statement.compile(dialect=postgresql.dialect())  # type: ignore[attr-defined]
+    sql = str(compiled).upper()
+
+    # Dry runs carry no lineage authority. Every real edge touching a frozen
+    # participant is inspected, while a participant in the source role always
+    # fails the query.
+    assert "USER_MERGE_AUDIT.DRY_RUN IS FALSE" in sql
+    assert "USER_MERGE_AUDIT.SOURCE_USER_ID = USERS.ID" in sql
+    assert "USER_MERGE_AUDIT.TARGET_USER_ID = USERS.ID" in sql
+
+    # A participant must still be the current target. Its inbound source must
+    # point exactly to it and retain the canonical source-tombstone shape.
+    assert "USERS.MERGED_INTO_USER_ID IS NOT NULL" in sql
+    assert "USERS.MERGED_AT IS NOT NULL" in sql
+    assert (
+        "LEGACY_RECOVERY_MERGE_SOURCE.MERGED_INTO_USER_ID "
+        "IS DISTINCT FROM USERS.ID"
+    ) in sql
+    assert "LEGACY_RECOVERY_MERGE_SOURCE.MERGED_AT IS NULL" in sql
+    assert "LEGACY_RECOVERY_MERGE_SOURCE.IS_BLOCKED IS NOT TRUE" in sql
+    assert "LEGACY_RECOVERY_MERGE_SOURCE.TELEGRAM_ID IS NOT NULL" in sql
+    assert "LEGACY_RECOVERY_MERGE_SOURCE.EMAIL IS NOT NULL" in sql
+    assert "LEGACY_RECOVERY_MERGE_SOURCE.CURRENT_SUBSCRIPTION_ID IS NOT NULL" in sql
+    assert "LEGACY_RECOVERY_MERGE_MARKER_SOURCE.MERGED_INTO_USER_ID = USERS.ID" in sql
+    assert "NOT (EXISTS" in sql
+    assert sorted(compiled.params["id_1"]) == [2, 7]
+
+
+def _operator_merge_conflicts(
+    *,
+    users: list[dict[str, object]],
+    audits: list[dict[str, object]],
+    participant_ids: set[int],
+) -> set[int]:
+    engine = create_engine("sqlite://")
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                CREATE TABLE users (
+                    id INTEGER PRIMARY KEY,
+                    merged_into_user_id INTEGER,
+                    merged_at TEXT,
+                    is_blocked BOOLEAN NOT NULL,
+                    telegram_id INTEGER,
+                    email TEXT,
+                    current_subscription_id INTEGER
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE user_merge_audit (
+                    id INTEGER PRIMARY KEY,
+                    source_user_id INTEGER NOT NULL,
+                    target_user_id INTEGER NOT NULL,
+                    dry_run BOOLEAN NOT NULL
+                )
+                """
+            )
+        )
+        if users:
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO users (
+                        id, merged_into_user_id, merged_at, is_blocked,
+                        telegram_id, email, current_subscription_id
+                    ) VALUES (
+                        :id, :merged_into_user_id, :merged_at, :is_blocked,
+                        :telegram_id, :email, :current_subscription_id
+                    )
+                    """
+                ),
+                users,
+            )
+        if audits:
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO user_merge_audit (
+                        id, source_user_id, target_user_id, dry_run
+                    ) VALUES (:id, :source_user_id, :target_user_id, :dry_run)
+                    """
+                ),
+                audits,
+            )
+        conflicts = connection.execute(
+            ReferralDaoImpl._operator_recovery_merge_conflict_query(participant_ids)
+        ).scalars()
+        return set(conflicts)
+
+
+def _merge_user(
+    user_id: int,
+    *,
+    merged_into_user_id: int | None = None,
+    canonical_source: bool = False,
+) -> dict[str, object]:
+    return {
+        "id": user_id,
+        "merged_into_user_id": merged_into_user_id,
+        "merged_at": "2026-08-01T00:00:00+00:00" if merged_into_user_id is not None else None,
+        "is_blocked": canonical_source,
+        "telegram_id": None,
+        "email": None,
+        "current_subscription_id": None,
+    }
+
+
+@pytest.mark.parametrize(
+    ("users", "audits", "expected"),
+    [
+        pytest.param([_merge_user(10)], [], set(), id="participant-without-merge"),
+        pytest.param(
+            [
+                _merge_user(1, merged_into_user_id=10, canonical_source=True),
+                _merge_user(2, merged_into_user_id=10, canonical_source=True),
+                _merge_user(10),
+            ],
+            [
+                {"id": 1, "source_user_id": 1, "target_user_id": 10, "dry_run": False},
+                {"id": 2, "source_user_id": 2, "target_user_id": 10, "dry_run": False},
+            ],
+            set(),
+            id="multiple-canonical-inbound",
+        ),
+        pytest.param(
+            [
+                _merge_user(10, merged_into_user_id=20, canonical_source=True),
+                _merge_user(20),
+            ],
+            [{"id": 1, "source_user_id": 10, "target_user_id": 20, "dry_run": False}],
+            {10},
+            id="participant-outbound",
+        ),
+        pytest.param(
+            [_merge_user(10)],
+            [{"id": 1, "source_user_id": 999, "target_user_id": 10, "dry_run": False}],
+            {10},
+            id="missing-source-row",
+        ),
+        pytest.param(
+            [
+                _merge_user(1, merged_into_user_id=10, canonical_source=True),
+                _merge_user(10),
+            ],
+            [],
+            {10},
+            id="missing-real-audit",
+        ),
+        pytest.param(
+            [
+                _merge_user(1, merged_into_user_id=20, canonical_source=True),
+                _merge_user(10),
+                _merge_user(20),
+            ],
+            [{"id": 1, "source_user_id": 1, "target_user_id": 10, "dry_run": False}],
+            {10},
+            id="inconsistent-source-target-marker",
+        ),
+    ],
+)
+def test_operator_recovery_merge_guard_semantics(
+    users: list[dict[str, object]],
+    audits: list[dict[str, object]],
+    expected: set[int],
+) -> None:
+    assert _operator_merge_conflicts(
+        users=users,
+        audits=audits,
+        participant_ids={10},
+    ) == expected
+
+
+@pytest.mark.asyncio
+async def test_operator_recovery_rejects_noncanonical_merge_lineage() -> None:
+    reward, source, origin = _recovery_entities()
+    recovery = _operator_recovery(reward)
+    session = _FullRecoverySession(
+        [None, None, None, None, 901],
+        reward=reward,
+        source=source,
+        origin=origin,
+        participant_ids=[2, 7],
+    )
+    dao = ReferralDaoImpl.__new__(ReferralDaoImpl)
+    dao.session = session  # type: ignore[assignment]
+
+    with pytest.raises(ValueError, match="non-canonical user-merge history"):
         await dao.recover_legacy_extra_days_reward(recovery)
 
     assert session.added == []

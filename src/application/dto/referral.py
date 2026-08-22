@@ -78,6 +78,7 @@ class LegacyReferralRewardRecoveryDto:
     expected_user_id: Optional[int] = None
     expected_referral_id: Optional[int] = None
     expected_created_at: Optional[datetime] = None
+    expected_participant_merge_audit_ids: tuple[int, ...] = ()
     source_validation: Optional[LegacyReferralRewardSourceValidation] = None
     authorization_manifest_sha256: Optional[str] = None
     resolved_by: str = "ADMIN_API"

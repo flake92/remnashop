@@ -1023,6 +1023,20 @@ class RecoverLegacyReferralReward(Interactor[LegacyReferralRewardRecoveryDto, No
             data.expected_referral_id,
             data.expected_created_at,
         )
+        merge_audit_ids = data.expected_participant_merge_audit_ids
+        if (
+            not isinstance(merge_audit_ids, tuple)
+            or any(
+                isinstance(audit_id, bool)
+                or not isinstance(audit_id, int)
+                or audit_id <= 0
+                for audit_id in merge_audit_ids
+            )
+            or merge_audit_ids != tuple(sorted(set(merge_audit_ids)))
+        ):
+            raise ValueError(
+                "expected_participant_merge_audit_ids must be a positive, sorted, unique tuple"
+            )
         if data.action == LegacyReferralRewardRecoveryAction.RETRY_PROVEN_MISSING:
             if any(value is None for value in snapshot):
                 raise ValueError(
@@ -1037,11 +1051,14 @@ class RecoverLegacyReferralReward(Interactor[LegacyReferralRewardRecoveryDto, No
             if (
                 any(value is not None for value in expected_row)
                 or data.source_validation is not None
+                or merge_audit_ids
             ):
                 raise ValueError("Source-backed recovery must not include operator row hints")
         elif data.action == LegacyReferralRewardRecoveryAction.CONFIRM_ADMIN_COMPENSATED:
-            if any(value is not None for value in (*snapshot, *expected_row)) or (
-                data.source_validation is not None
+            if (
+                any(value is not None for value in (*snapshot, *expected_row))
+                or data.source_validation is not None
+                or merge_audit_ids
             ):
                 raise ValueError(
                     "CONFIRM_ADMIN_COMPENSATED must not invent a historical policy snapshot"

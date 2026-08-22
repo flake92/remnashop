@@ -33,7 +33,28 @@ reduce the most recent administrator tranches first.
 The canonical audit object is
 `src/infrastructure/recovery_manifests/legacy_referral_rewards_2026-08-22.v2.audit.json`.
 Its sorted-key compact-JSON SHA-256 is
-`c4562274a3049cade2bb5bc1f116389ee74afa48f19612df55f103c35243296e`.
+`31e11a4fb6c59e891dca9fc9b0be5ff1a463e8f3356c06401927bae9e7151e28`.
+
+## User-merge lineage audit
+
+Every current and historical identity alias in the merge lineage of the
+remaining cohort was checked. Seventy rewards (910 days for 21 recipients)
+touch 16 direct real merge audits and one additional transitive audit. All 70
+resolve to a canonical current inbound target; none names a merge source,
+merged-onward target, missing source, inconsistent marker, or non-canonical
+tombstone. The full 17-edge lineage digest is
+`d79e035d3f47489b664d1a15a4fbc59dbbbd341735c4f0b6ae413680a9536977`.
+
+The administrator-duration audit was repeated across all 33 current and
+historical aliases in that lineage. It found no positive administrator event
+for those recipients. No new eligible administrator mutation was retained
+between the original snapshot and the final lineage audit at
+`2026-08-22T07:46:11.171Z`.
+
+The manifest pins the exact direct real merge-audit IDs touching each reward's
+locked participants. Runtime recovery permits only a canonical current inbound
+target with that exact frozen set; a new merge, removed edge, changed marker,
+outbound participant, or damaged tombstone is a fail-closed drift condition.
 
 ## Payment-source reconstruction
 
@@ -86,7 +107,7 @@ It deliberately leaves the reward's historical policy fields null.
 - Path:
   `src/infrastructure/recovery_manifests/legacy_referral_rewards_2026-08-22.v2.json`
 - Canonical sorted-key compact-JSON SHA-256:
-  `e4fb74b04bd6087f84b43ce5def154246c824938ac252234b7e0cd25115d98f1`
+  `efb2ee92b7423a58e1a854ff4f5474807e8426680261e036ea5cf4c80c602362`
 - Source export SHA-256:
   `5acaddd1e01886e68d1e4a28f7b82770e875a787fcb153f4c4d346b0f2014be1`
 
