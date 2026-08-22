@@ -1019,12 +1019,27 @@ class ReferralDaoImpl(ReferralDao):
         user_ids = list((await self.session.scalars(candidate_user_ids)).all())
         ids: list[int] = []
         for user_id in user_ids:
+            # READ COMMITTED takes a new snapshot for this statement. The user-lock
+            # query above can acquire a row immediately after another claimant
+            # commits its PROCESSING row while still evaluating an older snapshot.
+            # Rechecking under the acquired user lock closes that narrow race and
+            # keeps the partial unique index as a last-resort invariant instead of
+            # turning normal concurrent claims into task failures.
+            processing_for_user = aliased(
+                ReferralReward,
+                name="processing_reward_for_locked_user",
+            )
+            active_after_lock = select(processing_for_user.id).where(
+                processing_for_user.user_id == user_id,
+                processing_for_user.state == ReferralRewardState.PROCESSING,
+            )
             reward_id = await self.session.scalar(
                 select(ReferralReward.id)
                 .where(
                     ReferralReward.user_id == user_id,
                     due_condition,
                     eligible_source_condition,
+                    ~active_after_lock.exists(),
                 )
                 .order_by(
                     ReferralReward.next_attempt_at.asc().nullsfirst(),

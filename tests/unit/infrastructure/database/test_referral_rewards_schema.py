@@ -300,17 +300,38 @@ class _EmptyScalars:
         return []
 
 
+class _OneCandidateScalars:
+    def all(self) -> list[int]:
+        return [2883]
+
+
 class _ClaimSession:
     def __init__(self) -> None:
         self.executed: list[object] = []
         self.scalar_statements: list[object] = []
+        self.scalar_queries: list[object] = []
 
     async def execute(self, statement: object) -> SimpleNamespace:
         self.executed.append(statement)
         return SimpleNamespace(rowcount=0)
 
-    async def scalars(self, statement: object) -> _EmptyScalars:
+    async def scalars(
+        self,
+        statement: object,
+    ) -> _EmptyScalars | _OneCandidateScalars:
         self.scalar_statements.append(statement)
+        return _EmptyScalars()
+
+    async def scalar(self, statement: object) -> None:
+        self.scalar_queries.append(statement)
+        return None
+
+
+class _OneCandidateClaimSession(_ClaimSession):
+    async def scalars(self, statement: object) -> _OneCandidateScalars | _EmptyScalars:
+        self.scalar_statements.append(statement)
+        if len(self.scalar_statements) == 1:
+            return _OneCandidateScalars()
         return _EmptyScalars()
 
 
@@ -464,6 +485,31 @@ async def test_worker_manualizes_ambiguous_extra_days_and_locks_recipient_rows()
     assert "REFUNDED" in str(recipient_compiled.params).upper()
     assert "NOT (EXISTS" in recipient_lock_sql
     assert "ADMIN_COMPENSATED_EARLIER_TRANSACTION" in recipient_lock_sql
+
+
+@pytest.mark.asyncio
+async def test_worker_rechecks_processing_reward_after_recipient_lock() -> None:
+    session = _OneCandidateClaimSession()
+    dao = ReferralDaoImpl.__new__(ReferralDaoImpl)
+    dao.session = session  # type: ignore[assignment]
+
+    assert await dao.claim_pending_rewards(
+        token_hash="a" * 64,
+        lease_for=timedelta(minutes=5),
+        limit=100,
+    ) == []
+
+    assert len(session.scalar_queries) == 1
+    compiled = session.scalar_queries[0].compile(
+        dialect=postgresql.dialect(),
+        compile_kwargs={"literal_binds": True},
+    )
+    sql = str(compiled).upper()
+    assert "REFERRAL_REWARDS.USER_ID = 2883" in sql
+    assert "NOT (EXISTS" in sql
+    assert "PROCESSING_REWARD_FOR_LOCKED_USER" in sql
+    assert "PROCESSING_REWARD_FOR_LOCKED_USER.USER_ID = 2883" in sql
+    assert "PROCESSING_REWARD_FOR_LOCKED_USER.STATE = 'PROCESSING'" in sql
 
 
 def test_admin_compensated_on_first_fence_uses_immutable_resolution_provenance() -> None:
