@@ -227,6 +227,72 @@ async def test_preview_then_apply_is_audited_atomic_and_idempotent() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("level", "create_results"),
+    (
+        (ReferralLevel.FIRST, [None]),
+        (ReferralLevel.SECOND, [SimpleNamespace(id=501), None]),
+    ),
+)
+async def test_backfill_apply_rolls_back_if_recovery_consumed_source_after_preview(
+    level: ReferralLevel,
+    create_results: list[object | None],
+) -> None:
+    use_case, uow, _, referral_dao, _ = _dependencies(level=level)
+    stored: ReferralRewardBackfillAuditDto | None = None
+
+    async def persist_preview(**kwargs: object) -> ReferralRewardBackfillAuditDto:
+        nonlocal stored
+        stored = ReferralRewardBackfillAuditDto(
+            id=32,
+            request_hash=str(kwargs["request_hash"]),
+            status="PREVIEWED",
+            operator_identity=str(kwargs["operator_identity"]),
+            operator_reference=str(kwargs["operator_reference"]),
+            reason=str(kwargs["reason"]),
+            source_transaction_ids=list(kwargs["source_transaction_ids"]),  # type: ignore[arg-type]
+            config_snapshot=dict(kwargs["config_snapshot"]),  # type: ignore[arg-type]
+            preview_snapshot=dict(kwargs["preview_snapshot"]),  # type: ignore[arg-type]
+        )
+        return stored
+
+    referral_dao.create_or_get_backfill_preview.side_effect = persist_preview
+    evidence = {
+        "operator_identity": "alice",
+        "operator_reference": "TICKET-135",
+        "reason": "Verified source before apply",
+    }
+    preview = await use_case._execute(  # type: ignore[attr-defined]
+        SimpleNamespace(log="system"),
+        HistoricalReferralRewardBackfillDto(
+            action="PREVIEW",
+            source_transaction_ids=(77,),
+            **evidence,
+        ),
+    )
+    assert stored is not None
+    referral_dao.get_backfill_preview_for_update.return_value = stored
+    referral_dao.create_reward.side_effect = create_results
+
+    with pytest.raises(ValueError, match="concurrent first-payment winner"):
+        await use_case._execute(  # type: ignore[attr-defined]
+            SimpleNamespace(log="system"),
+            HistoricalReferralRewardBackfillDto(
+                action="APPLY",
+                preview_id=32,
+                source_transaction_ids=(77,),
+                expected_config_snapshot=preview["config_snapshot"],
+                **evidence,
+            ),
+        )
+
+    assert referral_dao.create_reward.await_count == len(create_results)
+    referral_dao.mark_backfill_preview_applied.assert_not_awaited()
+    uow.rollback.assert_awaited_once()
+    assert uow.commit.await_count == 1  # the frozen PREVIEW only
+
+
+@pytest.mark.asyncio
 async def test_backfill_mutations_are_disabled_by_default_rollout_gate() -> None:
     assert AppConfig.model_fields["referral_reward_backfill_enabled"].default is False
     use_case, _, _, referral_dao, _ = _dependencies(backfill_enabled=False)

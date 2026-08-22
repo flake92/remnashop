@@ -24,7 +24,7 @@ def test_migration_graph_is_unique_linear_and_preserves_production_0050_path() -
     revision_ids = [revision.revision for revision in revisions]
 
     assert len(revision_ids) == len(set(revision_ids))
-    assert scripts.get_heads() == ["0054"]
+    assert scripts.get_heads() == ["0055"]
     assert scripts.get_revision("0046").path.endswith("0046_add_password_reset_attempts.py")
     assert scripts.get_revision("0046_user_merge").down_revision == "0046"
     assert scripts.get_revision("0047").down_revision == "0046_user_merge"

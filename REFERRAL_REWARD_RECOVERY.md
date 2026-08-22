@@ -120,6 +120,62 @@ read-after-write. The panel write is a narrow PATCH containing only UUID, ACTIVE
 status, and the absolute expiry target; it never replays a stale full profile.
 Any drift enters manual review instead of retrying blindly.
 
+### Operator-directed legacy batch (manifest v2)
+
+`RETRY_OPERATOR_DIRECTED` is the source-audited, policy-neutral path for the
+remaining 2026-08-22 cohort. It never fabricates an accrual or reward-policy
+snapshot. Each v2 manifest entry instead freezes the legacy reward row
+(recipient, referral, amount, creation time and incident version), the matched
+payment source/origin/level, the evidence class, and the evidence digest. The DAO
+re-locks the complete attribution chain, payment, reward and merge participants,
+rejects source/level collisions and row drift, then records the source only in
+the append-only resolution. The reward itself remains source/policy-null and is
+made `PENDING` with the manifest SHA-256 as a durable operator-authorization
+marker. The normal worker accepts such a source-less row only when that marker
+matches its exact resolution.
+
+Any consuming legacy recovery resolution freezes that payment source for all
+later normal reward creation, not only the recovered level. The frozen manifest
+is the complete historically authorized level set; a delayed reconciliation
+must not synthesize an additional level from the current referral chain or
+policy. Both live assignment and historical backfill share the attribution-user
+fence with recovery. A backfill that observes the cross-table fence after its
+preview rolls the whole apply transaction back instead of recording a partial or
+falsely applied batch.
+
+The two source classes are deliberately narrow:
+
+- `LOCAL_COMPLETED` requires a still-completed, paid, non-test, non-trial source
+  with either durable success or the exact migration-0049 legacy fulfillment
+  shape. Its entry evidence must equal the top-level frozen audit digest.
+- `PROVIDER_SUCCEEDED` is pinned only to reward `65`, source `1761`, YooKassa,
+  and the redacted provider artifact digest
+  `0acb95beed542b1f44dd8797171400de1e362018df313cdbdfbd035d5486cffa`.
+  Recheck that payment read-only at YooKassa immediately before starting the
+  worker; any status, paid amount, or refund drift is a stop condition.
+
+The tracked v2 artifacts are:
+
+- `legacy_referral_rewards_2026-08-22.v2.audit.json`, canonical SHA-256
+  `c4562274a3049cade2bb5bc1f116389ee74afa48f19612df55f103c35243296e`;
+- `legacy_referral_rewards_2026-08-22.v2.provider-rr65.json`, canonical SHA-256
+  `0acb95beed542b1f44dd8797171400de1e362018df313cdbdfbd035d5486cffa`;
+- `legacy_referral_rewards_2026-08-22.v2.json`, 759 entries / 9408 days,
+  canonical SHA-256
+  `e4fb74b04bd6087f84b43ce5def154246c824938ac252234b7e0cd25115d98f1`.
+
+Apply the exact entries through
+`POST /api/v1/admin/referral-rewards/recover-legacy-batch` while the recovery
+gate points at that absolute v2 path and digest. Rows commit one at a time: a
+timeout leaves a safe prefix, and replaying the identical batch is idempotent.
+Keep the worker stopped until all resolutions and authorization markers are
+verified, then start it. Operator-directed delivery suppresses per-row customer
+success/failure notifications; rows without a currently safe paid subscription
+remain durable retries. A refund before delivery supersedes the row, while a
+refund during/after delivery enters manual review. Manual confirmation re-locks
+the source through the matching manifest digest and cannot confirm a refunded
+source without the existing audited drift override.
+
 `ON_FIRST_PAYMENT` means the first-ever successfully fulfilled paid non-trial,
 non-test transaction. A later refund does not reopen eligibility. Pending rewards
 for a refunded source are safely superseded; a refund during processing or after

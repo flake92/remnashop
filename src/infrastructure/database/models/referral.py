@@ -14,9 +14,9 @@ from src.core.enums import (
 )
 from src.infrastructure.database.constraints import (
     REFERRAL_REWARD_RESOLUTIONS_DECISION_CONSTRAINT_NAME,
-    REFERRAL_REWARD_RESOLUTIONS_DECISION_CONSTRAINT_SQL,
+    REFERRAL_REWARD_RESOLUTIONS_DECISION_CONSTRAINT_V2_SQL,
     REFERRAL_REWARDS_DURABLE_STATE_CONSTRAINT_NAME,
-    REFERRAL_REWARDS_DURABLE_STATE_CONSTRAINT_SQL,
+    REFERRAL_REWARDS_DURABLE_STATE_CONSTRAINT_V2_SQL,
 )
 
 from .base import BaseSql
@@ -64,7 +64,7 @@ class ReferralReward(BaseSql, TimestampMixin):
     __tablename__ = "referral_rewards"
     __table_args__ = (
         CheckConstraint(
-            REFERRAL_REWARDS_DURABLE_STATE_CONSTRAINT_SQL,
+            REFERRAL_REWARDS_DURABLE_STATE_CONSTRAINT_V2_SQL,
             name=REFERRAL_REWARDS_DURABLE_STATE_CONSTRAINT_NAME,
         ),
         CheckConstraint(
@@ -151,6 +151,7 @@ class ReferralReward(BaseSql, TimestampMixin):
     )
     baseline_expire_at: Mapped[Optional[datetime]]
     target_expire_at: Mapped[Optional[datetime]]
+    operator_recovery_manifest_sha256: Mapped[Optional[str]] = mapped_column(String(64))
 
     referral: Mapped["Referral"] = relationship(
         back_populates="rewards",
@@ -178,7 +179,7 @@ class ReferralRewardResolution(BaseSql, TimestampMixin):
     __tablename__ = "referral_reward_resolutions"
     __table_args__ = (
         CheckConstraint(
-            REFERRAL_REWARD_RESOLUTIONS_DECISION_CONSTRAINT_SQL,
+            REFERRAL_REWARD_RESOLUTIONS_DECISION_CONSTRAINT_V2_SQL,
             name=REFERRAL_REWARD_RESOLUTIONS_DECISION_CONSTRAINT_NAME,
         ),
         UniqueConstraint(
@@ -192,7 +193,8 @@ class ReferralRewardResolution(BaseSql, TimestampMixin):
             "selected_level",
             unique=True,
             postgresql_where=text(
-                "decision IN ('RETRY_PROVEN_MISSING', 'CONFIRM_ADMIN_COMPENSATED')"
+                "decision IN ('RETRY_PROVEN_MISSING', 'CONFIRM_ADMIN_COMPENSATED', "
+                "'RETRY_OPERATOR_DIRECTED')"
             ),
         ),
     )

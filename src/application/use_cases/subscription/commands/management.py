@@ -11,7 +11,8 @@ from src.application.common.dao import SettingsDao, SubscriptionDao, UserDao
 from src.application.common.policy import Permission
 from src.application.common.uow import UnitOfWork
 from src.application.dto import RequirementSettingsDto, SettingsDto, UserDto
-from src.core.enums import SubscriptionStatus
+from src.core.config import AppConfig
+from src.core.enums import Role, SubscriptionStatus
 from src.core.utils.time import datetime_now
 
 
@@ -372,14 +373,25 @@ class AddSubscriptionDuration(Interactor[AddSubscriptionDurationDto, None]):
         subscription_dao: SubscriptionDao,
         remnawave: Remnawave,
         subscription_mutation_lock: SubscriptionMutationLock,
+        config: AppConfig,
     ) -> None:
         self.uow = uow
         self.user_dao = user_dao
         self.subscription_dao = subscription_dao
         self.remnawave = remnawave
         self.subscription_mutation_lock = subscription_mutation_lock
+        self.config = config
 
     async def _execute(self, actor: UserDto, data: AddSubscriptionDurationDto) -> None:
+        if self.config.referral_reward_legacy_recovery_enabled and actor.role in {
+            Role.ADMIN,
+            Role.DEV,
+            Role.OWNER,
+        }:
+            raise ValueError(
+                "Manual subscription-duration changes are paused during legacy "
+                "referral recovery"
+            )
         async with self.subscription_mutation_lock.hold(data.user_id):
             await self._execute_locked(actor, data)
 

@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -16,6 +17,7 @@ from src.web.endpoints.admin.referral_rewards import (
     list_manual_referral_rewards,
     preview_historical_referral_rewards,
     recover_legacy_referral_reward,
+    recover_legacy_referral_rewards_batch,
     resolve_manual_referral_reward,
 )
 from src.web.endpoints.admin.referral_rewards import (
@@ -24,6 +26,7 @@ from src.web.endpoints.admin.referral_rewards import (
 from src.web.schemas import (
     HistoricalReferralBackfillApplyRequest,
     HistoricalReferralBackfillPreviewRequest,
+    LegacyReferralRewardRecoveryBatchRequest,
     LegacyReferralRewardRecoveryRequest,
     ResolveManualReferralRewardRequest,
 )
@@ -45,6 +48,9 @@ list_manual_referral_rewards_impl = (  # type: ignore[attr-defined]
 )
 recover_legacy_referral_reward_impl = (  # type: ignore[attr-defined]
     recover_legacy_referral_reward.__dishka_orig_func__
+)
+recover_legacy_referral_rewards_batch_impl = (  # type: ignore[attr-defined]
+    recover_legacy_referral_rewards_batch.__dishka_orig_func__
 )
 
 
@@ -76,6 +82,25 @@ def _legacy_recovery_payload(action: str = "RETRY_PROVEN_MISSING") -> dict[str, 
             config_value=3,
         )
     return payload
+
+
+def _operator_recovery_payload(reward_id: int = 1342) -> dict[str, object]:
+    return {
+        "reward_id": reward_id,
+        "action": "RETRY_OPERATOR_DIRECTED",
+        "expected_version": 1,
+        "source_transaction_id": 8123 + reward_id,
+        "origin_referral_id": 1500,
+        "level": 1,
+        "source_validation": "LOCAL_COMPLETED",
+        "expected_reward_amount": 14,
+        "expected_user_id": 222,
+        "expected_referral_id": 1500,
+        "expected_created_at": datetime(2026, 7, 20, tzinfo=timezone.utc),
+        "operator_reference": "OWNER/INCIDENT-2026-08-22-FULL-AUDIT",
+        "reason": "FIFO timeline audit found no ADMIN day allocation",
+        "evidence_sha256": "e" * 64,
+    }
 
 
 def _backfill_config_snapshot() -> dict[str, object]:
@@ -154,6 +179,38 @@ async def test_legacy_recovery_endpoint_dispatches_exact_evidence(action: str) -
         assert request.accrual_strategy_snapshot is None
         assert request.reward_strategy is None
         assert request.config_value is None
+
+
+@pytest.mark.asyncio
+async def test_operator_recovery_endpoint_dispatches_source_and_exact_row_hints() -> None:
+    recovery = SimpleNamespace(system=AsyncMock())
+    payload = _operator_recovery_payload()
+    reward_id = int(payload.pop("reward_id"))
+    body = LegacyReferralRewardRecoveryRequest.model_validate(payload)
+
+    await recover_legacy_referral_reward_impl(reward_id, body, recovery, None)
+
+    request = recovery.system.await_args.args[0]
+    assert request.action.value == "RETRY_OPERATOR_DIRECTED"
+    assert request.source_transaction_id == 9465
+    assert request.expected_user_id == 222
+    assert request.expected_referral_id == 1500
+    assert request.expected_created_at == datetime(2026, 7, 20, tzinfo=timezone.utc)
+    assert request.accrual_strategy_snapshot is None
+    assert request.reward_strategy is None
+    assert request.config_value is None
+
+
+@pytest.mark.asyncio
+async def test_operator_recovery_batch_is_ordered_and_replayable() -> None:
+    recovery = SimpleNamespace(system=AsyncMock())
+    body = LegacyReferralRewardRecoveryBatchRequest.model_validate(
+        {"entries": [_operator_recovery_payload(1342), _operator_recovery_payload(1343)]}
+    )
+
+    await recover_legacy_referral_rewards_batch_impl(body, recovery, None)
+
+    assert [call.args[0].reward_id for call in recovery.system.await_args_list] == [1342, 1343]
 
 
 @pytest.mark.parametrize(

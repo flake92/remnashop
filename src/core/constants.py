@@ -43,6 +43,11 @@ REMNAWAVE_WEBHOOK_PATH: Final[str] = "/remnawave"
 IMPORTED_TAG: Final[str] = "IMPORTED"
 INLINE_QUERY_INVITE: Final[str] = "invite"
 REMNASHOP_PREFIX: Final[str] = "rs_"
+PROVIDER_SUCCEEDED_REFERRAL_EVIDENCE_SHA256: Final[str] = (
+    "0acb95beed542b1f44dd8797171400de1e362018df313cdbdfbd035d5486cffa"
+)
+PROVIDER_SUCCEEDED_REFERRAL_REWARD_ID: Final[int] = 65
+PROVIDER_SUCCEEDED_REFERRAL_SOURCE_TRANSACTION_ID: Final[int] = 1761
 WEB_PREFIX: Final[str] = "web_"
 PAYMENT_PREFIX: Final[str] = "payment_"
 GOTO_PREFIX: Final[str] = "gt_"

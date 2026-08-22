@@ -13,6 +13,15 @@ from src.application.use_cases.remnawave.commands.synchronization import (
     SyncRemnaUser,
     SyncRemnaUserDto,
 )
+from src.application.use_cases.subscription.commands.management import (
+    AddSubscriptionDuration,
+    AddSubscriptionDurationDto,
+)
+from src.application.use_cases.subscription.commands.set_plan import (
+    SetUserSubscription,
+    SetUserSubscriptionDto,
+)
+from src.core.enums import Role
 from src.infrastructure.services.remnawave import RemnawaveImpl
 
 
@@ -41,6 +50,47 @@ class _MutationLock:
 
     async def __aexit__(self, *args: object) -> None:
         return None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role", [Role.ADMIN, Role.DEV, Role.OWNER])
+async def test_legacy_recovery_gate_pauses_manual_duration_changes(role: Role) -> None:
+    use_case = AddSubscriptionDuration(
+        SimpleNamespace(),  # type: ignore[arg-type]
+        SimpleNamespace(),  # type: ignore[arg-type]
+        SimpleNamespace(),  # type: ignore[arg-type]
+        SimpleNamespace(),  # type: ignore[arg-type]
+        _MutationLock(),  # type: ignore[arg-type]
+        SimpleNamespace(referral_reward_legacy_recovery_enabled=True),
+    )
+
+    with pytest.raises(ValueError, match="paused during legacy referral recovery"):
+        await use_case._execute(  # type: ignore[arg-type]
+            SimpleNamespace(role=role),
+            AddSubscriptionDurationDto(user_id=7, days=14),
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role", [Role.ADMIN, Role.DEV, Role.OWNER])
+async def test_legacy_recovery_gate_pauses_manual_subscription_replacement(
+    role: Role,
+) -> None:
+    use_case = SetUserSubscription(
+        SimpleNamespace(),  # type: ignore[arg-type]
+        SimpleNamespace(),  # type: ignore[arg-type]
+        SimpleNamespace(),  # type: ignore[arg-type]
+        SimpleNamespace(),  # type: ignore[arg-type]
+        SimpleNamespace(),  # type: ignore[arg-type]
+        _MutationLock(),  # type: ignore[arg-type]
+        SimpleNamespace(referral_reward_legacy_recovery_enabled=True),
+    )
+
+    with pytest.raises(ValueError, match="paused during legacy referral recovery"):
+        await use_case._execute(  # type: ignore[arg-type]
+            SimpleNamespace(role=role),
+            SetUserSubscriptionDto(user_id=7, plan_id=3, duration=30),
+        )
 
 
 @pytest.mark.asyncio

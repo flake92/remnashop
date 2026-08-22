@@ -145,6 +145,12 @@ class ReferralRewardState(UpperStrEnum):
 class LegacyReferralRewardRecoveryAction(UpperStrEnum):
     RETRY_PROVEN_MISSING = auto()
     CONFIRM_ADMIN_COMPENSATED = auto()
+    RETRY_OPERATOR_DIRECTED = auto()
+
+
+class LegacyReferralRewardSourceValidation(UpperStrEnum):
+    LOCAL_COMPLETED = auto()
+    PROVIDER_SUCCEEDED = auto()
 
 
 class PromocodeRewardType(UpperStrEnum):

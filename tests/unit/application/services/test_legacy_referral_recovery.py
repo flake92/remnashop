@@ -1,5 +1,6 @@
 import json
 from dataclasses import replace
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -11,8 +12,10 @@ from src.application.legacy_referral_recovery import (
     LegacyReferralRecoveryAuthorizer,
     canonical_legacy_recovery_manifest_sha256,
 )
+from src.core.constants import PROVIDER_SUCCEEDED_REFERRAL_EVIDENCE_SHA256
 from src.core.enums import (
     LegacyReferralRewardRecoveryAction,
+    LegacyReferralRewardSourceValidation,
     ReferralAccrualStrategy,
     ReferralLevel,
     ReferralRewardStrategy,
@@ -58,6 +61,63 @@ def _entry(recovery: LegacyReferralRewardRecoveryDto) -> dict[str, object]:
         "operator_reference": recovery.operator_reference,
         "reason": recovery.reason,
         "evidence_sha256": recovery.evidence_sha256,
+    }
+
+
+def _operator_retry() -> LegacyReferralRewardRecoveryDto:
+    return LegacyReferralRewardRecoveryDto(
+        reward_id=1342,
+        action=LegacyReferralRewardRecoveryAction.RETRY_OPERATOR_DIRECTED,
+        expected_version=1,
+        source_transaction_id=8123,
+        origin_referral_id=1500,
+        level=ReferralLevel.FIRST,
+        expected_reward_amount=14,
+        accrual_strategy_snapshot=None,
+        reward_strategy=None,
+        config_value=None,
+        operator_reference="OWNER/INCIDENT-2026-08-22-FULL-AUDIT",
+        reason="FIFO timeline audit found no ADMIN day allocation after this reward",
+        evidence_sha256="e" * 64,
+        expected_user_id=222,
+        expected_referral_id=1500,
+        expected_created_at=datetime(2026, 7, 20, 12, 34, 56, 123456, tzinfo=timezone.utc),
+        source_validation=LegacyReferralRewardSourceValidation.LOCAL_COMPLETED,
+    )
+
+
+def _operator_manifest(recovery: LegacyReferralRewardRecoveryDto) -> dict[str, object]:
+    assert recovery.level is not None
+    assert recovery.expected_created_at is not None
+    return {
+        "version": 2,
+        "incident": "legacy-referral-rewards-2026-08-22-full-audit",
+        "entry_count": 1,
+        "entries": [
+            {
+                "reward_id": recovery.reward_id,
+                "action": recovery.action.value,
+                "expected_version": recovery.expected_version,
+                "source_transaction_id": recovery.source_transaction_id,
+                "origin_referral_id": recovery.origin_referral_id,
+                "level": recovery.level.value,
+                "source_validation": recovery.source_validation.value,
+                "expected_user_id": recovery.expected_user_id,
+                "expected_referral_id": recovery.expected_referral_id,
+                "expected_reward_amount": recovery.expected_reward_amount,
+                "expected_created_at": recovery.expected_created_at.isoformat(),
+                "operator_reference": recovery.operator_reference,
+                "reason": recovery.reason,
+                "evidence_sha256": recovery.evidence_sha256,
+            }
+        ],
+        "audit_evidence_sha256": (
+            recovery.evidence_sha256
+            if recovery.source_validation
+            == LegacyReferralRewardSourceValidation.LOCAL_COMPLETED
+            else "f" * 64
+        ),
+        "allocation_rule": "ADMIN_DAYS_FIFO_AFTER_REWARD",
     }
 
 
@@ -164,6 +224,62 @@ def test_manifest_gate_is_disabled_by_default() -> None:
 
     with pytest.raises(LegacyReferralRecoveryAuthorizationError, match="gate is disabled"):
         authorizer.authorize(_retry())
+
+
+def test_v2_manifest_authorizes_only_exact_operator_directed_row(tmp_path: Path) -> None:
+    recovery = _operator_retry()
+    manifest = _operator_manifest(recovery)
+    authorizer = _authorizer(tmp_path / "manifest-v2.json", manifest)
+
+    assert authorizer.authorize(recovery) == canonical_legacy_recovery_manifest_sha256(manifest)
+    for changed in (
+        replace(recovery, source_transaction_id=8124),
+        replace(recovery, expected_user_id=223),
+        replace(recovery, expected_referral_id=1501),
+        replace(recovery, expected_reward_amount=7),
+        replace(
+            recovery,
+            expected_created_at=datetime(2026, 7, 20, 12, 34, 57, tzinfo=timezone.utc),
+        ),
+    ):
+        with pytest.raises(
+            LegacyReferralRecoveryAuthorizationError,
+            match="not an exact trusted manifest entry",
+        ):
+            authorizer.authorize(changed)
+
+
+def test_v2_manifest_rejects_duplicate_reward_ids(tmp_path: Path) -> None:
+    recovery = _operator_retry()
+    manifest = _operator_manifest(recovery)
+    manifest["entry_count"] = 2
+    manifest["entries"] = [*manifest["entries"], *manifest["entries"]]  # type: ignore[misc]
+
+    with pytest.raises(
+        LegacyReferralRecoveryAuthorizationError,
+        match="failed strict validation",
+    ):
+        _authorizer(tmp_path / "manifest-v2.json", manifest)
+
+
+def test_v2_provider_source_class_requires_pinned_evidence(tmp_path: Path) -> None:
+    recovery = replace(
+        _operator_retry(),
+        reward_id=65,
+        source_transaction_id=1761,
+        source_validation=LegacyReferralRewardSourceValidation.PROVIDER_SUCCEEDED,
+        evidence_sha256=PROVIDER_SUCCEEDED_REFERRAL_EVIDENCE_SHA256,
+    )
+    manifest = _operator_manifest(recovery)
+    authorizer = _authorizer(tmp_path / "provider-manifest.json", manifest)
+    assert authorizer.authorize(recovery) == canonical_legacy_recovery_manifest_sha256(manifest)
+
+    bad_manifest = _operator_manifest(replace(recovery, evidence_sha256="0" * 64))
+    with pytest.raises(
+        LegacyReferralRecoveryAuthorizationError,
+        match="failed strict validation",
+    ):
+        _authorizer(tmp_path / "bad-provider-manifest.json", bad_manifest)
 
 
 def test_manifest_gate_enforces_admin_allocation_conservation(tmp_path: Path) -> None:
@@ -279,4 +395,83 @@ def test_tracked_incident_manifest_is_exact_and_reproducible() -> None:
         )
         assert authorizer.authorize(recovery) == (
             "51284b6c833968bf4e855de30fabe4616a616ab320d000fba399c6f280cf3506"
+        )
+
+
+def test_tracked_v2_operator_manifest_and_audit_are_exact_and_reproducible() -> None:
+    manifests = Path(__file__).parents[4] / "src" / "infrastructure" / "recovery_manifests"
+    manifest_path = manifests / "legacy_referral_rewards_2026-08-22.v2.json"
+    audit_path = manifests / "legacy_referral_rewards_2026-08-22.v2.audit.json"
+    provider_path = manifests / "legacy_referral_rewards_2026-08-22.v2.provider-rr65.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    audit = json.loads(audit_path.read_text(encoding="utf-8"))
+    provider_evidence = json.loads(provider_path.read_text(encoding="utf-8"))
+
+    assert canonical_legacy_recovery_manifest_sha256(manifest) == (
+        "e4fb74b04bd6087f84b43ce5def154246c824938ac252234b7e0cd25115d98f1"
+    )
+    assert canonical_legacy_recovery_manifest_sha256(audit) == (
+        "c4562274a3049cade2bb5bc1f116389ee74afa48f19612df55f103c35243296e"
+    )
+    assert canonical_legacy_recovery_manifest_sha256(provider_evidence) == (
+        PROVIDER_SUCCEEDED_REFERRAL_EVIDENCE_SHA256
+    )
+    assert manifest["audit_evidence_sha256"] == (
+        "c4562274a3049cade2bb5bc1f116389ee74afa48f19612df55f103c35243296e"
+    )
+    assert manifest["entry_count"] == len(manifest["entries"]) == 759
+    assert sum(entry["expected_reward_amount"] for entry in manifest["entries"]) == 9408
+    assert manifest["entries"][0]["reward_id"] == 65
+    assert manifest["entries"][0]["source_transaction_id"] == 1761
+    assert manifest["entries"][0]["source_validation"] == "PROVIDER_SUCCEEDED"
+    assert manifest["entries"][0]["evidence_sha256"] == (
+        PROVIDER_SUCCEEDED_REFERRAL_EVIDENCE_SHA256
+    )
+    assert sum(
+        entry["source_validation"] == "PROVIDER_SUCCEEDED"
+        for entry in manifest["entries"]
+    ) == 1
+    assert all(
+        entry["evidence_sha256"] == manifest["audit_evidence_sha256"]
+        for entry in manifest["entries"]
+        if entry["source_validation"] == "LOCAL_COMPLETED"
+    )
+    source_levels = {
+        (entry["source_transaction_id"], entry["level"])
+        for entry in manifest["entries"]
+    }
+    assert len(source_levels) == len(manifest["entries"])
+
+    config = SimpleNamespace(
+        referral_reward_legacy_recovery_enabled=True,
+        referral_reward_legacy_recovery_manifest_path=manifest_path.resolve(),
+        referral_reward_legacy_recovery_manifest_sha256=(
+            "e4fb74b04bd6087f84b43ce5def154246c824938ac252234b7e0cd25115d98f1"
+        ),
+    )
+    authorizer = LegacyReferralRecoveryAuthorizer(config)  # type: ignore[arg-type]
+    for entry in (manifest["entries"][0], manifest["entries"][-1]):
+        recovery = LegacyReferralRewardRecoveryDto(
+            reward_id=entry["reward_id"],
+            action=LegacyReferralRewardRecoveryAction(entry["action"]),
+            expected_version=entry["expected_version"],
+            source_transaction_id=entry["source_transaction_id"],
+            origin_referral_id=entry["origin_referral_id"],
+            level=ReferralLevel(entry["level"]),
+            expected_reward_amount=entry["expected_reward_amount"],
+            accrual_strategy_snapshot=None,
+            reward_strategy=None,
+            config_value=None,
+            operator_reference=entry["operator_reference"],
+            reason=entry["reason"],
+            evidence_sha256=entry["evidence_sha256"],
+            expected_user_id=entry["expected_user_id"],
+            expected_referral_id=entry["expected_referral_id"],
+            expected_created_at=datetime.fromisoformat(entry["expected_created_at"]),
+            source_validation=LegacyReferralRewardSourceValidation(
+                entry["source_validation"]
+            ),
+        )
+        assert authorizer.authorize(recovery) == (
+            "e4fb74b04bd6087f84b43ce5def154246c824938ac252234b7e0cd25115d98f1"
         )

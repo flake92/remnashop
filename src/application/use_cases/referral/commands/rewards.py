@@ -29,6 +29,7 @@ from src.application.use_cases.referral.queries.calculations import (
 )
 from src.core.enums import (
     LegacyReferralRewardRecoveryAction,
+    LegacyReferralRewardSourceValidation,
     ReferralAccrualStrategy,
     ReferralLevel,
     ReferralRewardState,
@@ -73,7 +74,7 @@ class GiveReferrerReward(Interactor[GiveReferrerRewardDto, None]):
         self.remnawave = remnawave
         self.subscription_mutation_lock = subscription_mutation_lock
 
-    async def _execute(
+    async def _execute(  # noqa: C901
         self,
         actor: UserDto,
         data: GiveReferrerRewardDto,
@@ -309,13 +310,19 @@ class GiveReferrerReward(Interactor[GiveReferrerRewardDto, None]):
                 f"Failed to apply reward: unknown type '{reward.type}' for user '{user.remna_name}'"
             )
 
-        event_reward = ReferralRewardReceivedEvent(
-            user=user,
-            name=data.referred_name,
-            value=reward.amount,
-            reward_type=reward.type,
-        )
-        await self.event_publisher.publish(event_reward)
+        if reward.operator_recovery_manifest_sha256 is None:
+            event_reward = ReferralRewardReceivedEvent(
+                user=user,
+                name=data.referred_name,
+                value=reward.amount,
+                reward_type=reward.type,
+            )
+            await self.event_publisher.publish(event_reward)
+        else:
+            logger.info(
+                f"Operator-directed reward '{reward.id}' completed without a "
+                "per-row customer notification"
+            )
         logger.info(f"{actor.log} Finished applying reward to user '{user.id}'")
 
     async def _lock_source_or_cancel(self, data: GiveReferrerRewardDto) -> bool:
@@ -416,6 +423,12 @@ class GiveReferrerReward(Interactor[GiveReferrerRewardDto, None]):
         return isinstance(value, str) and value.upper() == SubscriptionStatus.ACTIVE.value
 
     async def _publish_failed(self, user: UserDto, data: GiveReferrerRewardDto) -> None:
+        if data.reward.operator_recovery_manifest_sha256 is not None:
+            logger.warning(
+                f"Operator-directed reward '{data.reward.id}' failed without a "
+                "per-row customer notification"
+            )
+            return
         await self.event_publisher.publish(
             ReferralRewardFailedEvent(
                 user=user,
@@ -550,7 +563,7 @@ class AssignReferralRewards(Interactor[AssignReferralRewardsDto, None]):
                     )
                     continue
 
-                await self.referral_dao.create_reward(
+                created = await self.referral_dao.create_reward(
                     reward=ReferralRewardDto(
                         user_id=referrer.id,
                         type=reward_type,
@@ -572,6 +585,14 @@ class AssignReferralRewards(Interactor[AssignReferralRewardsDto, None]):
                     ),
                     referral_id=referral_ids[level],
                 )
+
+                if created is None:
+                    logger.info(
+                        f"Skipped duplicate reward intent for source "
+                        f"'{data.transaction.id}' level '{level.name}': provenance "
+                        "is already consumed"
+                    )
+                    continue
 
                 logger.info(
                     f"Persisted '{reward_type}' reward intent '{reward_amount}' for referrer "
@@ -779,7 +800,10 @@ class ResolveManualReferralReward(Interactor[ResolveManualReferralRewardDto, Non
                     )
                     if source_status != TransactionStatus.REFUNDED:
                         raise ValueError("ADMIN-compensated source is not currently refunded")
-                elif reward.source_transaction_id is not None:
+                elif (
+                    reward.source_transaction_id is not None
+                    or reward.operator_recovery_manifest_sha256 is not None
+                ):
                     source_status = await self.referral_dao.lock_manual_reward_source_status(
                         data.reward_id
                     )
@@ -972,14 +996,20 @@ class RecoverLegacyReferralReward(Interactor[LegacyReferralRewardRecoveryDto, No
         self.referral_dao = referral_dao
         self.recovery_authorizer = recovery_authorizer
 
-    async def _execute(
+    async def _execute(  # noqa: C901
         self,
         actor: UserDto,
         data: LegacyReferralRewardRecoveryDto,
     ) -> None:
         if data.reward_id <= 0 or data.expected_version < 0:
             raise ValueError("A positive reward id and non-negative version are required")
-        if data.source_transaction_id <= 0 or data.origin_referral_id <= 0:
+        if (
+            data.source_transaction_id is None
+            or data.source_transaction_id <= 0
+            or data.origin_referral_id is None
+            or data.origin_referral_id <= 0
+            or data.level is None
+        ):
             raise ValueError("Positive source transaction and origin referral ids are required")
         if isinstance(data.expected_reward_amount, bool) or data.expected_reward_amount <= 0:
             raise ValueError("A positive expected legacy reward amount is required")
@@ -987,6 +1017,11 @@ class RecoverLegacyReferralReward(Interactor[LegacyReferralRewardRecoveryDto, No
             data.accrual_strategy_snapshot,
             data.reward_strategy,
             data.config_value,
+        )
+        expected_row = (
+            data.expected_user_id,
+            data.expected_referral_id,
+            data.expected_created_at,
         )
         if data.action == LegacyReferralRewardRecoveryAction.RETRY_PROVEN_MISSING:
             if any(value is None for value in snapshot):
@@ -999,9 +1034,33 @@ class RecoverLegacyReferralReward(Interactor[LegacyReferralRewardRecoveryDto, No
                 or data.config_value <= 0
             ):
                 raise ValueError("Historical reward config must be a positive integer")
-        elif any(value is not None for value in snapshot):
+            if (
+                any(value is not None for value in expected_row)
+                or data.source_validation is not None
+            ):
+                raise ValueError("Source-backed recovery must not include operator row hints")
+        elif data.action == LegacyReferralRewardRecoveryAction.CONFIRM_ADMIN_COMPENSATED:
+            if any(value is not None for value in (*snapshot, *expected_row)) or (
+                data.source_validation is not None
+            ):
+                raise ValueError(
+                    "CONFIRM_ADMIN_COMPENSATED must not invent a historical policy snapshot"
+                )
+        elif data.action == LegacyReferralRewardRecoveryAction.RETRY_OPERATOR_DIRECTED:
+            if any(value is not None for value in snapshot) or any(
+                value is None for value in expected_row
+            ) or data.source_validation not in (
+                LegacyReferralRewardSourceValidation.LOCAL_COMPLETED,
+                LegacyReferralRewardSourceValidation.PROVIDER_SUCCEEDED,
+            ):
+                raise ValueError(
+                    "RETRY_OPERATOR_DIRECTED requires exact row hints and no policy snapshot"
+                )
+            if data.expected_created_at is None or data.expected_created_at.tzinfo is None:
+                raise ValueError("Operator-directed expected_created_at must include a timezone")
+        else:
             raise ValueError(
-                "CONFIRM_ADMIN_COMPENSATED must not invent a historical policy snapshot"
+                f"Unsupported legacy recovery action '{data.action}'"
             )
         if (
             not data.operator_reference

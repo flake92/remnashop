@@ -4,6 +4,7 @@ from typing import Any, Optional
 
 from src.core.enums import (
     LegacyReferralRewardRecoveryAction,
+    LegacyReferralRewardSourceValidation,
     ReferralAccrualStrategy,
     ReferralLevel,
     ReferralRewardState,
@@ -52,6 +53,7 @@ class ReferralRewardDto(BaseDto, TrackableMixin, TimestampMixin):
     target_subscription_id: Optional[int] = None
     baseline_expire_at: Optional[datetime] = None
     target_expire_at: Optional[datetime] = None
+    operator_recovery_manifest_sha256: Optional[str] = None
 
     @property
     def rewarded_at(self) -> Optional[datetime]:
@@ -63,9 +65,9 @@ class LegacyReferralRewardRecoveryDto:
     reward_id: int
     action: LegacyReferralRewardRecoveryAction
     expected_version: int
-    source_transaction_id: int
-    origin_referral_id: int
-    level: ReferralLevel
+    source_transaction_id: Optional[int]
+    origin_referral_id: Optional[int]
+    level: Optional[ReferralLevel]
     expected_reward_amount: int
     accrual_strategy_snapshot: Optional[ReferralAccrualStrategy]
     reward_strategy: Optional[ReferralRewardStrategy]
@@ -73,6 +75,10 @@ class LegacyReferralRewardRecoveryDto:
     operator_reference: str
     reason: str
     evidence_sha256: str
+    expected_user_id: Optional[int] = None
+    expected_referral_id: Optional[int] = None
+    expected_created_at: Optional[datetime] = None
+    source_validation: Optional[LegacyReferralRewardSourceValidation] = None
     authorization_manifest_sha256: Optional[str] = None
     resolved_by: str = "ADMIN_API"
 

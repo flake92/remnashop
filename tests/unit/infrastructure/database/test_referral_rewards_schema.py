@@ -12,6 +12,8 @@ from sqlalchemy.orm import aliased
 from src.application.dto import LegacyReferralRewardRecoveryDto, ReferralRewardDto
 from src.core.enums import (
     LegacyReferralRewardRecoveryAction,
+    LegacyReferralRewardSourceValidation,
+    PaymentGatewayType,
     PurchaseType,
     ReferralAccrualStrategy,
     ReferralLevel,
@@ -24,6 +26,7 @@ from src.core.enums import (
 from src.infrastructure.database.constraints import (
     REFERRAL_REWARDS_DURABLE_STATE_CONSTRAINT_NAME,
     REFERRAL_REWARDS_DURABLE_STATE_CONSTRAINT_SQL,
+    REFERRAL_REWARDS_DURABLE_STATE_CONSTRAINT_V2_SQL,
 )
 from src.infrastructure.database.dao.referral import ReferralDaoImpl
 from src.infrastructure.database.models import (
@@ -160,10 +163,10 @@ def test_0052_backfills_legacy_ambiguity_and_installs_durable_fences(
         for constraint in ReferralReward.__table__.constraints
         if hasattr(constraint, "sqltext")
     }
+    assert check == REFERRAL_REWARDS_DURABLE_STATE_CONSTRAINT_SQL
     assert (
         model_checks[REFERRAL_REWARDS_DURABLE_STATE_CONSTRAINT_NAME]
-        == REFERRAL_REWARDS_DURABLE_STATE_CONSTRAINT_SQL
-        == check
+        == REFERRAL_REWARDS_DURABLE_STATE_CONSTRAINT_V2_SQL
     )
     assert model_checks["ck_referral_rewards_issued_first_payment_claimed"] == issued_first_check
 
@@ -399,6 +402,22 @@ async def test_worker_manualizes_ambiguous_extra_days_and_locks_recipient_rows()
     )
     assert "NOT (EXISTS" in issued_refund_sql
 
+    invalid_operator_source = statement_with_value("OPERATOR_RECOVERY_SOURCE_NOT_ELIGIBLE")
+    invalid_operator_compiled = invalid_operator_source.compile(  # type: ignore[attr-defined]
+        dialect=postgresql.dialect()
+    )
+    invalid_operator_sql = str(invalid_operator_compiled).upper()
+    assert "NOT (EXISTS" in invalid_operator_sql
+    assert "OPERATOR_RECOVERY_VALID_SOURCE" in invalid_operator_sql
+    assert "RETRY_OPERATOR_DIRECTED" in invalid_operator_compiled.params.values()
+    assert "OPERATOR_RECOVERY_MANIFEST_SHA256 IS NOT NULL" in invalid_operator_sql
+    assert "MANUAL_INCIDENT_VERSION +" in invalid_operator_sql
+    assert "PROCESSING_TOKEN_HASH=" in invalid_operator_sql
+    assert "PROCESSING_LEASE_EXPIRES_AT=" in invalid_operator_sql
+    assert "NEXT_ATTEMPT_AT=" in invalid_operator_sql
+    assert "MANUAL_ALERTED_AT=" in invalid_operator_sql
+    assert ReferralRewardState.MANUAL_REQUIRED in invalid_operator_compiled.params.values()
+
     admin_earlier = statement_with_value("ADMIN_COMPENSATED_EARLIER_PAYMENT")
     admin_earlier_compiled = admin_earlier.compile(dialect=postgresql.dialect())  # type: ignore[attr-defined]
     admin_earlier_sql = str(admin_earlier_compiled).upper()
@@ -625,7 +644,7 @@ class _ScalarSession:
 @pytest.mark.asyncio
 async def test_idempotent_create_only_returns_the_exact_same_intent() -> None:
     exact = SimpleNamespace(id=91)
-    session = _ScalarSession([None, exact])
+    session = _ScalarSession([None, None, exact])
     dao = ReferralDaoImpl.__new__(ReferralDaoImpl)
     dao.session = session  # type: ignore[assignment]
     dao.retort = _DumpRetort()  # type: ignore[assignment]
@@ -646,13 +665,58 @@ async def test_idempotent_create_only_returns_the_exact_same_intent() -> None:
     result = await dao.create_reward(reward, referral_id=202)
 
     assert result is exact
-    insert_params = session.statements[0].compile(dialect=postgresql.dialect()).params  # type: ignore[attr-defined]
+    recovery_fence = session.statements[0].compile(dialect=postgresql.dialect())  # type: ignore[attr-defined]
+    recovery_decisions = next(
+        value for value in recovery_fence.params.values() if isinstance(value, list)
+    )
+    assert set(recovery_decisions) == {
+        "RETRY_PROVEN_MISSING",
+        "CONFIRM_ADMIN_COMPENSATED",
+        "RETRY_OPERATOR_DIRECTED",
+    }
+    insert_params = session.statements[1].compile(dialect=postgresql.dialect()).params  # type: ignore[attr-defined]
     assert 202 in insert_params.values()
     assert 999 not in insert_params.values()
-    exact_sql = str(session.statements[1].compile(dialect=postgresql.dialect())).upper()  # type: ignore[attr-defined]
+    exact_sql = str(session.statements[2].compile(dialect=postgresql.dialect())).upper()  # type: ignore[attr-defined]
     assert "SOURCE_TRANSACTION_ID" in exact_sql
     assert "ORIGIN_REFERRAL_ID" in exact_sql
     assert "LEVEL" in exact_sql
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("attempted_level", [ReferralLevel.FIRST, ReferralLevel.SECOND])
+async def test_rr65_l1_recovery_freezes_all_later_normal_levels(
+    attempted_level: ReferralLevel,
+) -> None:
+    session = _ScalarSession([65])
+    dao = ReferralDaoImpl.__new__(ReferralDaoImpl)
+    dao.session = session  # type: ignore[assignment]
+    dao.retort = _DumpRetort()  # type: ignore[assignment]
+    reward = ReferralRewardDto(
+        user_id=62,
+        referral_id=41,
+        type=ReferralRewardType.EXTRA_DAYS,
+        amount=14,
+        source_transaction_id=1761,
+        origin_referral_id=41,
+        level=attempted_level,
+        accrual_strategy_snapshot=ReferralAccrualStrategy.ON_EACH_PAYMENT,
+        accrual_strategy=ReferralAccrualStrategy.ON_EACH_PAYMENT,
+        reward_strategy=ReferralRewardStrategy.AMOUNT,
+        config_value=14,
+        state=ReferralRewardState.PENDING,
+    )
+
+    assert await dao.create_reward(reward, referral_id=41) is None
+    assert len(session.statements) == 1
+    compiled = session.statements[0].compile(dialect=postgresql.dialect())  # type: ignore[attr-defined]
+    sql = str(compiled).upper()
+    assert "REFERRAL_REWARD_RESOLUTIONS" in sql
+    assert "SELECTED_SOURCE_TRANSACTION_ID" in sql
+    assert "SELECTED_LEVEL" not in sql
+    assert 1761 in compiled.params.values()
+    decisions = next(value for value in compiled.params.values() if isinstance(value, list))
+    assert "RETRY_OPERATOR_DIRECTED" in decisions
 
 
 @pytest.mark.asyncio
@@ -672,6 +736,28 @@ async def test_manual_resolver_locks_source_transaction_before_decision() -> Non
     ).upper()
     assert "JOIN REFERRAL_REWARDS" in sql
     assert "REFERRAL_REWARDS.ID = 8" in sql
+    assert "FOR UPDATE OF TRANSACTIONS" in sql
+
+
+@pytest.mark.asyncio
+async def test_manual_operator_resolution_locks_its_selected_source_by_digest() -> None:
+    session = _ScalarSession([None, TransactionStatus.REFUNDED])
+    dao = ReferralDaoImpl.__new__(ReferralDaoImpl)
+    dao.session = session  # type: ignore[assignment]
+
+    status = await dao.lock_manual_reward_source_status(65)
+
+    assert status == TransactionStatus.REFUNDED
+    sql = str(
+        session.statements[1].compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    ).upper()
+    assert "RETRY_OPERATOR_DIRECTED" in sql
+    assert "OPERATOR_RECOVERY_MANIFEST_SHA256" in sql
+    assert "AUTHORIZATION_MANIFEST_SHA256" in sql
+    assert "REFERRAL_REWARDS.ID = 65" in sql
     assert "FOR UPDATE OF TRANSACTIONS" in sql
 
 
@@ -696,6 +782,29 @@ async def test_side_effect_eligibility_locks_successful_source_transaction() -> 
     assert "TRANSACTIONS.STATUS = 'COMPLETED'" in sql
     assert "TRANSACTIONS.FULFILLMENT_STATUS = 'SUCCEEDED'" in sql
     assert "PROCESSING_TOKEN_HASH" in sql
+
+
+@pytest.mark.asyncio
+async def test_operator_side_effect_eligibility_uses_pinned_resolution_source_class() -> None:
+    session = _ScalarSession([None, 1761])
+    dao = ReferralDaoImpl.__new__(ReferralDaoImpl)
+    dao.session = session  # type: ignore[assignment]
+
+    assert await dao.lock_reward_source_if_eligible(65, token_hash="t" * 64)
+
+    sql = str(
+        session.statements[1].compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    ).upper()
+    assert "RETRY_OPERATOR_DIRECTED" in sql
+    assert "SOURCE_VALIDATION" in sql
+    assert "PROVIDER_SUCCEEDED" in sql
+    assert "TRANSACTIONS.STATUS = 'FAILED'" in sql
+    assert "TRANSACTIONS.GATEWAY_TYPE = 'YOOKASSA'" in sql
+    assert "AUTHORIZATION_MANIFEST_SHA256" in sql
+    assert "FOR UPDATE OF TRANSACTIONS" in sql
 
 
 class _PointsSession:
@@ -826,6 +935,18 @@ def _recovery(
         reason="Exact durable evidence",
         evidence_sha256="a" * 64,
         authorization_manifest_sha256="d" * 64,
+    )
+
+
+def _operator_recovery(
+    reward: SimpleNamespace,
+) -> LegacyReferralRewardRecoveryDto:
+    return replace(
+        _recovery(LegacyReferralRewardRecoveryAction.RETRY_OPERATOR_DIRECTED),
+        expected_user_id=reward.user_id,
+        expected_referral_id=reward.referral_id,
+        expected_created_at=reward.created_at,
+        source_validation=LegacyReferralRewardSourceValidation.LOCAL_COMPLETED,
     )
 
 
@@ -985,6 +1106,71 @@ async def test_legacy_recovery_locks_and_audits_exact_candidate(
         assert "LEGACY_RECOVERY_EARLIER_SOURCE.UPDATED_AT" not in earlier_sql
         assert "FULFILLMENT_LAST_ERROR" in earlier_sql
         assert "LEGACY_COMPLETED_WITHOUT_PROOF" in earlier_compiled.params.values()
+
+
+@pytest.mark.asyncio
+async def test_operator_recovery_keeps_reward_source_less_and_audits_validation_class() -> None:
+    reward, source, origin = _recovery_entities()
+    recovery = _operator_recovery(reward)
+    session = _FullRecoverySession(
+        [None, None, None, None, None, reward, source, origin, origin, None, None],
+        reward=reward,
+        source=source,
+        origin=origin,
+        participant_ids=[2, 7],
+    )
+    dao = ReferralDaoImpl.__new__(ReferralDaoImpl)
+    dao.session = session  # type: ignore[assignment]
+
+    assert await dao.recover_legacy_extra_days_reward(recovery)
+
+    resolution = session.added[0]
+    assert resolution.decision == "RETRY_OPERATOR_DIRECTED"
+    assert resolution.selected_source_transaction_id == 77
+    assert resolution.selected_provenance["request"]["source_validation"] == "LOCAL_COMPLETED"
+    assert resolution.selected_provenance["selected"]["source_validation"] == "LOCAL_COMPLETED"
+    values = ReferralDaoImpl._legacy_recovery_transition_values(
+        recovery,
+        source_transaction_id=77,
+        origin_referral_id=101,
+        issued_at=None,
+    )
+    assert values["state"] == ReferralRewardState.PENDING
+    assert values["operator_recovery_manifest_sha256"] == "d" * 64
+    for field in (
+        "source_transaction_id",
+        "origin_referral_id",
+        "level",
+        "accrual_strategy_snapshot",
+        "accrual_strategy",
+        "reward_strategy",
+        "config_value",
+    ):
+        assert field not in values
+
+
+def test_provider_succeeded_class_accepts_only_failed_yookassa_shape() -> None:
+    _, source, _ = _recovery_entities()
+    source.status = TransactionStatus.FAILED
+    source.gateway_type = PaymentGatewayType.YOOKASSA
+    source.fulfillment_status = TransactionFulfillmentStatus.MANUAL_REQUIRED
+    source.fulfillment_completed_at = None
+    source.fulfillment_token_hash = None
+    source.fulfillment_lease_expires_at = None
+
+    ReferralDaoImpl._validate_legacy_recovery_source(  # type: ignore[arg-type]
+        source,
+        LegacyReferralRewardRecoveryAction.RETRY_OPERATOR_DIRECTED,
+        LegacyReferralRewardSourceValidation.PROVIDER_SUCCEEDED,
+    )
+
+    source.gateway_type = PaymentGatewayType.YOOMONEY
+    with pytest.raises(ValueError, match="failed local YooKassa"):
+        ReferralDaoImpl._validate_legacy_recovery_source(  # type: ignore[arg-type]
+            source,
+            LegacyReferralRewardRecoveryAction.RETRY_OPERATOR_DIRECTED,
+            LegacyReferralRewardSourceValidation.PROVIDER_SUCCEEDED,
+        )
 
 
 @pytest.mark.asyncio

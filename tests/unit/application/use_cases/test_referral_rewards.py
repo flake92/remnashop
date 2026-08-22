@@ -1,6 +1,6 @@
 import asyncio
 from dataclasses import replace
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -23,6 +23,7 @@ from src.application.use_cases.referral.commands.rewards import (
 )
 from src.core.enums import (
     LegacyReferralRewardRecoveryAction,
+    LegacyReferralRewardSourceValidation,
     PurchaseType,
     ReferralAccrualStrategy,
     ReferralLevel,
@@ -97,6 +98,40 @@ async def test_legacy_recovery_commits_without_side_effects(
         replace(data, authorization_manifest_sha256="d" * 64)
     )
     authorizer.authorize.assert_called_once_with(data)
+    uow.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_operator_directed_recovery_commits_source_evidence_without_policy() -> None:
+    data = LegacyReferralRewardRecoveryDto(
+        reward_id=1342,
+        action=LegacyReferralRewardRecoveryAction.RETRY_OPERATOR_DIRECTED,
+        expected_version=1,
+        source_transaction_id=8123,
+        origin_referral_id=1500,
+        level=ReferralLevel.FIRST,
+        expected_reward_amount=14,
+        accrual_strategy_snapshot=None,
+        reward_strategy=None,
+        config_value=None,
+        operator_reference="OWNER/INCIDENT-2026-08-22-FULL-AUDIT",
+        reason="FIFO timeline audit found no ADMIN day allocation",
+        evidence_sha256="e" * 64,
+        expected_user_id=222,
+        expected_referral_id=1500,
+        expected_created_at=datetime(2026, 7, 20, tzinfo=timezone.utc),
+        source_validation=LegacyReferralRewardSourceValidation.LOCAL_COMPLETED,
+    )
+    uow = FakeUnitOfWork()
+    referral_dao = SimpleNamespace(recover_legacy_extra_days_reward=AsyncMock(return_value=True))
+    authorizer = SimpleNamespace(authorize=Mock(return_value="d" * 64))
+    use_case = RecoverLegacyReferralReward(uow, referral_dao, authorizer)  # type: ignore[arg-type]
+
+    await use_case._execute(SimpleNamespace(log="system"), data)  # type: ignore[arg-type]
+
+    referral_dao.recover_legacy_extra_days_reward.assert_awaited_once_with(
+        replace(data, authorization_manifest_sha256="d" * 64)
+    )
     uow.commit.assert_awaited_once()
 
 
@@ -248,6 +283,47 @@ async def test_first_payment_intents_ignore_purchase_type_and_keep_l1_l2_origin(
 
 
 @pytest.mark.asyncio
+async def test_normal_assignment_commits_when_rr65_source_level_is_already_recovered() -> None:
+    uow = FakeUnitOfWork()
+    direct_referrer = SimpleNamespace(id=62, remna_name="rr65-recipient")
+    direct_attribution = SimpleNamespace(id=41, referrer=direct_referrer)
+    referral_dao = SimpleNamespace(
+        lock_referral_attribution=AsyncMock(),
+        get_referral_chain=AsyncMock(
+            side_effect=[
+                (direct_attribution, None),
+                (direct_attribution, None),
+            ]
+        ),
+        # DAO None means the immutable recovery resolution already consumed
+        # this (source_transaction_id, level); no second intent is required.
+        create_reward=AsyncMock(return_value=None),
+    )
+    use_case = AssignReferralRewards(
+        uow,
+        SimpleNamespace(get=AsyncMock(return_value=_settings(level=ReferralLevel.FIRST))),
+        referral_dao,
+        SimpleNamespace(system=AsyncMock(return_value=14)),
+    )
+    transaction = _transaction(PurchaseType.NEW)
+    transaction.id = 1761
+
+    await use_case._execute(  # type: ignore[arg-type]
+        SimpleNamespace(),
+        AssignReferralRewardsDto(
+            user=SimpleNamespace(id=9, name="payer", log="payer"),
+            transaction=transaction,
+        ),
+    )
+
+    referral_dao.lock_referral_attribution.assert_awaited_once_with(9, (62,))
+    call = referral_dao.create_reward.await_args
+    assert call.kwargs["reward"].source_transaction_id == 1761
+    assert call.kwargs["reward"].level == ReferralLevel.FIRST
+    uow.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_reward_assignment_aborts_if_chain_changes_while_waiting_for_fence() -> None:
     direct_referrer = SimpleNamespace(id=2, remna_name="direct")
     moved_referrer = SimpleNamespace(id=3, remna_name="moved")
@@ -306,10 +382,10 @@ async def test_attach_referral_locks_users_before_existing_check_and_insert() ->
         SimpleNamespace(
             get_by_referral_code=AsyncMock(return_value=referrer),
             get_by_id=AsyncMock(return_value=referred),
-        ),
-        referral_dao,
-        publisher,
-    )
+            ),
+            referral_dao,
+            publisher,
+        )
 
     result = await use_case._execute(  # type: ignore[arg-type]
         SimpleNamespace(),
@@ -390,6 +466,7 @@ async def test_ambiguous_extra_days_is_not_retried_automatically() -> None:
             )
         ),
     )
+    publisher = SimpleNamespace(publish=AsyncMock())
     use_case = GiveReferrerReward(
         uow,
         SimpleNamespace(get_by_id=AsyncMock(return_value=SimpleNamespace(id=2, remna_name="r"))),
@@ -477,6 +554,7 @@ async def test_extra_days_2xx_without_read_after_write_target_requires_manual_re
             ]
         ),
     )
+    publisher = SimpleNamespace(publish=AsyncMock())
     use_case = GiveReferrerReward(
         uow,
         SimpleNamespace(get_by_id=AsyncMock(return_value=SimpleNamespace(id=2, remna_name="r"))),
@@ -485,7 +563,7 @@ async def test_extra_days_2xx_without_read_after_write_target_requires_manual_re
             update=AsyncMock(side_effect=lambda value: value),
         ),
         referral_dao,
-        SimpleNamespace(publish=AsyncMock()),
+        publisher,
         remnawave,
         FakeMutationLock(),  # type: ignore[arg-type]
     )
@@ -648,6 +726,7 @@ async def test_expired_paid_subscription_is_reactivated_from_now(
             ]
         ),
     )
+    publisher = SimpleNamespace(publish=AsyncMock())
     use_case = GiveReferrerReward(
         FakeUnitOfWork(),  # type: ignore[arg-type]
         SimpleNamespace(
@@ -655,7 +734,7 @@ async def test_expired_paid_subscription_is_reactivated_from_now(
         ),
         subscription_dao,
         referral_dao,
-        SimpleNamespace(publish=AsyncMock()),
+        publisher,
         remnawave,
         FakeMutationLock(),  # type: ignore[arg-type]
     )
@@ -670,6 +749,7 @@ async def test_expired_paid_subscription_is_reactivated_from_now(
                 type=ReferralRewardType.EXTRA_DAYS,
                 amount=3,
                 state=ReferralRewardState.PROCESSING,
+                operator_recovery_manifest_sha256="d" * 64,
             ),
             "payer",
             "t" * 64,
@@ -689,6 +769,7 @@ async def test_expired_paid_subscription_is_reactivated_from_now(
     referral_dao.finish_extra_days_reward.assert_awaited_once()
     referral_dao.mark_reward_manual_required.assert_not_awaited()
     remnawave.update_user.assert_not_awaited()
+    publisher.publish.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1188,6 +1269,49 @@ async def test_operator_confirm_refunded_source_requires_override_and_audits_sta
         TransactionStatus.REFUNDED
     )
     assert override_dao.resolve_manual_reward.await_args.kwargs["expected_version"] == 1
+
+
+@pytest.mark.asyncio
+async def test_operator_directed_manual_confirm_cannot_bypass_later_refund() -> None:
+    reward = ReferralRewardDto(
+        id=65,
+        user_id=62,
+        type=ReferralRewardType.EXTRA_DAYS,
+        amount=14,
+        source_transaction_id=None,
+        state=ReferralRewardState.MANUAL_REQUIRED,
+        manual_incident_version=2,
+        operator_recovery_manifest_sha256="d" * 64,
+    )
+    referral_dao = SimpleNamespace(
+        get_reward_by_id=AsyncMock(side_effect=[reward, reward]),
+        manual_resolution_match=AsyncMock(return_value=None),
+        lock_manual_reward_source_status=AsyncMock(return_value=TransactionStatus.REFUNDED),
+        resolve_manual_reward=AsyncMock(),
+    )
+    use_case = ResolveManualReferralReward(
+        FakeUnitOfWork(),  # type: ignore[arg-type]
+        referral_dao,
+        SimpleNamespace(),
+        SimpleNamespace(),
+        SimpleNamespace(),
+        FakeMutationLock(),  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(ValueError, match="refunded reward"):
+        await use_case._execute(  # type: ignore[arg-type]
+            SimpleNamespace(log="operator"),
+            ResolveManualReferralRewardDto(
+                reward_id=65,
+                expected_version=2,
+                confirm_issued=True,
+                operator_reference="alice/PR135",
+                reason="Target ambiguity review",
+            ),
+        )
+
+    referral_dao.lock_manual_reward_source_status.assert_awaited_once_with(65)
+    referral_dao.resolve_manual_reward.assert_not_awaited()
 
 
 @pytest.mark.asyncio

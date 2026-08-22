@@ -22,6 +22,8 @@ from src.application.dto import (
 )
 from src.core.enums import (
     LegacyReferralRewardRecoveryAction,
+    LegacyReferralRewardSourceValidation,
+    PaymentGatewayType,
     PurchaseType,
     ReferralAccrualStrategy,
     ReferralLevel,
@@ -45,6 +47,7 @@ from src.infrastructure.database.referral_reward_source import (
     exact_legacy_referral_source_fulfillment,
     normalized_admin_compensated_source_evidence_at,
     normalized_admin_compensated_source_predicate,
+    operator_directed_source_predicate,
     paid_nontrial_referral_source_predicate,
     referral_source_evidence_at,
 )
@@ -270,6 +273,34 @@ class ReferralDaoImpl(ReferralDao):
         reward: ReferralRewardDto,
         referral_id: int,
     ) -> Optional[ReferralRewardDto]:
+        if reward.source_transaction_id is not None:
+            recovered_owner = await self.session.scalar(
+                select(ReferralRewardResolution.reward_id)
+                .where(
+                    ReferralRewardResolution.selected_source_transaction_id
+                    == reward.source_transaction_id,
+                    ReferralRewardResolution.decision.in_(
+                        (
+                            LegacyReferralRewardRecoveryAction.RETRY_PROVEN_MISSING.value,
+                            LegacyReferralRewardRecoveryAction.CONFIRM_ADMIN_COMPENSATED.value,
+                            LegacyReferralRewardRecoveryAction.RETRY_OPERATOR_DIRECTED.value,
+                        )
+                    ),
+                )
+                .limit(1)
+            )
+            if recovered_owner is not None:
+                # Recovery and the two normal writers hold the same attribution-user
+                # fence. A recovery manifest is the complete historical level set,
+                # so any resolution consuming this source freezes all later normal
+                # levels. Returning None also makes backfill APPLY fail closed.
+                logger.warning(
+                    f"Reward source '{reward.source_transaction_id}' is frozen by "
+                    f"recovered reward '{recovered_owner}'; normal level "
+                    f"'{reward.level.name if reward.level is not None else 'UNKNOWN'}' skipped"
+                )
+                return None
+
         reward_data = self.retort.dump(reward)
         reward_data.pop("id", None)
         # referral_id is accepted on read DTOs so operators can inspect legacy
@@ -347,9 +378,22 @@ class ReferralDaoImpl(ReferralDao):
                     ReferralRewardResolution,
                     ReferralRewardResolution.selected_source_transaction_id == Transaction.id,
                 )
+                .join(
+                    ReferralReward,
+                    ReferralReward.id == ReferralRewardResolution.reward_id,
+                )
                 .where(
-                    ReferralRewardResolution.reward_id == reward_id,
-                    ReferralRewardResolution.decision == "CONFIRM_ADMIN_COMPENSATED",
+                    ReferralReward.id == reward_id,
+                    or_(
+                        ReferralRewardResolution.decision == "CONFIRM_ADMIN_COMPENSATED",
+                        and_(
+                            ReferralRewardResolution.decision
+                            == LegacyReferralRewardRecoveryAction.RETRY_OPERATOR_DIRECTED.value,
+                            ReferralReward.operator_recovery_manifest_sha256.is_not(None),
+                            ReferralRewardResolution.authorization_manifest_sha256
+                            == ReferralReward.operator_recovery_manifest_sha256,
+                        ),
+                    ),
                 )
                 .with_for_update(of=Transaction)
             ),
@@ -451,6 +495,26 @@ class ReferralDaoImpl(ReferralDao):
                 admin_compensated_source.status == TransactionStatus.REFUNDED,
             )
         )
+        operator_recovery_source = aliased(
+            Transaction,
+            name="operator_recovery_reward_source",
+        )
+        operator_recovery_refunded_source = (
+            select(ReferralRewardResolution.id)
+            .join(
+                operator_recovery_source,
+                operator_recovery_source.id
+                == ReferralRewardResolution.selected_source_transaction_id,
+            )
+            .where(
+                ReferralRewardResolution.reward_id == ReferralReward.id,
+                ReferralRewardResolution.decision
+                == LegacyReferralRewardRecoveryAction.RETRY_OPERATOR_DIRECTED.value,
+                ReferralRewardResolution.authorization_manifest_sha256
+                == ReferralReward.operator_recovery_manifest_sha256,
+                operator_recovery_source.status == TransactionStatus.REFUNDED,
+            )
+        )
         resolved_current_refund_incident = select(ReferralRewardResolution.id).where(
             ReferralRewardResolution.reward_id == ReferralReward.id,
             ReferralRewardResolution.incident_version == ReferralReward.manual_incident_version,
@@ -461,7 +525,10 @@ class ReferralDaoImpl(ReferralDao):
         await self.session.execute(
             update(ReferralReward)
             .where(
-                ReferralReward.source_transaction_id.in_(refunded_sources),
+                or_(
+                    ReferralReward.source_transaction_id.in_(refunded_sources),
+                    operator_recovery_refunded_source.exists(),
+                ),
                 ReferralReward.state.in_(
                     (
                         ReferralRewardState.PENDING,
@@ -475,12 +542,69 @@ class ReferralDaoImpl(ReferralDao):
                 last_error="SOURCE_REFUNDED_BEFORE_REWARD_ISSUANCE",
             )
         )
+        operator_valid_source = aliased(
+            Transaction,
+            name="operator_recovery_valid_source",
+        )
+        operator_valid_resolution = aliased(
+            ReferralRewardResolution,
+            name="operator_recovery_valid_resolution",
+        )
+        valid_operator_source = (
+            select(operator_valid_source.id)
+            .join(
+                operator_valid_resolution,
+                operator_valid_resolution.selected_source_transaction_id
+                == operator_valid_source.id,
+            )
+            .where(
+                operator_valid_resolution.reward_id == ReferralReward.id,
+                operator_valid_resolution.incident_version
+                == ReferralReward.manual_incident_version,
+                operator_valid_resolution.authorization_manifest_sha256
+                == ReferralReward.operator_recovery_manifest_sha256,
+                *operator_directed_source_predicate(
+                    operator_valid_resolution,
+                    operator_valid_source,
+                ),
+            )
+        )
+        # A non-refund eligibility drift must not strand an authorized row outside
+        # both the worker and the manual queue. Refunds were terminalized above;
+        # every other invalid/missing source is an alerted manual incident.
+        await self.session.execute(
+            update(ReferralReward)
+            .where(
+                ReferralReward.operator_recovery_manifest_sha256.is_not(None),
+                ReferralReward.source_transaction_id.is_(None),
+                ReferralReward.state.in_(
+                    (
+                        ReferralRewardState.PENDING,
+                        ReferralRewardState.RETRY_WAITING,
+                    )
+                ),
+                ~valid_operator_source.exists(),
+            )
+            .values(
+                state=ReferralRewardState.MANUAL_REQUIRED,
+                manual_incident_version=ReferralReward.manual_incident_version + 1,
+                manual_cause="OPERATOR_RECOVERY_SOURCE_NOT_ELIGIBLE",
+                processing_token_hash=None,
+                processing_lease_expires_at=None,
+                next_attempt_at=None,
+                last_error="OPERATOR_RECOVERY_SOURCE_NOT_ELIGIBLE",
+                manual_alerted_at=None,
+            )
+        )
         # PROCESSING is ambiguous and ISSUED needs an explicit operator clawback
         # decision. Preserve is_issued/issued_at on issued history while surfacing it.
         await self.session.execute(
             update(ReferralReward)
             .where(
-                ReferralReward.source_transaction_id.in_(refunded_sources),
+                or_(
+                    ReferralReward.source_transaction_id.in_(refunded_sources),
+                    operator_recovery_refunded_source.exists(),
+                ),
                 ReferralReward.state == ReferralRewardState.PROCESSING,
             )
             .values(
@@ -501,6 +625,7 @@ class ReferralDaoImpl(ReferralDao):
                 or_(
                     ReferralReward.source_transaction_id.in_(refunded_sources),
                     admin_compensated_refunded_source.exists(),
+                    operator_recovery_refunded_source.exists(),
                 ),
                 ReferralReward.state == ReferralRewardState.ISSUED,
                 ~resolved_current_refund_incident.exists(),
@@ -519,7 +644,10 @@ class ReferralDaoImpl(ReferralDao):
         await self.session.execute(
             update(ReferralReward)
             .where(
-                ReferralReward.source_transaction_id.in_(refunded_sources),
+                or_(
+                    ReferralReward.source_transaction_id.in_(refunded_sources),
+                    operator_recovery_refunded_source.exists(),
+                ),
                 ReferralReward.state == ReferralRewardState.MANUAL_REQUIRED,
                 or_(
                     ReferralReward.manual_cause.is_(None),
@@ -830,18 +958,48 @@ class ReferralDaoImpl(ReferralDao):
                 ~admin_compensated_earlier_exists.exists(),
             ),
         )
+        normal_eligible_source = select(source_transaction.id).where(
+            source_transaction.id == ReferralReward.source_transaction_id,
+            source_condition,
+            strategy_condition,
+        )
+        operator_claim_source = aliased(Transaction, name="operator_claim_source")
+        operator_claim_resolution = aliased(
+            ReferralRewardResolution,
+            name="operator_claim_resolution",
+        )
+        operator_eligible_source = (
+            select(operator_claim_source.id)
+            .join(
+                operator_claim_resolution,
+                operator_claim_resolution.selected_source_transaction_id
+                == operator_claim_source.id,
+            )
+            .where(
+                operator_claim_resolution.reward_id == ReferralReward.id,
+                operator_claim_resolution.incident_version
+                == ReferralReward.manual_incident_version,
+                operator_claim_resolution.decision
+                == LegacyReferralRewardRecoveryAction.RETRY_OPERATOR_DIRECTED.value,
+                operator_claim_resolution.authorization_manifest_sha256
+                == ReferralReward.operator_recovery_manifest_sha256,
+                *operator_directed_source_predicate(
+                    operator_claim_resolution,
+                    operator_claim_source,
+                ),
+            )
+        )
+        eligible_source_condition = or_(
+            normal_eligible_source.exists(),
+            operator_eligible_source.exists(),
+        )
 
         due_for_user = (
             select(ReferralReward.id)
-            .join(
-                source_transaction,
-                source_transaction.id == ReferralReward.source_transaction_id,
-            )
             .where(
                 ReferralReward.user_id == User.id,
                 due_condition,
-                source_condition,
-                strategy_condition,
+                eligible_source_condition,
             )
         )
         active_for_user = select(ReferralReward.id).where(
@@ -863,15 +1021,10 @@ class ReferralDaoImpl(ReferralDao):
         for user_id in user_ids:
             reward_id = await self.session.scalar(
                 select(ReferralReward.id)
-                .join(
-                    source_transaction,
-                    source_transaction.id == ReferralReward.source_transaction_id,
-                )
                 .where(
                     ReferralReward.user_id == user_id,
                     due_condition,
-                    source_condition,
-                    strategy_condition,
+                    eligible_source_condition,
                 )
                 .order_by(
                     ReferralReward.next_attempt_at.asc().nullsfirst(),
@@ -1007,7 +1160,39 @@ class ReferralDaoImpl(ReferralDao):
             )
             .with_for_update(of=Transaction)
         )
-        return source_id is not None
+        if source_id is not None:
+            return True
+
+        operator_source = await self.session.scalar(
+            select(Transaction)
+            .join(
+                ReferralRewardResolution,
+                ReferralRewardResolution.selected_source_transaction_id == Transaction.id,
+            )
+            .join(
+                ReferralReward,
+                ReferralReward.id == ReferralRewardResolution.reward_id,
+            )
+            .where(
+                ReferralReward.id == reward_id,
+                ReferralReward.state == ReferralRewardState.PROCESSING,
+                ReferralReward.processing_token_hash == token_hash,
+                ReferralReward.source_transaction_id.is_(None),
+                ReferralReward.operator_recovery_manifest_sha256.is_not(None),
+                ReferralRewardResolution.incident_version
+                == ReferralReward.manual_incident_version,
+                ReferralRewardResolution.decision
+                == LegacyReferralRewardRecoveryAction.RETRY_OPERATOR_DIRECTED.value,
+                ReferralRewardResolution.authorization_manifest_sha256
+                == ReferralReward.operator_recovery_manifest_sha256,
+                *operator_directed_source_predicate(
+                    ReferralRewardResolution,
+                    Transaction,
+                ),
+            )
+            .with_for_update(of=Transaction)
+        )
+        return operator_source is not None
 
     async def cancel_claimed_reward(
         self,
@@ -1410,6 +1595,20 @@ class ReferralDaoImpl(ReferralDao):
             )
         ):
             raise ValueError("Trusted recovery manifest authorization is missing")
+        if (
+            recovery.source_transaction_id is None
+            or recovery.origin_referral_id is None
+            or recovery.level is None
+        ):
+            raise ValueError("Legacy recovery requires exact source and referral evidence")
+        if recovery.action == LegacyReferralRewardRecoveryAction.RETRY_OPERATOR_DIRECTED:
+            if recovery.source_validation not in (
+                LegacyReferralRewardSourceValidation.LOCAL_COMPLETED,
+                LegacyReferralRewardSourceValidation.PROVIDER_SUCCEEDED,
+            ):
+                raise ValueError("Operator-directed source validation class is missing")
+        elif recovery.source_validation is not None:
+            raise ValueError("Source validation class is reserved for operator-directed recovery")
         await self.acquire_historical_backfill_lock()
         requested_provenance = self._legacy_recovery_request_provenance(recovery)
         existing = await self.session.scalar(
@@ -1506,6 +1705,18 @@ class ReferralDaoImpl(ReferralDao):
         if reward is None:
             raise ValueError(f"Referral reward '{recovery.reward_id}' was not found")
         self._validate_0052_legacy_reward_shape(reward, recovery)
+        if recovery.action == LegacyReferralRewardRecoveryAction.RETRY_OPERATOR_DIRECTED:
+            if (
+                recovery.expected_user_id is None
+                or recovery.expected_referral_id is None
+                or recovery.expected_created_at is None
+                or reward.user_id != recovery.expected_user_id
+                or reward.referral_id != recovery.expected_referral_id
+                or reward.created_at != recovery.expected_created_at
+            ):
+                raise ValueError(
+                    "Operator-directed recovery row no longer matches the frozen manifest"
+                )
 
         source = await self.session.scalar(
             select(Transaction)
@@ -1515,7 +1726,11 @@ class ReferralDaoImpl(ReferralDao):
         )
         if source is None:
             raise ValueError(f"Source transaction '{recovery.source_transaction_id}' was not found")
-        self._validate_legacy_recovery_source(source, recovery.action)
+        self._validate_legacy_recovery_source(
+            source,
+            recovery.action,
+            recovery.source_validation,
+        )
         source_timestamp_kind, source_evidence_at = self._legacy_recovery_source_evidence_timestamp(
             source
         )
@@ -1669,7 +1884,7 @@ class ReferralDaoImpl(ReferralDao):
             )
         ):
             raise ValueError(
-                "CONFIRM_ADMIN_COMPENSATED must not invent a historical policy snapshot"
+                f"{recovery.action.value} must not invent a historical policy snapshot"
             )
 
         selected_provenance = {
@@ -1697,6 +1912,12 @@ class ReferralDaoImpl(ReferralDao):
                 "source_evidence_timestamp": source_evidence_at.isoformat(),
             },
         }
+        if recovery.action == LegacyReferralRewardRecoveryAction.RETRY_OPERATOR_DIRECTED:
+            selected_provenance["selected"]["source_validation"] = (
+                recovery.source_validation.value
+                if recovery.source_validation is not None
+                else None
+            )
         self.session.add(
             ReferralRewardResolution(
                 reward_id=reward.id,
@@ -1743,13 +1964,13 @@ class ReferralDaoImpl(ReferralDao):
     def _legacy_recovery_request_provenance(
         recovery: LegacyReferralRewardRecoveryDto,
     ) -> dict[str, object]:
-        return {
+        provenance: dict[str, object] = {
             "reward_id": recovery.reward_id,
             "action": recovery.action.value,
             "expected_version": recovery.expected_version,
             "source_transaction_id": recovery.source_transaction_id,
             "origin_referral_id": recovery.origin_referral_id,
-            "level": recovery.level.value,
+            "level": recovery.level.value if recovery.level is not None else None,
             "expected_reward_amount": recovery.expected_reward_amount,
             "accrual_strategy_snapshot": (
                 recovery.accrual_strategy_snapshot.value
@@ -1766,6 +1987,22 @@ class ReferralDaoImpl(ReferralDao):
             "evidence_sha256": recovery.evidence_sha256,
             "authorization_manifest_sha256": recovery.authorization_manifest_sha256,
         }
+        if recovery.action == LegacyReferralRewardRecoveryAction.RETRY_OPERATOR_DIRECTED:
+            provenance.update(
+                expected_user_id=recovery.expected_user_id,
+                expected_referral_id=recovery.expected_referral_id,
+                expected_created_at=(
+                    recovery.expected_created_at.isoformat()
+                    if recovery.expected_created_at is not None
+                    else None
+                ),
+                source_validation=(
+                    recovery.source_validation.value
+                    if recovery.source_validation is not None
+                    else None
+                ),
+            )
+        return provenance
 
     @staticmethod
     def _legacy_recovery_transition_values(
@@ -1793,7 +2030,7 @@ class ReferralDaoImpl(ReferralDao):
             "manual_cause": None,
             "refund_detected_at": None,
         }
-        if not confirm_compensated:
+        if recovery.action == LegacyReferralRewardRecoveryAction.RETRY_PROVEN_MISSING:
             values.update(
                 source_transaction_id=source_transaction_id,
                 origin_referral_id=origin_referral_id,
@@ -1804,6 +2041,10 @@ class ReferralDaoImpl(ReferralDao):
                 accrual_strategy=recovery.accrual_strategy_snapshot,
                 reward_strategy=recovery.reward_strategy,
                 config_value=recovery.config_value,
+            )
+        elif recovery.action == LegacyReferralRewardRecoveryAction.RETRY_OPERATOR_DIRECTED:
+            values["operator_recovery_manifest_sha256"] = (
+                recovery.authorization_manifest_sha256
             )
         return values
 
@@ -1839,6 +2080,7 @@ class ReferralDaoImpl(ReferralDao):
             or reward.baseline_expire_at is not None
             or reward.target_expire_at is not None
             or reward.refund_detected_at is not None
+            or getattr(reward, "operator_recovery_manifest_sha256", None) is not None
         ):
             raise ValueError(
                 f"Referral reward '{recovery.reward_id}' is not the exact unresolved "
@@ -1877,14 +2119,19 @@ class ReferralDaoImpl(ReferralDao):
         cls,
         source: Transaction,
         action: LegacyReferralRewardRecoveryAction,
+        source_validation: Optional[LegacyReferralRewardSourceValidation] = None,
     ) -> None:
         try:
             final_amount = Decimal(str(source.pricing["final_amount"]))
         except (InvalidOperation, KeyError, TypeError, ValueError) as exc:
             raise ValueError("Source paid amount is invalid") from exc
+        provider_succeeded = (
+            action == LegacyReferralRewardRecoveryAction.RETRY_OPERATOR_DIRECTED
+            and source_validation
+            == LegacyReferralRewardSourceValidation.PROVIDER_SUCCEEDED
+        )
         if (
-            source.status != TransactionStatus.COMPLETED
-            or source.is_test
+            source.is_test
             or final_amount <= 0
             or not isinstance(source.plan_snapshot, dict)
             or source.plan_snapshot.get("is_trial") is not False
@@ -1892,6 +2139,29 @@ class ReferralDaoImpl(ReferralDao):
             raise ValueError(
                 "Source must be completed, fulfilled, non-test, paid, non-trial, and non-refunded"
             )
+        if provider_succeeded:
+            if not (
+                source.status == TransactionStatus.FAILED
+                and source.gateway_type == PaymentGatewayType.YOOKASSA
+                and source.fulfillment_status == TransactionFulfillmentStatus.MANUAL_REQUIRED
+                and source.fulfillment_completed_at is None
+                and source.fulfillment_started_at is not None
+                and source.fulfillment_token_hash is None
+                and source.fulfillment_lease_expires_at is None
+            ):
+                raise ValueError(
+                    "PROVIDER_SUCCEEDED requires the exact failed local YooKassa source shape"
+                )
+            cls._legacy_recovery_source_evidence_timestamp(source)
+            return
+        if source.status != TransactionStatus.COMPLETED:
+            raise ValueError("Local recovery source must remain completed and non-refunded")
+        if (
+            action == LegacyReferralRewardRecoveryAction.RETRY_OPERATOR_DIRECTED
+            and source_validation
+            != LegacyReferralRewardSourceValidation.LOCAL_COMPLETED
+        ):
+            raise ValueError("Operator-directed source validation class is missing")
         if action == LegacyReferralRewardRecoveryAction.RETRY_PROVEN_MISSING:
             if (
                 source.fulfillment_status != TransactionFulfillmentStatus.SUCCEEDED
@@ -1916,7 +2186,7 @@ class ReferralDaoImpl(ReferralDao):
             )
         ):
             raise ValueError(
-                "CONFIRM_ADMIN_COMPENSATED requires a succeeded source or the exact "
+                f"{action.value} requires a succeeded source or the exact "
                 "legacy manual-required source shape"
             )
         cls._legacy_recovery_source_evidence_timestamp(source)

@@ -1,0 +1,117 @@
+{
+  "admin_duration_audit": {
+    "allocation_rule": "ADMIN_DAYS_FIFO_AFTER_REWARD",
+    "covered_original_reward_ids": [
+      398,
+      399,
+      507,
+      637,
+      638,
+      897,
+      932
+    ],
+    "covered_original_rewards": 7,
+    "covered_original_rewards_days": 98,
+    "eligible_actor_roles": [
+      "ADMIN",
+      "DEV",
+      "OWNER"
+    ],
+    "historical_log_gaps": [
+      "2026-01-20/2026-07-17",
+      "2026-07-22/2026-08-04"
+    ],
+    "mapped_positive_events_to_remaining_cohort": 0,
+    "mapped_positive_events_to_remaining_cohort_days": 0,
+    "retained_positive_add_events": {
+      "ADMIN": {
+        "days": 0,
+        "events": 0
+      },
+      "DEV": {
+        "days": 270,
+        "events": 9
+      },
+      "OWNER": {
+        "days": 307,
+        "events": 7
+      }
+    },
+    "retained_subtract_days": 68,
+    "retained_subtract_events": 4,
+    "set_subscription_events_counted_as_added_days": 0,
+    "unallocated_days_from_original_admin_compensation": 9
+  },
+  "decision": {
+    "classification": "OPERATOR_BUSINESS_REMEDIATION",
+    "forensic_limit": "Historic application logs are incomplete, so absence of an administrator event is not forensic proof of absence before retention.",
+    "owner_rule": "Treat days added by an administrator after an earned reward as compensation; otherwise grant the reward."
+  },
+  "frozen_original_cohort": {
+    "cohort_id_sha256": "bfc831ebe586bdd8afb7f61971c9c43f3061ab382643e8575cb8a74f076d594b",
+    "days": 9527,
+    "recipients": 232,
+    "rewards": 768,
+    "semantic_shape_sha256": "74620a4c0ca44a8ff0b927d5c7c6b9a379b58e8ff6e5eb75ea2d5ce6dc064fb7",
+    "snapshot_at": "2026-08-22T02:10:22.883505+00:00"
+  },
+  "incident": "REMNASHOP-LEGACY-REFERRAL-REMEDIATION-2026-08-22",
+  "previous_resolutions": {
+    "admin_compensated_days": 98,
+    "admin_compensated_rewards": 7,
+    "proven_missing_days": 21,
+    "proven_missing_rewards": 2
+  },
+  "provider_exception": {
+    "evidence_sha256": "0acb95beed542b1f44dd8797171400de1e362018df313cdbdfbd035d5486cffa",
+    "local_source_status": "FAILED",
+    "provider": "YOOKASSA",
+    "provider_paid": true,
+    "provider_refunded_amount": "0.00 RUB",
+    "provider_status": "succeeded",
+    "reward_id": 65,
+    "source_transaction_id": 1761
+  },
+  "remaining_cohort": {
+    "days": 9408,
+    "recipients": 230,
+    "rewards": 759,
+    "source_export_sha256": "5acaddd1e01886e68d1e4a28f7b82770e875a787fcb153f4c4d346b0f2014be1"
+  },
+  "schema_version": 1,
+  "source_audit": {
+    "completed_legacy_manual_required": 745,
+    "completed_succeeded": 13,
+    "free_sources": 0,
+    "max_match_delay_seconds": 17,
+    "provider_proven_failed_local": 1,
+    "refunded_sources": 0,
+    "source_level_collisions": 0,
+    "test_sources": 0,
+    "trial_sources": 0,
+    "unique_sources": 595,
+    "validated_rewards": 759
+  },
+  "subscription_delivery_snapshot": {
+    "deferred_disabled": {
+      "days": 154,
+      "recipients": 3,
+      "rewards": 12
+    },
+    "deferred_no_current_subscription": {
+      "days": 182,
+      "recipients": 6,
+      "rewards": 13
+    },
+    "deferred_trial": {
+      "days": 847,
+      "recipients": 25,
+      "rewards": 70
+    },
+    "safe_nontrial_active_or_expired": {
+      "days": 8225,
+      "recipients": 196,
+      "rewards": 664
+    }
+  }
+}

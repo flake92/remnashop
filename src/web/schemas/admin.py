@@ -80,11 +80,16 @@ class ResolveManualReferralRewardRequest(BaseModel):
 class LegacyReferralRewardRecoveryRequest(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid", str_strip_whitespace=True)
 
-    action: Literal["RETRY_PROVEN_MISSING", "CONFIRM_ADMIN_COMPENSATED"]
+    action: Literal[
+        "RETRY_PROVEN_MISSING",
+        "CONFIRM_ADMIN_COMPENSATED",
+        "RETRY_OPERATOR_DIRECTED",
+    ]
     expected_version: StrictInt = Field(ge=0)
-    source_transaction_id: StrictInt = Field(gt=0)
-    origin_referral_id: StrictInt = Field(gt=0)
-    level: Literal[1, 2]
+    source_transaction_id: StrictInt | None = Field(default=None, gt=0)
+    origin_referral_id: StrictInt | None = Field(default=None, gt=0)
+    level: Literal[1, 2] | None = None
+    source_validation: Literal["LOCAL_COMPLETED", "PROVIDER_SUCCEEDED"] | None = None
     expected_reward_amount: StrictInt = Field(gt=0)
     accrual_strategy_snapshot: Literal["ON_FIRST_PAYMENT", "ON_EACH_PAYMENT"] | None = None
     reward_strategy: Literal["AMOUNT", "PERCENT"] | None = None
@@ -92,6 +97,9 @@ class LegacyReferralRewardRecoveryRequest(BaseModel):
     operator_reference: str = Field(min_length=1, max_length=256)
     reason: str = Field(min_length=1, max_length=1024)
     evidence_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_user_id: StrictInt | None = Field(default=None, gt=0)
+    expected_referral_id: StrictInt | None = Field(default=None, gt=0)
+    expected_created_at: datetime | None = None
 
     @model_validator(mode="after")
     def validate_action_evidence(self) -> "LegacyReferralRewardRecoveryRequest":
@@ -100,14 +108,59 @@ class LegacyReferralRewardRecoveryRequest(BaseModel):
             self.reward_strategy,
             self.config_value,
         )
-        if self.action == "RETRY_PROVEN_MISSING" and any(value is None for value in snapshot):
-            raise ValueError("RETRY_PROVEN_MISSING requires the exact historical policy snapshot")
-        if self.action == "CONFIRM_ADMIN_COMPENSATED" and any(
-            value is not None for value in snapshot
+        source = (self.source_transaction_id, self.origin_referral_id, self.level)
+        expected_row = (
+            self.expected_user_id,
+            self.expected_referral_id,
+            self.expected_created_at,
+        )
+        if self.action == "RETRY_PROVEN_MISSING":
+            if any(value is None for value in (*source, *snapshot)):
+                raise ValueError(
+                    "RETRY_PROVEN_MISSING requires exact source and historical policy"
+                )
+            if (
+                any(value is not None for value in expected_row)
+                or self.source_validation is not None
+            ):
+                raise ValueError("Source-backed recovery must not include operator row hints")
+        elif self.action == "CONFIRM_ADMIN_COMPENSATED":
+            if any(value is None for value in source):
+                raise ValueError("CONFIRM_ADMIN_COMPENSATED requires exact source evidence")
+            if any(value is not None for value in (*snapshot, *expected_row)) or (
+                self.source_validation is not None
+            ):
+                raise ValueError(
+                    "CONFIRM_ADMIN_COMPENSATED must not invent a historical policy snapshot"
+                )
+        elif (
+            any(value is None for value in (*source, *expected_row))
+            or any(value is not None for value in snapshot)
+            or self.source_validation is None
         ):
             raise ValueError(
-                "CONFIRM_ADMIN_COMPENSATED must not invent a historical policy snapshot"
+                "RETRY_OPERATOR_DIRECTED requires exact source/row hints and no policy"
             )
+        return self
+
+
+class LegacyReferralRewardRecoveryBatchItem(LegacyReferralRewardRecoveryRequest):
+    reward_id: StrictInt = Field(gt=0)
+
+
+class LegacyReferralRewardRecoveryBatchRequest(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid")
+
+    entries: list[LegacyReferralRewardRecoveryBatchItem] = Field(
+        min_length=1,
+        max_length=5000,
+    )
+
+    @model_validator(mode="after")
+    def validate_unique_rewards(self) -> "LegacyReferralRewardRecoveryBatchRequest":
+        reward_ids = [entry.reward_id for entry in self.entries]
+        if len(reward_ids) != len(set(reward_ids)):
+            raise ValueError("Batch reward ids must be unique")
         return self
 
 
