@@ -44,6 +44,10 @@ from src.infrastructure.database.models import (
     UserMergeAudit,
 )
 from src.infrastructure.database.models.user import User
+from src.infrastructure.database.referral_graph import (
+    acquire_referral_graph_lock,
+    referral_path_statement,
+)
 from src.infrastructure.database.referral_reward_source import (
     exact_legacy_referral_source_fulfillment,
     normalized_admin_compensated_source_evidence_at,
@@ -113,6 +117,20 @@ class ReferralDaoImpl(ReferralDao):
         self._convert_to_reward_list = self.conversion_retort.get_converter(
             list[ReferralReward],
             list[ReferralRewardDto],
+        )
+
+    async def lock_referral_graph(self) -> None:
+        await acquire_referral_graph_lock(self.session)
+
+    async def has_referral_path(
+        self,
+        ancestor_user_id: int,
+        descendant_user_id: int,
+    ) -> bool:
+        return bool(
+            await self.session.scalar(
+                referral_path_statement(ancestor_user_id, descendant_user_id)
+            )
         )
 
     async def create_referral(self, referral: ReferralDto) -> ReferralDto:
@@ -274,7 +292,19 @@ class ReferralDaoImpl(ReferralDao):
         return None
 
     async def get_referrals_count(self, referrer_id: int) -> int:
-        stmt = select(func.count()).select_from(Referral).where(Referral.referrer_id == referrer_id)
+        referrer_user = aliased(User, name="referral_count_referrer")
+        referred_user = aliased(User, name="referral_count_referred")
+        stmt = (
+            select(func.count())
+            .select_from(Referral)
+            .join(referrer_user, referrer_user.id == Referral.referrer_id)
+            .join(referred_user, referred_user.id == Referral.referred_id)
+            .where(
+                Referral.referrer_id == referrer_id,
+                referrer_user.merged_into_user_id.is_(None),
+                referred_user.merged_into_user_id.is_(None),
+            )
+        )
         count = await self.session.scalar(stmt) or 0
 
         logger.debug(f"User_id '{referrer_id}' has '{count}' referrals")
@@ -286,9 +316,17 @@ class ReferralDaoImpl(ReferralDao):
         limit: int = 100,
         offset: int = 0,
     ) -> list[ReferralDto]:
+        referrer_user = aliased(User, name="referral_list_referrer")
+        referred_user = aliased(User, name="referral_list_referred")
         stmt = (
             select(Referral)
-            .where(Referral.referrer_id == referrer_id)
+            .join(referrer_user, referrer_user.id == Referral.referrer_id)
+            .join(referred_user, referred_user.id == Referral.referred_id)
+            .where(
+                Referral.referrer_id == referrer_id,
+                referrer_user.merged_into_user_id.is_(None),
+                referred_user.merged_into_user_id.is_(None),
+            )
             .options(selectinload(Referral.referred))
             .limit(limit)
             .offset(offset)
@@ -2496,17 +2534,33 @@ class ReferralDaoImpl(ReferralDao):
         # represents an L2 referral depends on the referrer's own attribution, so it
         # must be derived from the graph instead of Referral.level legacy metadata.
         referrer_attribution = aliased(Referral, name="referrer_attribution")
+        canonical_referrer = aliased(User, name="canonical_referrer")
+        canonical_referred = aliased(User, name="canonical_referred")
+        canonical_level_2_owner = aliased(User, name="canonical_level_2_owner")
         return (
             select(
                 func.count(Referral.id).label("total_referrals"),
                 func.count(Referral.id).label("level_1_count"),
-                func.count(referrer_attribution.id).label("level_2_count"),
+                func.count(canonical_level_2_owner.id).label("level_2_count"),
                 func.count(func.distinct(Referral.referrer_id)).label("unique_referrers"),
             )
             .select_from(Referral)
+            .join(canonical_referrer, canonical_referrer.id == Referral.referrer_id)
+            .join(canonical_referred, canonical_referred.id == Referral.referred_id)
             .outerjoin(
                 referrer_attribution,
                 referrer_attribution.referred_id == Referral.referrer_id,
+            )
+            .outerjoin(
+                canonical_level_2_owner,
+                and_(
+                    canonical_level_2_owner.id == referrer_attribution.referrer_id,
+                    canonical_level_2_owner.merged_into_user_id.is_(None),
+                ),
+            )
+            .where(
+                canonical_referrer.merged_into_user_id.is_(None),
+                canonical_referred.merged_into_user_id.is_(None),
             )
         )
 
@@ -2514,17 +2568,33 @@ class ReferralDaoImpl(ReferralDao):
     def _user_referral_network_stats_statement(user_id: int) -> Select[Any]:
         direct_referral = aliased(Referral, name="direct_referral")
         second_level_referral = aliased(Referral, name="second_level_referral")
+        canonical_direct_referred = aliased(User, name="canonical_direct_referred")
+        canonical_second_referred = aliased(User, name="canonical_second_referred")
         return (
             select(
                 func.count(func.distinct(direct_referral.id)).label("level_1"),
-                func.count(second_level_referral.id).label("level_2"),
+                func.count(canonical_second_referred.id).label("level_2"),
             )
             .select_from(direct_referral)
+            .join(
+                canonical_direct_referred,
+                canonical_direct_referred.id == direct_referral.referred_id,
+            )
             .outerjoin(
                 second_level_referral,
                 second_level_referral.referrer_id == direct_referral.referred_id,
             )
-            .where(direct_referral.referrer_id == user_id)
+            .outerjoin(
+                canonical_second_referred,
+                and_(
+                    canonical_second_referred.id == second_level_referral.referred_id,
+                    canonical_second_referred.merged_into_user_id.is_(None),
+                ),
+            )
+            .where(
+                direct_referral.referrer_id == user_id,
+                canonical_direct_referred.merged_into_user_id.is_(None),
+            )
         )
 
     async def get_stats(self) -> ReferralStatisticsDto:
@@ -2560,10 +2630,18 @@ class ReferralDaoImpl(ReferralDao):
             ).label("total_days_issued"),
         )
 
+        top_referrer_user = aliased(User, name="top_referrer_user")
+        top_referred_user = aliased(User, name="top_referred_user")
         top_referrer_stmt = (
             select(
                 Referral.referrer_id,
                 func.count().label("referrals_count"),
+            )
+            .join(top_referrer_user, top_referrer_user.id == Referral.referrer_id)
+            .join(top_referred_user, top_referred_user.id == Referral.referred_id)
+            .where(
+                top_referrer_user.merged_into_user_id.is_(None),
+                top_referred_user.merged_into_user_id.is_(None),
             )
             .group_by(Referral.referrer_id)
             .order_by(func.count().desc())
@@ -2641,11 +2719,14 @@ class ReferralDaoImpl(ReferralDao):
         )
 
     async def get_referrals_with_payment_count(self, user_id: int) -> int:
+        referred_user = aliased(User, name="paid_referral_referred")
         stmt = (
             select(func.count(func.distinct(Referral.referred_id)))
+            .join(referred_user, referred_user.id == Referral.referred_id)
             .join(Transaction, Transaction.user_id == Referral.referred_id)
             .where(
                 Referral.referrer_id == user_id,
+                referred_user.merged_into_user_id.is_(None),
                 Transaction.status == TransactionStatus.COMPLETED,
                 Transaction.fulfillment_status == TransactionFulfillmentStatus.SUCCEEDED,
                 Transaction.is_test.is_(False),

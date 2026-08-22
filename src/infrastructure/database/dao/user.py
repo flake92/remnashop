@@ -14,6 +14,8 @@ from src.application.dto import UserDto
 from src.core.enums import Role, SubscriptionStatus
 from src.infrastructure.database.models import Referral, Subscription, User
 
+MAX_USER_MERGE_CHAIN_DEPTH = 64
+
 
 class UserDaoImpl(UserDao):
     def __init__(
@@ -127,12 +129,39 @@ class UserDaoImpl(UserDao):
     async def get_by_referral_code(self, referral_code: str) -> Optional[UserDto]:
         stmt = select(User).where(User.referral_code == referral_code)
         db_user = await self.session.scalar(stmt)
+        if db_user is None:
+            logger.debug(f"User with referral code '{referral_code}' not found")
+            return None
 
-        if db_user:
-            logger.debug(f"User with referral code '{referral_code}' found")
-            return self._convert_to_dto(db_user)
+        visited: set[int] = set()
+        for _ in range(MAX_USER_MERGE_CHAIN_DEPTH):
+            if db_user is None:
+                logger.warning(
+                    f"Referral code '{referral_code}' points to a missing merge target"
+                )
+                return None
 
-        logger.debug(f"User with referral code '{referral_code}' not found")
+            if db_user.id in visited:
+                logger.error(
+                    f"Referral code '{referral_code}' has a cyclic user merge chain"
+                )
+                return None
+            visited.add(db_user.id)
+
+            if db_user.merged_into_user_id is None:
+                logger.debug(
+                    f"User with referral code '{referral_code}' resolved to "
+                    f"canonical user_id '{db_user.id}'"
+                )
+                return self._convert_to_dto(db_user)
+
+            db_user = await self.session.scalar(
+                select(User).where(User.id == db_user.merged_into_user_id)
+            )
+
+        logger.error(
+            f"Referral code '{referral_code}' exceeds the maximum user merge chain depth"
+        )
         return None
 
     async def get_all(self, limit: Optional[int] = None, offset: int = 0) -> list[UserDto]:

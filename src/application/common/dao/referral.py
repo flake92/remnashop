@@ -14,6 +14,14 @@ from src.core.enums import TransactionStatus
 
 @runtime_checkable
 class ReferralDao(Protocol):
+    async def lock_referral_graph(self) -> None: ...
+
+    async def has_referral_path(
+        self,
+        ancestor_user_id: int,
+        descendant_user_id: int,
+    ) -> bool: ...
+
     async def create_referral(self, referral: ReferralDto) -> ReferralDto: ...
 
     async def get_by_referred_id(self, referred_id: int) -> Optional[ReferralDto]: ...

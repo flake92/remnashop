@@ -204,6 +204,24 @@ async def test_already_merged_source_cannot_be_redirected(
     session.scalar.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_merge_rejects_noncanonical_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dao = UserMergeDaoImpl(SimpleNamespace())  # type: ignore[arg-type]
+    monkeypatch.setattr(
+        dao,
+        "_lock_users",
+        AsyncMock(return_value=(_user(11), _user(22, merged_into_user_id=33))),
+    )
+
+    with pytest.raises(
+        UserMergeTargetConflictError,
+        match=r"Target user '22'.*already merged into user '33'",
+    ):
+        await dao.plan(11, 22)
+
+
 class UpdateSession:
     def __init__(self, rowcount: int) -> None:
         self.rowcount = rowcount
@@ -377,6 +395,26 @@ class ScalarResult:
 
 
 @pytest.mark.asyncio
+async def test_user_merge_locks_referral_graph_before_user_rows() -> None:
+    events: list[str] = []
+
+    async def execute(statement: object) -> None:
+        events.append("graph")
+
+    async def scalars(statement: object) -> ScalarResult:
+        events.append("users")
+        return ScalarResult([_user(11), _user(22)])
+
+    session = SimpleNamespace(execute=execute, scalars=scalars)
+    dao = UserMergeDaoImpl(session)  # type: ignore[arg-type]
+
+    source, target = await dao._lock_users(11, 22)
+
+    assert (source.id, target.id) == (11, 22)
+    assert events == ["graph", "users"]
+
+
+@pytest.mark.asyncio
 async def test_rekey_source_payment_collision_is_deterministic_and_preserves_row() -> None:
     operation = SimpleNamespace(id=7, idempotency_key="shared-key")
     session = SimpleNamespace(
@@ -399,39 +437,54 @@ async def test_rekey_source_payment_collision_is_deterministic_and_preserves_row
 
 
 @pytest.mark.asyncio
-async def test_referral_conflict_count_checks_both_merge_edge_directions() -> None:
-    edge_result = ScalarResult([91])
-    session = SimpleNamespace(
-        scalar=AsyncMock(side_effect=[None, None]),
-        scalars=AsyncMock(return_value=edge_result),
-    )
+async def test_referral_conflict_allows_shared_referrer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = SimpleNamespace(scalar=AsyncMock(side_effect=[7, 7]))
     dao = UserMergeDaoImpl(session)  # type: ignore[arg-type]
+    connected = AsyncMock(return_value=False)
+    monkeypatch.setattr(dao, "_referral_accounts_connected", connected)
 
-    assert await dao._count_referral_reward_attribution_conflicts(11, 22) == 1
-
-    edge_sql = str(
-        session.scalars.await_args.args[0].compile(
-            dialect=postgresql.dialect(),
-            compile_kwargs={"literal_binds": True},
-        )
-    ).upper()
-    assert "REFERRALS.REFERRER_ID = 11" in edge_sql
-    assert "REFERRALS.REFERRED_ID = 22" in edge_sql
-    assert "REFERRALS.REFERRER_ID = 22" in edge_sql
-    assert "REFERRALS.REFERRED_ID = 11" in edge_sql
+    assert await dao._count_referral_reward_attribution_conflicts(11, 22) == 0
+    connected.assert_awaited_once_with(11, 22)
 
 
 @pytest.mark.asyncio
-async def test_referral_move_rejects_reverse_edge_before_any_rewrite() -> None:
+async def test_referral_conflict_rejects_different_referrers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = SimpleNamespace(scalar=AsyncMock(side_effect=[7, 8]))
+    dao = UserMergeDaoImpl(session)  # type: ignore[arg-type]
+    monkeypatch.setattr(dao, "_referral_accounts_connected", AsyncMock(return_value=False))
+
+    assert await dao._count_referral_reward_attribution_conflicts(11, 22) == 1
+
+
+@pytest.mark.asyncio
+async def test_referral_conflict_rejects_transitive_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = SimpleNamespace(scalar=AsyncMock(side_effect=[None, None]))
+    dao = UserMergeDaoImpl(session)  # type: ignore[arg-type]
+    monkeypatch.setattr(dao, "_referral_accounts_connected", AsyncMock(return_value=True))
+
+    assert await dao._count_referral_reward_attribution_conflicts(11, 22) == 1
+
+
+@pytest.mark.asyncio
+async def test_referral_move_rejects_connected_accounts_before_any_rewrite(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     session = SimpleNamespace(
-        scalar=AsyncMock(return_value=91),
+        scalar=AsyncMock(),
         execute=AsyncMock(),
     )
     dao = UserMergeDaoImpl(session)  # type: ignore[arg-type]
+    monkeypatch.setattr(dao, "_referral_accounts_connected", AsyncMock(return_value=True))
 
     with pytest.raises(
         UserMergeReferralAttributionConflictError,
-        match="self-referral",
+        match="referral cycle",
     ):
         await dao._move_referrals(11, 22, {})
 
@@ -466,12 +519,15 @@ async def test_merge_rejects_pending_reward_before_transaction_owner_can_change(
 
 
 @pytest.mark.asyncio
-async def test_merge_reassigns_terminal_reward_history_without_deleting_rows() -> None:
+async def test_merge_reassigns_terminal_reward_history_without_deleting_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     session = SimpleNamespace(
         scalar=AsyncMock(side_effect=[None, None]),
         execute=AsyncMock(return_value=SimpleNamespace(rowcount=1)),
     )
     dao = UserMergeDaoImpl(session)  # type: ignore[arg-type]
+    monkeypatch.setattr(dao, "_referral_accounts_connected", AsyncMock(return_value=False))
 
     await dao._move_referrals(11, 22, {})
 
@@ -488,3 +544,54 @@ async def test_merge_reassigns_terminal_reward_history_without_deleting_rows() -
     assert "SET USER_ID=22" in reward_update
     assert "REFERRAL_REWARDS.USER_ID = 11" in reward_update
     assert "DELETE" not in "\n".join(statements)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("source_user_id", "target_user_id"), [(11, 22), (22, 11)])
+async def test_merge_keeps_shared_referrer_history_without_duplicate_rewrite(
+    monkeypatch: pytest.MonkeyPatch,
+    source_user_id: int,
+    target_user_id: int,
+) -> None:
+    session = SimpleNamespace(
+        scalar=AsyncMock(side_effect=[7, 7]),
+        execute=AsyncMock(return_value=SimpleNamespace(rowcount=1)),
+    )
+    dao = UserMergeDaoImpl(session)  # type: ignore[arg-type]
+    monkeypatch.setattr(dao, "_referral_accounts_connected", AsyncMock(return_value=False))
+
+    await dao._move_referrals(source_user_id, target_user_id, {})
+
+    statements = [
+        str(
+            call.args[0].compile(
+                dialect=postgresql.dialect(),
+                compile_kwargs={"literal_binds": True},
+            )
+        ).upper()
+        for call in session.execute.await_args_list
+    ]
+    assert len(statements) == 2
+    assert any(f"SET REFERRER_ID={target_user_id}" in sql for sql in statements)
+    assert any("UPDATE REFERRAL_REWARDS" in sql for sql in statements)
+    assert all(f"SET REFERRED_ID={target_user_id}" not in sql for sql in statements)
+
+
+@pytest.mark.asyncio
+async def test_merge_rejects_different_referrers_before_rewrite(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = SimpleNamespace(
+        scalar=AsyncMock(side_effect=[7, 8]),
+        execute=AsyncMock(),
+    )
+    dao = UserMergeDaoImpl(session)  # type: ignore[arg-type]
+    monkeypatch.setattr(dao, "_referral_accounts_connected", AsyncMock(return_value=False))
+
+    with pytest.raises(
+        UserMergeReferralAttributionConflictError,
+        match="different referral attribution",
+    ):
+        await dao._move_referrals(11, 22, {})
+
+    session.execute.assert_not_awaited()

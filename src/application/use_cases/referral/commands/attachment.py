@@ -36,20 +36,28 @@ class AttachReferral(Interactor[AttachReferralDto, Optional[UserDto]]):
         # Attach the referrer relationship regardless of whether the referral rewards
         # program is enabled: the relationship is needed for invite-only access display
         # and statistics. Reward accrual is gated separately in AssignReferralRewards.
-        referrer = await self.user_dao.get_by_referral_code(data.referral_code)
-
-        if not referrer:
-            logger.info(f"Referral skipped: referrer not found for code '{data.referral_code}'")
-            return None
-
-        if referrer.id == data.user_id:
-            logger.warning(
-                f"Referral skipped: self-referral by user '{data.user_id}' "
-                f"with code '{data.referral_code}'"
-            )
-            return None
-
         async with self.uow:
+            # Account merge takes the same graph lock before changing canonical
+            # ownership. Resolve the code only after this lock so an old source
+            # code cannot race into a newly merged, inactive account.
+            await self.referral_dao.lock_referral_graph()
+            referrer = await self.user_dao.get_by_referral_code(data.referral_code)
+
+            if not referrer:
+                logger.info(
+                    f"Referral skipped: referrer not found for code '{data.referral_code}'"
+                )
+                await self.uow.commit()
+                return None
+
+            if referrer.id == data.user_id:
+                logger.warning(
+                    f"Referral skipped: self-referral by user '{data.user_id}' "
+                    f"with code '{data.referral_code}'"
+                )
+                await self.uow.commit()
+                return None
+
             # Serialize attachment with first-payment intent creation and account
             # merge. The existing-check must happen only after this shared fence.
             await self.referral_dao.lock_referral_attribution(
@@ -59,6 +67,17 @@ class AttachReferral(Interactor[AttachReferralDto, Optional[UserDto]]):
             existing, _ = await self.referral_dao.get_referral_chain(data.user_id)
             if existing:
                 logger.info(f"Referral skipped: user '{data.user_id}' already referred")
+                await self.uow.commit()
+                return None
+
+            # Adding referrer -> referred is invalid when the referred user is
+            # already an ancestor of the referrer. The database repeats this
+            # check as the final concurrency-safe invariant.
+            if await self.referral_dao.has_referral_path(data.user_id, referrer.id):
+                logger.warning(
+                    f"Referral skipped: edge '{referrer.id}' -> '{data.user_id}' "
+                    "would create a cycle"
+                )
                 await self.uow.commit()
                 return None
 

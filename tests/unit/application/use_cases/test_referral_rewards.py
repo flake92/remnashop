@@ -392,6 +392,13 @@ async def test_attach_referral_locks_users_before_existing_check_and_insert() ->
     referrer = SimpleNamespace(id=2, remna_name="referrer")
     referred = SimpleNamespace(id=9, name="payer")
 
+    async def graph_lock(*args: object) -> None:
+        events.append("graph_lock")
+
+    async def lookup(*args: object) -> object:
+        events.append("lookup")
+        return referrer
+
     async def lock(*args: object) -> None:
         events.append("lock")
 
@@ -399,12 +406,18 @@ async def test_attach_referral_locks_users_before_existing_check_and_insert() ->
         events.append("chain")
         return None, None
 
+    async def cycle(*args: object) -> bool:
+        events.append("cycle")
+        return False
+
     async def create(*args: object) -> None:
         events.append("create")
 
     referral_dao = SimpleNamespace(
+        lock_referral_graph=AsyncMock(side_effect=graph_lock),
         lock_referral_attribution=AsyncMock(side_effect=lock),
         get_referral_chain=AsyncMock(side_effect=chain),
+        has_referral_path=AsyncMock(side_effect=cycle),
         create_referral=AsyncMock(side_effect=create),
     )
     publisher = SimpleNamespace(publish=AsyncMock())
@@ -412,12 +425,12 @@ async def test_attach_referral_locks_users_before_existing_check_and_insert() ->
     use_case = AttachReferral(
         uow,  # type: ignore[arg-type]
         SimpleNamespace(
-            get_by_referral_code=AsyncMock(return_value=referrer),
+            get_by_referral_code=AsyncMock(side_effect=lookup),
             get_by_id=AsyncMock(return_value=referred),
-            ),
-            referral_dao,
-            publisher,
-        )
+        ),
+        referral_dao,
+        publisher,
+    )
 
     result = await use_case._execute(  # type: ignore[arg-type]
         SimpleNamespace(),
@@ -425,11 +438,46 @@ async def test_attach_referral_locks_users_before_existing_check_and_insert() ->
     )
 
     assert result is referrer
-    assert events == ["lock", "chain", "create"]
+    assert events == ["graph_lock", "lookup", "lock", "chain", "cycle", "create"]
     referral_dao.lock_referral_attribution.assert_awaited_once_with(9, (2,))
+    referral_dao.has_referral_path.assert_awaited_once_with(9, 2)
     created_referral = referral_dao.create_referral.await_args.args[0]
     assert created_referral.level is ReferralLevel.FIRST
     publisher.publish.assert_awaited_once()
+    uow.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_attach_referral_rejects_edge_that_would_close_a_cycle() -> None:
+    referrer = SimpleNamespace(id=2, remna_name="referrer")
+    referral_dao = SimpleNamespace(
+        lock_referral_graph=AsyncMock(),
+        lock_referral_attribution=AsyncMock(),
+        get_referral_chain=AsyncMock(return_value=(None, None)),
+        has_referral_path=AsyncMock(return_value=True),
+        create_referral=AsyncMock(),
+    )
+    publisher = SimpleNamespace(publish=AsyncMock())
+    uow = FakeUnitOfWork()
+    use_case = AttachReferral(
+        uow,  # type: ignore[arg-type]
+        SimpleNamespace(
+            get_by_referral_code=AsyncMock(return_value=referrer),
+            get_by_id=AsyncMock(),
+        ),
+        referral_dao,
+        publisher,
+    )
+
+    result = await use_case._execute(  # type: ignore[arg-type]
+        SimpleNamespace(),
+        AttachReferralDto(user_id=9, referral_code="CODE"),
+    )
+
+    assert result is None
+    referral_dao.has_referral_path.assert_awaited_once_with(9, 2)
+    referral_dao.create_referral.assert_not_awaited()
+    publisher.publish.assert_not_awaited()
     uow.commit.assert_awaited_once()
 
 
