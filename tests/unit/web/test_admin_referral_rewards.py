@@ -215,6 +215,34 @@ async def test_operator_recovery_batch_is_ordered_and_replayable() -> None:
     assert [call.args[0].reward_id for call in recovery.system.await_args_list] == [1342, 1343]
 
 
+def test_operator_recovery_batch_accepts_canonical_json_timestamp() -> None:
+    payload = _operator_recovery_payload()
+    payload["expected_created_at"] = "2026-07-20T00:00:00+00:00"
+
+    body = LegacyReferralRewardRecoveryBatchRequest.model_validate({"entries": [payload]})
+
+    assert body.entries[0].expected_created_at == datetime(
+        2026,
+        7,
+        20,
+        tzinfo=timezone.utc,
+    )
+
+
+@pytest.mark.parametrize(
+    "timestamp",
+    ["2026-07-20T00:00:00", "2026-07-20T00:00:00Z"],
+)
+def test_operator_recovery_batch_rejects_noncanonical_json_timestamp(
+    timestamp: str,
+) -> None:
+    payload = _operator_recovery_payload()
+    payload["expected_created_at"] = timestamp
+
+    with pytest.raises(ValidationError, match="canonical and timezone-aware"):
+        LegacyReferralRewardRecoveryBatchRequest.model_validate({"entries": [payload]})
+
+
 @pytest.mark.parametrize(
     "payload",
     [

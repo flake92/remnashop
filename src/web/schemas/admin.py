@@ -1,7 +1,15 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictInt,
+    field_validator,
+    model_validator,
+)
 
 
 class MergeUsersRequest(BaseModel):
@@ -104,6 +112,23 @@ class LegacyReferralRewardRecoveryRequest(BaseModel):
         default_factory=list,
         max_length=5000,
     )
+
+    @field_validator("expected_created_at", mode="before")
+    @classmethod
+    def validate_json_timestamp(cls, value: object) -> object:
+        """Accept the one canonical ISO timestamp representation available to JSON."""
+
+        if value is None or isinstance(value, datetime):
+            return value
+        if not isinstance(value, str):
+            return value
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError as exc:
+            raise ValueError("expected_created_at must be an ISO-8601 timestamp") from exc
+        if parsed.tzinfo is None or parsed.isoformat() != value:
+            raise ValueError("expected_created_at must be canonical and timezone-aware")
+        return parsed
 
     @model_validator(mode="after")
     def validate_action_evidence(self) -> "LegacyReferralRewardRecoveryRequest":
