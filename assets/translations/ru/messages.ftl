@@ -108,7 +108,7 @@ msg-menu-invite =
     <blockquote>
     🤖 Telegram — открыть бота: { $referral_url }
     { $has_web_referral_url ->
-    [1] 🌐 Clean Pay — регистрация и оплата: { $web_referral_url }
+    [1] 🌐 Clean Pay — регистрация и оплата (рекомендуется тем, у кого нет доступа к Telegram): { $web_referral_url }
     *[0] 🌐 Clean Pay — ссылка временно недоступна
     }
     </blockquote>
