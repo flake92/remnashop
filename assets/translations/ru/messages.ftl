@@ -165,6 +165,16 @@ msg-menu-invite-about =
     }
     </blockquote>
 
+msg-menu-invite-qr =
+    <b>🧾 Выберите ссылку для QR-кода</b>
+
+    🤖 <b>Telegram</b> — открывает бота по вашей реферальной ссылке.
+    🌐 <b>Clean Pay</b> — открывает регистрацию и оплату без Telegram.
+
+msg-invite-qr =
+    .telegram = 🤖 QR-код Telegram-реферальной ссылки
+    .clean-pay = 🌐 QR-код реферальной ссылки Clean Pay
+
 msg-invite-reward = { $value }{ $reward_strategy_type ->
     [AMOUNT] { $reward_type ->
         [POINTS] { space }{ $value -> 

@@ -41,7 +41,8 @@ from .handlers import (
     on_invite,
     on_reissue_subscription_confirm,
     on_reset_referral_code,
-    on_show_qr,
+    on_show_telegram_qr,
+    on_show_web_qr,
     on_text_button_click,
     on_withdraw_points,
     show_reason,
@@ -263,10 +264,10 @@ invite = Window(
         ),
     ),
     Row(
-        Button(
+        SwitchTo(
             text=I18nFormat("btn-invite.qr"),
             id="qr",
-            on_click=on_show_qr,
+            state=MainMenu.INVITE_QR,
         ),
         SwitchInlineQueryChosenChatButton(
             text=I18nFormat("btn-invite.send"),
@@ -327,6 +328,34 @@ invite_about = Window(
     getter=invite_about_getter,
 )
 
+invite_qr = Window(
+    Banner(BannerName.REFERRAL),
+    I18nFormat("msg-menu-invite-qr"),
+    Row(
+        Button(
+            text=I18nFormat("btn-invite.qr-telegram"),
+            id="qr_telegram",
+            on_click=on_show_telegram_qr,
+        ),
+        Button(
+            text=I18nFormat("btn-invite.qr-clean-pay"),
+            id="qr_clean_pay",
+            on_click=on_show_web_qr,
+            when=F["has_web_referral_url"],
+        ),
+    ),
+    Row(
+        SwitchTo(
+            text=I18nFormat("btn-back.general"),
+            id="back",
+            state=MainMenu.INVITE,
+        ),
+    ),
+    IgnoreUpdate(),
+    state=MainMenu.INVITE_QR,
+    getter=invite_getter,
+)
+
 
 device_confirm_reissue = Window(
     Banner(BannerName.MENU),
@@ -357,4 +386,5 @@ router = Dialog(
     device_confirm_reissue,
     invite,
     invite_about,
+    invite_qr,
 )

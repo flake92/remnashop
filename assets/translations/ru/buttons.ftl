@@ -86,7 +86,9 @@ btn-invite =
     .copy-telegram = Telegram
     .open-web = 🌐 Clean Pay
     .send = 📩 Поделиться
-    .qr = 🧾 QR
+    .qr = 🧾 QR-коды
+    .qr-telegram = 🤖 Telegram
+    .qr-clean-pay = 🌐 Clean Pay
     .withdraw-points = 💎 Обменять баллы
     .reset-referral = 🔄 Обновить ссылку
 
