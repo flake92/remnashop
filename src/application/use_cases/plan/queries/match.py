@@ -44,7 +44,13 @@ class MatchPlan(Interactor[MatchPlanDto, Optional[PlanDto]]):
             if self._is_plan_equal(snapshot, plan):
                 return plan
 
-        logger.warning(f"{actor.log} No matching plan found for snapshot '{snapshot.id}'")
+        if any(plan.id == snapshot.id for plan in data.plans):
+            logger.info(
+                f"{actor.log} Plan terms changed for snapshot '{snapshot.id}'; "
+                "exact match unavailable"
+            )
+        else:
+            logger.warning(f"{actor.log} No matching plan found for snapshot '{snapshot.id}'")
         return None
 
     def _is_plan_equal(self, snapshot: PlanSnapshotDto, plan: PlanDto) -> bool:

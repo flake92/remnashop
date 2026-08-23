@@ -190,7 +190,7 @@ class CreatePayment(Interactor[CreatePaymentDto, PaymentResultDto]):
         details = i18n.get(
             "payment-invoice-description",
             purchase_type=data.purchase_type,
-            name=i18n.get(data.plan_snapshot.name),
+            name=i18n.get_or_raw(data.plan_snapshot.name),
             duration=i18n.get(key, **kw),
         )
 
