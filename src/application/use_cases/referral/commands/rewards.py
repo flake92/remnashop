@@ -160,7 +160,7 @@ class GiveReferrerReward(Interactor[GiveReferrerRewardDto, None]):
                         ),
                     )
                     await self.uow.commit()
-                logger.warning(
+                logger.info(
                     f"{actor.log} Paid subscription not found for '{user.remna_name}'; "
                     f"reward '{reward.id}' remains retryable"
                 )
