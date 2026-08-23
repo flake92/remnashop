@@ -108,7 +108,7 @@ class ActivatePromocode(Interactor[ActivatePromocodeDto, PromocodeDto]):
             promocode_code=promo.code,
             reward_type=promo.reward_type.value,
             reward=promo.reward,
-            plan_name=(str(promo.plan_snapshot.get("name")), {})
+            plan_name=str(promo.plan_snapshot.get("name"))
             if promo.plan_snapshot and promo.plan_snapshot.get("name")
             else "",
         )

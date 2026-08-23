@@ -108,7 +108,7 @@ class ActivateTrialSubscription(Interactor[ActivateTrialSubscriptionDto, None]):
             username=user.username,
             name=user.name,
             email=user.email,
-            plan_name=(plan.name, {}),
+            plan_name=plan.name,
             plan_type=plan.type,
             plan_traffic_limit=i18n_format_traffic_limit(plan.traffic_limit),
             plan_device_limit=i18n_format_device_limit(plan.device_limit),

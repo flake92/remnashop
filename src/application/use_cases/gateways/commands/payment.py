@@ -848,13 +848,14 @@ class ProcessPayment(Interactor[ProcessPaymentDto, None]):
             original_amount=transaction.pricing.original_amount,
             currency=transaction.currency.symbol,
             #
-            plan_name=(transaction.plan_snapshot.name, {}),
+            # Plan names are operator-owned display text, not Fluent keys.
+            plan_name=transaction.plan_snapshot.name,
             plan_type=transaction.plan_snapshot.type,
             plan_traffic_limit=i18n_format_traffic_limit(transaction.plan_snapshot.traffic_limit),
             plan_device_limit=i18n_format_device_limit(transaction.plan_snapshot.device_limit),
             plan_duration=i18n_format_days(transaction.plan_snapshot.duration),
             #
-            previous_plan_name=(old_plan.name, {}) if old_plan else "N/A",
+            previous_plan_name=old_plan.name if old_plan else "N/A",
             previous_plan_type={
                 "key": "plan-type",
                 "plan_type": old_plan.type if old_plan else "N/A",

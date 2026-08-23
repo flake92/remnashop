@@ -52,6 +52,7 @@ from src.infrastructure.database.referral_reward_source import (
     exact_legacy_referral_source_fulfillment,
     normalized_admin_compensated_source_evidence_at,
     normalized_admin_compensated_source_predicate,
+    normalized_recovered_source_evidence_at,
     operator_directed_source_predicate,
     paid_nontrial_referral_source_predicate,
     referral_source_evidence_at,
@@ -90,6 +91,13 @@ _REFERRAL_REWARD_CREATE_FIELDS = frozenset(
         "operator_recovery_manifest_sha256",
     }
 )
+
+# Before durable transaction provenance was introduced, a reward row was written
+# immediately after its payment fulfillment started.  The frozen production audit
+# found a maximum delay of 17 seconds across the complete legacy cohort.  Keep a
+# deliberately narrow margin so an emitted legacy reward can fence later
+# ON_FIRST_PAYMENT candidates without inventing a source for unrelated rows.
+_LEGACY_REWARD_MATCH_WINDOW = timedelta(seconds=30)
 
 
 class ReferralDaoImpl(ReferralDao):
@@ -773,6 +781,22 @@ class ReferralDaoImpl(ReferralDao):
             Transaction,
             name="superseding_admin_compensated_transaction",
         )
+        supersede_operator_earlier = aliased(
+            Transaction,
+            name="superseding_operator_directed_transaction",
+        )
+        supersede_operator_resolution = aliased(
+            ReferralRewardResolution,
+            name="superseding_operator_directed_resolution",
+        )
+        emitted_legacy_source = aliased(
+            Transaction,
+            name="emitted_legacy_reward_source",
+        )
+        emitted_legacy_reward = aliased(
+            ReferralReward,
+            name="emitted_legacy_reward",
+        )
         active_winner = aliased(ReferralReward, name="active_first_payment_winner")
 
         earlier_evidence_at = referral_source_evidence_at(
@@ -927,31 +951,162 @@ class ReferralDaoImpl(ReferralDao):
             )
         )
 
-        # ADMIN compensation proves that an earlier paid source already produced
-        # the side effect, but intentionally does not claim a historical policy.
-        # A later ON_FIRST candidate therefore cannot be issued or silently
-        # superseded as if policy were known; surface it for operator review.
+        operator_directed_earlier_for_reward = (
+            select(supersede_operator_resolution.id)
+            .select_from(supersede_source)
+            .join(
+                supersede_operator_earlier,
+                supersede_operator_earlier.user_id == supersede_source.user_id,
+            )
+            .join(
+                supersede_operator_resolution,
+                supersede_operator_resolution.selected_source_transaction_id
+                == supersede_operator_earlier.id,
+            )
+            .where(
+                supersede_source.id == ReferralReward.source_transaction_id,
+                supersede_operator_resolution.selected_origin_referral_id
+                == ReferralReward.origin_referral_id,
+                supersede_operator_resolution.selected_level == ReferralReward.level,
+                *operator_directed_source_predicate(
+                    supersede_operator_resolution,
+                    supersede_operator_earlier,
+                ),
+                or_(
+                    normalized_recovered_source_evidence_at(
+                        supersede_operator_resolution,
+                        supersede_operator_earlier,
+                    )
+                    < supersede_source.fulfillment_completed_at,
+                    and_(
+                        normalized_recovered_source_evidence_at(
+                            supersede_operator_resolution,
+                            supersede_operator_earlier,
+                        )
+                        == supersede_source.fulfillment_completed_at,
+                        supersede_operator_earlier.id < supersede_source.id,
+                    ),
+                ),
+            )
+        )
+
+        emitted_legacy_reward_for_reward = (
+            select(emitted_legacy_reward.id)
+            .select_from(supersede_source)
+            .join(
+                emitted_legacy_source,
+                emitted_legacy_source.user_id == supersede_source.user_id,
+            )
+            .join(
+                emitted_legacy_reward,
+                and_(
+                    emitted_legacy_reward.user_id == ReferralReward.user_id,
+                    emitted_legacy_reward.referral_id == ReferralReward.referral_id,
+                    emitted_legacy_reward.type == ReferralReward.type,
+                    emitted_legacy_reward.amount == ReferralReward.amount,
+                    emitted_legacy_reward.source_transaction_id.is_(None),
+                    emitted_legacy_reward.state == ReferralRewardState.ISSUED,
+                    emitted_legacy_reward.is_issued.is_(True),
+                    emitted_legacy_reward.issued_at.is_not(None),
+                    emitted_legacy_reward.created_at
+                    >= emitted_legacy_source.fulfillment_started_at,
+                    emitted_legacy_reward.created_at
+                    <= emitted_legacy_source.fulfillment_started_at + _LEGACY_REWARD_MATCH_WINDOW,
+                    emitted_legacy_reward.created_at < supersede_source.fulfillment_completed_at,
+                ),
+            )
+            .where(
+                supersede_source.id == ReferralReward.source_transaction_id,
+                emitted_legacy_source.status.in_(
+                    (TransactionStatus.COMPLETED, TransactionStatus.REFUNDED)
+                ),
+                exact_legacy_referral_source_fulfillment(emitted_legacy_source),
+                emitted_legacy_source.is_test.is_(False),
+                emitted_legacy_source.pricing["final_amount"].astext.cast(Numeric) > 0,
+                emitted_legacy_source.plan_snapshot["is_trial"].astext == "false",
+                or_(
+                    emitted_legacy_source.fulfillment_started_at
+                    < supersede_source.fulfillment_completed_at,
+                    and_(
+                        emitted_legacy_source.fulfillment_started_at
+                        == supersede_source.fulfillment_completed_at,
+                        emitted_legacy_source.id < supersede_source.id,
+                    ),
+                ),
+            )
+        )
+
+        # The owner-defined recovery rule treats administrator-added days as an
+        # already delivered reward.  That immutable resolution is therefore a
+        # conclusive earlier winner for a later ON_FIRST_PAYMENT candidate.
         await self.session.execute(
             update(ReferralReward)
             .where(
                 ReferralReward.accrual_strategy_snapshot
                 == ReferralAccrualStrategy.ON_FIRST_PAYMENT,
                 ReferralReward.accrual_strategy.is_(None),
-                ReferralReward.state.in_(
-                    (
-                        ReferralRewardState.PENDING,
-                        ReferralRewardState.RETRY_WAITING,
-                    )
+                or_(
+                    ReferralReward.state.in_(
+                        (
+                            ReferralRewardState.PENDING,
+                            ReferralRewardState.RETRY_WAITING,
+                        )
+                    ),
+                    and_(
+                        ReferralReward.state == ReferralRewardState.MANUAL_REQUIRED,
+                        ReferralReward.manual_cause.in_(
+                            (
+                                "ADMIN_COMPENSATED_EARLIER_PAYMENT",
+                                "LEGACY_EARLIER_PAYMENT_REQUIRES_REVIEW",
+                            )
+                        ),
+                    ),
                 ),
                 admin_compensated_earlier_for_reward.exists(),
             )
             .values(
-                state=ReferralRewardState.MANUAL_REQUIRED,
-                manual_incident_version=ReferralReward.manual_incident_version + 1,
-                manual_cause="ADMIN_COMPENSATED_EARLIER_PAYMENT",
+                state=ReferralRewardState.SUPERSEDED,
                 next_attempt_at=None,
-                last_error="ADMIN_COMPENSATED_EARLIER_PAYMENT",
-                manual_alerted_at=None,
+                processing_token_hash=None,
+                processing_lease_expires_at=None,
+                last_error="FIRST_PAYMENT_ADMIN_COMPENSATED",
+            )
+        )
+
+        # A trusted operator recovery resolution, or an exact issued legacy
+        # reward emitted alongside the earlier fulfillment, proves that the earlier
+        # payment already owns the reward intent. Terminalize the later candidate;
+        # the earlier reward remains independently retryable until its recipient
+        # has an eligible subscription.
+        await self.session.execute(
+            update(ReferralReward)
+            .where(
+                ReferralReward.accrual_strategy_snapshot
+                == ReferralAccrualStrategy.ON_FIRST_PAYMENT,
+                ReferralReward.accrual_strategy.is_(None),
+                or_(
+                    ReferralReward.state.in_(
+                        (
+                            ReferralRewardState.PENDING,
+                            ReferralRewardState.RETRY_WAITING,
+                        )
+                    ),
+                    and_(
+                        ReferralReward.state == ReferralRewardState.MANUAL_REQUIRED,
+                        ReferralReward.manual_cause == "LEGACY_EARLIER_PAYMENT_REQUIRES_REVIEW",
+                    ),
+                ),
+                or_(
+                    operator_directed_earlier_for_reward.exists(),
+                    emitted_legacy_reward_for_reward.exists(),
+                ),
+            )
+            .values(
+                state=ReferralRewardState.SUPERSEDED,
+                next_attempt_at=None,
+                processing_token_hash=None,
+                processing_lease_expires_at=None,
+                last_error="FIRST_PAYMENT_EARLIER_REWARD_EXISTS",
             )
         )
 

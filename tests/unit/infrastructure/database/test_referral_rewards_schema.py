@@ -445,7 +445,7 @@ async def test_worker_manualizes_ambiguous_extra_days_and_locks_recipient_rows()
     assert "MANUAL_ALERTED_AT=" in invalid_operator_sql
     assert ReferralRewardState.MANUAL_REQUIRED in invalid_operator_compiled.params.values()
 
-    admin_earlier = statement_with_value("ADMIN_COMPENSATED_EARLIER_PAYMENT")
+    admin_earlier = statement_with_value("FIRST_PAYMENT_ADMIN_COMPENSATED")
     admin_earlier_compiled = admin_earlier.compile(dialect=postgresql.dialect())  # type: ignore[attr-defined]
     admin_earlier_sql = str(admin_earlier_compiled).upper()
     assert "SELECTED_SOURCE_TRANSACTION_ID" in admin_earlier_sql
@@ -458,9 +458,48 @@ async def test_worker_manualizes_ambiguous_extra_days_and_locks_recipient_rows()
     assert "FULFILLMENT_STARTED_AT" in admin_earlier_sql
     assert "FULFILLMENT_LAST_ERROR" not in admin_earlier_sql
     assert "SUPERSEDING_ADMIN_COMPENSATED_TRANSACTION.UPDATED_AT" not in admin_earlier_sql
-    assert ReferralRewardState.MANUAL_REQUIRED in admin_earlier_compiled.params.values()
+    assert ReferralRewardState.SUPERSEDED in admin_earlier_compiled.params.values()
+    assert "MANUAL_CAUSE IN" in admin_earlier_sql
+    assert any(
+        isinstance(value, (list, tuple))
+        and "ADMIN_COMPENSATED_EARLIER_PAYMENT" in value
+        and "LEGACY_EARLIER_PAYMENT_REQUIRES_REVIEW" in value
+        for value in admin_earlier_compiled.params.values()
+    )
 
-    legacy_earlier = statement_with_value("LEGACY_EARLIER_PAYMENT_REQUIRES_REVIEW")
+    earlier_reward = statement_with_value("FIRST_PAYMENT_EARLIER_REWARD_EXISTS")
+    earlier_reward_compiled = earlier_reward.compile(dialect=postgresql.dialect())  # type: ignore[attr-defined]
+    earlier_reward_sql = str(earlier_reward_compiled).upper()
+    assert ReferralRewardState.SUPERSEDED in earlier_reward_compiled.params.values()
+    assert "SUPERSEDING_OPERATOR_DIRECTED_RESOLUTION" in earlier_reward_sql
+    assert "SUPERSEDING_OPERATOR_DIRECTED_TRANSACTION" in earlier_reward_sql
+    assert "RETRY_OPERATOR_DIRECTED" in earlier_reward_compiled.params.values()
+    assert "SELECTED_ORIGIN_REFERRAL_ID" in earlier_reward_sql
+    assert "SELECTED_LEVEL" in earlier_reward_sql
+    assert "EMITTED_LEGACY_REWARD_SOURCE" in earlier_reward_sql
+    assert "EMITTED_LEGACY_REWARD" in earlier_reward_sql
+    assert "EMITTED_LEGACY_REWARD.SOURCE_TRANSACTION_ID IS NULL" in earlier_reward_sql
+    assert "EMITTED_LEGACY_REWARD.STATE" in earlier_reward_sql
+    assert "EMITTED_LEGACY_REWARD.IS_ISSUED IS TRUE" in earlier_reward_sql
+    assert "EMITTED_LEGACY_REWARD.ISSUED_AT IS NOT NULL" in earlier_reward_sql
+    assert "EMITTED_LEGACY_REWARD.REFERRAL_ID = REFERRAL_REWARDS.REFERRAL_ID" in (
+        earlier_reward_sql
+    )
+    assert "EMITTED_LEGACY_REWARD.USER_ID = REFERRAL_REWARDS.USER_ID" in earlier_reward_sql
+    assert "EMITTED_LEGACY_REWARD.CREATED_AT" in earlier_reward_sql
+    assert "EMITTED_LEGACY_REWARD_SOURCE.FULFILLMENT_STARTED_AT" in earlier_reward_sql
+    assert "SUPERSEDED_REWARD_SOURCE.FULFILLMENT_COMPLETED_AT" in earlier_reward_sql
+    assert "LEGACY_COMPLETED_WITHOUT_PROOF" in earlier_reward_compiled.params.values()
+    assert "LEGACY_EARLIER_PAYMENT_REQUIRES_REVIEW" in (earlier_reward_compiled.params.values())
+
+    legacy_earlier = next(
+        statement
+        for statement in session.executed
+        if "LEGACY_EARLIER_PAYMENT_REQUIRES_REVIEW"
+        in statement.compile(dialect=postgresql.dialect()).params.values()  # type: ignore[attr-defined]
+        and "SUPERSEDING_EARLIER_TRANSACTION"
+        in str(statement.compile(dialect=postgresql.dialect())).upper()  # type: ignore[attr-defined]
+    )
     legacy_earlier_compiled = legacy_earlier.compile(dialect=postgresql.dialect())  # type: ignore[attr-defined]
     legacy_earlier_sql = str(legacy_earlier_compiled).upper()
     assert "SUPERSEDING_EARLIER_TRANSACTION" in legacy_earlier_sql

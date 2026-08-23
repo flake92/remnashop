@@ -58,6 +58,10 @@ def _creation_dao(session: AsyncSession) -> ReferralDaoImpl:
 
 async def _delete_fixture_rows(session: AsyncSession) -> None:
     await session.execute(
+        text("DELETE FROM referral_reward_resolutions WHERE reward_id = ANY(:ids)"),
+        {"ids": list(REWARD_IDS)},
+    )
+    await session.execute(
         text(
             "DELETE FROM referral_rewards "
             "WHERE id = ANY(:ids) OR source_transaction_id = ANY(:transaction_ids)"
@@ -177,6 +181,200 @@ async def _seed_two_rewards_for_one_recipient(session: AsyncSession) -> None:
                 "transaction_id": transaction_id,
             },
         )
+    await session.commit()
+
+
+async def _seed_legacy_reward_and_later_manual_candidate(session: AsyncSession) -> None:
+    await _seed_two_rewards_for_one_recipient(session)
+    await session.execute(
+        text(
+            """
+            UPDATE transactions
+            SET fulfillment_status = 'MANUAL_REQUIRED',
+                fulfillment_started_at = clock_timestamp() - interval '2 days',
+                fulfillment_completed_at = NULL,
+                fulfillment_last_error = 'LEGACY_COMPLETED_WITHOUT_PROOF',
+                fulfillment_token_hash = NULL,
+                fulfillment_lease_expires_at = NULL
+            WHERE id = :legacy_transaction_id
+            """
+        ),
+        {"legacy_transaction_id": TRANSACTION_IDS[0]},
+    )
+    await session.execute(
+        text(
+            """
+            UPDATE transactions
+            SET user_id = :payer_id,
+                fulfillment_started_at = clock_timestamp() - interval '1 day',
+                fulfillment_completed_at =
+                    clock_timestamp() - interval '1 day' + interval '1 minute'
+            WHERE id = :current_transaction_id
+            """
+        ),
+        {
+            "payer_id": PAYER_IDS[0],
+            "current_transaction_id": TRANSACTION_IDS[1],
+        },
+    )
+    await session.execute(
+        text(
+            """
+            UPDATE referral_rewards
+            SET source_transaction_id = NULL,
+                origin_referral_id = NULL,
+                type = 'EXTRA_DAYS',
+                amount = 14,
+                is_issued = true,
+                state = 'ISSUED',
+                level = NULL,
+                accrual_strategy_snapshot = NULL,
+                accrual_strategy = NULL,
+                reward_strategy = NULL,
+                config_value = NULL,
+                issued_at = clock_timestamp() - interval '2 days' + interval '5 seconds',
+                created_at = clock_timestamp() - interval '2 days' + interval '5 seconds',
+                updated_at = clock_timestamp() - interval '2 days' + interval '5 seconds'
+            WHERE id = :legacy_reward_id
+            """
+        ),
+        {"legacy_reward_id": REWARD_IDS[0]},
+    )
+    await session.execute(
+        text(
+            """
+            UPDATE referral_rewards
+            SET referral_id = :referral_id,
+                source_transaction_id = :current_transaction_id,
+                origin_referral_id = :referral_id,
+                type = 'EXTRA_DAYS',
+                amount = 14,
+                state = 'MANUAL_REQUIRED',
+                level = 'FIRST',
+                accrual_strategy_snapshot = 'ON_FIRST_PAYMENT',
+                accrual_strategy = NULL,
+                reward_strategy = 'AMOUNT',
+                config_value = 14,
+                manual_incident_version = 1,
+                manual_cause = 'LEGACY_EARLIER_PAYMENT_REQUIRES_REVIEW',
+                last_error = 'LEGACY_EARLIER_PAYMENT_REQUIRES_REVIEW'
+            WHERE id = :current_reward_id
+            """
+        ),
+        {
+            "referral_id": REFERRAL_IDS[0],
+            "current_transaction_id": TRANSACTION_IDS[1],
+            "current_reward_id": REWARD_IDS[1],
+        },
+    )
+    await session.commit()
+
+
+async def _seed_resolution_and_later_manual_candidate(
+    session: AsyncSession,
+    *,
+    decision: str,
+    manual_cause: str,
+) -> None:
+    await _seed_two_rewards_for_one_recipient(session)
+    await session.execute(
+        text(
+            """
+            UPDATE transactions
+            SET fulfillment_started_at = clock_timestamp() - interval '2 days',
+                fulfillment_completed_at =
+                    clock_timestamp() - interval '2 days' + interval '1 minute'
+            WHERE id = :earlier_transaction_id
+            """
+        ),
+        {"earlier_transaction_id": TRANSACTION_IDS[0]},
+    )
+    await session.execute(
+        text(
+            """
+            UPDATE transactions
+            SET user_id = :payer_id,
+                fulfillment_started_at = clock_timestamp() - interval '1 day',
+                fulfillment_completed_at =
+                    clock_timestamp() - interval '1 day' + interval '1 minute'
+            WHERE id = :current_transaction_id
+            """
+        ),
+        {
+            "payer_id": PAYER_IDS[0],
+            "current_transaction_id": TRANSACTION_IDS[1],
+        },
+    )
+    await session.execute(
+        text(
+            """
+            UPDATE referral_rewards
+            SET state = 'SUPERSEDED'
+            WHERE id = :earlier_reward_id
+            """
+        ),
+        {"earlier_reward_id": REWARD_IDS[0]},
+    )
+    await session.execute(
+        text(
+            """
+            INSERT INTO referral_reward_resolutions (
+                reward_id, incident_version, decision, operator_reference,
+                resolved_by, reason, source_status, selected_provenance,
+                evidence_sha256, selected_source_transaction_id,
+                selected_origin_referral_id, selected_level,
+                authorization_manifest_sha256
+            ) VALUES (
+                :reward_id, 1, :decision, 'integration-test',
+                'integration-test', 'administrator already added the reward days',
+                'COMPLETED', CAST(:provenance AS jsonb), :evidence_sha256,
+                :source_transaction_id, :origin_referral_id, 'FIRST',
+                :authorization_manifest_sha256
+            )
+            """
+        ),
+        {
+            "reward_id": REWARD_IDS[0],
+            "decision": decision,
+            "provenance": (
+                '{"request":{"source_validation":"LOCAL_COMPLETED"},'
+                '"selected":{"source_fulfillment_status":"SUCCEEDED",'
+                '"source_evidence_timestamp_kind":"fulfillment_completed_at"}}'
+            ),
+            "evidence_sha256": "d" * 64,
+            "source_transaction_id": TRANSACTION_IDS[0],
+            "origin_referral_id": REFERRAL_IDS[0],
+            "authorization_manifest_sha256": "e" * 64,
+        },
+    )
+    await session.execute(
+        text(
+            """
+            UPDATE referral_rewards
+            SET referral_id = :referral_id,
+                source_transaction_id = :current_transaction_id,
+                origin_referral_id = :referral_id,
+                type = 'EXTRA_DAYS',
+                amount = 14,
+                state = 'MANUAL_REQUIRED',
+                level = 'FIRST',
+                accrual_strategy_snapshot = 'ON_FIRST_PAYMENT',
+                accrual_strategy = NULL,
+                reward_strategy = 'AMOUNT',
+                config_value = 14,
+                manual_incident_version = 1,
+                manual_cause = :manual_cause,
+                last_error = :manual_cause
+            WHERE id = :current_reward_id
+            """
+        ),
+        {
+            "referral_id": REFERRAL_IDS[0],
+            "current_transaction_id": TRANSACTION_IDS[1],
+            "current_reward_id": REWARD_IDS[1],
+            "manual_cause": manual_cause,
+        },
+    )
     await session.commit()
 
 
@@ -376,6 +574,148 @@ async def test_create_reward_uses_database_owned_timestamps() -> None:
             assert created.created_at is not None
             assert created.updated_at is not None
             assert created.updated_at >= created.created_at
+    finally:
+        async with sessions() as cleanup:
+            await _delete_fixture_rows(cleanup)
+            await cleanup.commit()
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_legacy_emitted_reward_supersedes_only_the_later_manual_candidate() -> None:
+    assert TEST_DATABASE_URL is not None
+    engine = create_async_engine(TEST_DATABASE_URL)
+    sessions = async_sessionmaker(engine, expire_on_commit=False, autoflush=False)
+
+    try:
+        async with sessions() as setup:
+            await _seed_legacy_reward_and_later_manual_candidate(setup)
+
+        async with sessions() as claimant:
+            rewards = await _dao(claimant).claim_pending_rewards(
+                token_hash="c" * 64,
+                lease_for=timedelta(minutes=5),
+                limit=10,
+            )
+            await claimant.commit()
+            assert rewards == []
+
+        async with sessions() as verify:
+            rows = (
+                await verify.execute(
+                    text(
+                        """
+                        SELECT id, state::text, last_error
+                        FROM referral_rewards
+                        WHERE id = ANY(:ids)
+                        ORDER BY id
+                        """
+                    ),
+                    {"ids": list(REWARD_IDS)},
+                )
+            ).all()
+            assert rows == [
+                (REWARD_IDS[0], "ISSUED", None),
+                (
+                    REWARD_IDS[1],
+                    "SUPERSEDED",
+                    "FIRST_PAYMENT_EARLIER_REWARD_EXISTS",
+                ),
+            ]
+    finally:
+        async with sessions() as cleanup:
+            await _delete_fixture_rows(cleanup)
+            await cleanup.commit()
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_admin_compensation_supersedes_the_later_manual_candidate() -> None:
+    assert TEST_DATABASE_URL is not None
+    engine = create_async_engine(TEST_DATABASE_URL)
+    sessions = async_sessionmaker(engine, expire_on_commit=False, autoflush=False)
+
+    try:
+        async with sessions() as setup:
+            await _seed_resolution_and_later_manual_candidate(
+                setup,
+                decision="CONFIRM_ADMIN_COMPENSATED",
+                manual_cause="ADMIN_COMPENSATED_EARLIER_PAYMENT",
+            )
+
+        async with sessions() as claimant:
+            rewards = await _dao(claimant).claim_pending_rewards(
+                token_hash="f" * 64,
+                lease_for=timedelta(minutes=5),
+                limit=10,
+            )
+            await claimant.commit()
+            assert rewards == []
+
+        async with sessions() as verify:
+            row = (
+                await verify.execute(
+                    text(
+                        """
+                        SELECT state::text, last_error
+                        FROM referral_rewards
+                        WHERE id = :current_reward_id
+                        """
+                    ),
+                    {"current_reward_id": REWARD_IDS[1]},
+                )
+            ).one()
+            assert row == (
+                "SUPERSEDED",
+                "FIRST_PAYMENT_ADMIN_COMPENSATED",
+            )
+    finally:
+        async with sessions() as cleanup:
+            await _delete_fixture_rows(cleanup)
+            await cleanup.commit()
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_operator_directed_legacy_recovery_supersedes_the_later_candidate() -> None:
+    assert TEST_DATABASE_URL is not None
+    engine = create_async_engine(TEST_DATABASE_URL)
+    sessions = async_sessionmaker(engine, expire_on_commit=False, autoflush=False)
+
+    try:
+        async with sessions() as setup:
+            await _seed_resolution_and_later_manual_candidate(
+                setup,
+                decision="RETRY_OPERATOR_DIRECTED",
+                manual_cause="LEGACY_EARLIER_PAYMENT_REQUIRES_REVIEW",
+            )
+
+        async with sessions() as claimant:
+            rewards = await _dao(claimant).claim_pending_rewards(
+                token_hash="1" * 64,
+                lease_for=timedelta(minutes=5),
+                limit=10,
+            )
+            await claimant.commit()
+            assert rewards == []
+
+        async with sessions() as verify:
+            row = (
+                await verify.execute(
+                    text(
+                        """
+                        SELECT state::text, last_error
+                        FROM referral_rewards
+                        WHERE id = :current_reward_id
+                        """
+                    ),
+                    {"current_reward_id": REWARD_IDS[1]},
+                )
+            ).one()
+            assert row == (
+                "SUPERSEDED",
+                "FIRST_PAYMENT_EARLIER_REWARD_EXISTS",
+            )
     finally:
         async with sessions() as cleanup:
             await _delete_fixture_rows(cleanup)

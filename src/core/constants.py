@@ -30,7 +30,9 @@ USERNAME_PATTERN: Pattern[str] = re.compile(r"^@[a-zA-Z0-9_]{5,32}$")
 INVITE_LINK_PATTERN: Pattern[str] = re.compile(r"^https://t\.me/(\+|joinchat/)[A-Za-z0-9_\-]+")
 
 REMNAWAVE_MIN_VERSION: Final[Version] = Version("2.7.0")
-REMNAWAVE_MAX_VERSION: Final[Version] = Version("2.8.0")
+# Exclusive upper bound.  The 2.8.0 API/webhook contracts are covered by the
+# compatibility layer and regression suite; warn only for a newer panel.
+REMNAWAVE_MAX_VERSION: Final[Version] = Version("2.8.1")
 
 REPOSITORY: Final[str] = "https://github.com/snoups/remnashop"
 DOCS: Final[str] = "https://remnashop.mintlify.app"

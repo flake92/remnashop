@@ -1,10 +1,16 @@
 from uuid import UUID
 
+from packaging.version import Version
 from remnapy.models.hosts import GetAllHostsResponseDto, HostResponseDto
 from remnapy.models.hwid import HwidDeviceDto
 from remnapy.models.webhook import HwidUserDeviceDto, UserHwidDeviceEventDto, WebhookPayloadDto
 
+from src.core.constants import REMNAWAVE_MAX_VERSION
 from src.infrastructure.remnapy_compat import apply_remnapy_contract_compatibility
+
+
+def test_remnawave_2_8_0_is_inside_the_verified_compatibility_range() -> None:
+    assert Version("2.8.0") < REMNAWAVE_MAX_VERSION
 
 
 def _host_payload() -> dict:

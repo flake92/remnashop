@@ -57,11 +57,11 @@ def referral_source_evidence_at(transaction: Any, *, include_legacy: bool) -> An
     return case(*whens, else_=None)
 
 
-def normalized_admin_compensated_source_evidence_at(
+def normalized_recovered_source_evidence_at(
     resolution: Any,
     transaction: Any,
 ) -> Any:
-    """Order a recovered ADMIN source by its immutable, audited timestamp kind."""
+    """Order a recovered source by its immutable, audited timestamp kind."""
 
     selected = resolution.selected_provenance["selected"]
     evidence_kind = selected["source_evidence_timestamp_kind"].astext
@@ -76,6 +76,15 @@ def normalized_admin_compensated_source_evidence_at(
         ),
         else_=None,
     )
+
+
+def normalized_admin_compensated_source_evidence_at(
+    resolution: Any,
+    transaction: Any,
+) -> Any:
+    """Backward-compatible semantic name for ADMIN recovery predicates."""
+
+    return normalized_recovered_source_evidence_at(resolution, transaction)
 
 
 def normalized_admin_compensated_source_predicate(
