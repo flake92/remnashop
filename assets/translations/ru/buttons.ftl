@@ -81,15 +81,14 @@ btn-menu =
     } ⚠️
 
 btn-invite =
-    .about = ❓ Подробнее о награде
+    .about = ❓ О награде
     .copy = 📋 Скопировать ссылку
-    .copy-telegram = 📋 Telegram-ссылка
-    .open-web = 🌐 Регистрация и оплата
-    .copy-web = 📋 Web-ссылка
-    .send = 📩 Пригласить
-    .qr = 🧾 QR-код
+    .copy-telegram = Telegram
+    .open-web = 🌐 Clean Pay
+    .send = 📩 Поделиться
+    .qr = 🧾 QR
     .withdraw-points = 💎 Обменять баллы
-    .reset-referral = 🔄 Сбросить реф. ссылку
+    .reset-referral = 🔄 Обновить ссылку
 
 btn-dashboard =
     .statistics = 📊 Статистика

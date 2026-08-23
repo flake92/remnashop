@@ -255,18 +255,12 @@ invite = Window(
             text=I18nFormat("btn-invite.copy-telegram"),
             copy_text=Format("{referral_url}"),
         ),
-    ),
-    Row(
         Url(
             text=I18nFormat("btn-invite.open-web"),
             id="open_web_referral",
             url=Format("{web_referral_url}"),
+            when=F["has_web_referral_url"],
         ),
-        CopyText(
-            text=I18nFormat("btn-invite.copy-web"),
-            copy_text=Format("{web_referral_url}"),
-        ),
-        when=F["has_web_referral_url"],
     ),
     Row(
         Button(
