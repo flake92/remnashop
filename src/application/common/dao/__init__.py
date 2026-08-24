@@ -10,6 +10,7 @@ from .promocode import PromocodeDao
 from .referral import ReferralDao
 from .settings import SettingsDao
 from .subscription import SubscriptionDao
+from .subscription_email_reminder import SubscriptionEmailReminderDao
 from .transaction import TransactionDao
 from .user import UserDao
 from .user_merge import (
@@ -37,6 +38,7 @@ __all__ = [
     "ReferralDao",
     "SettingsDao",
     "SubscriptionDao",
+    "SubscriptionEmailReminderDao",
     "TransactionDao",
     "UserDao",
     "UserMergeDao",

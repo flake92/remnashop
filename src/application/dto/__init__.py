@@ -48,6 +48,11 @@ from .statistics import (
     UserStatisticsDto,
 )
 from .subscription import RemnaSubscriptionDto, SquadInfoDto, SubscriptionDto
+from .subscription_email_reminder import (
+    NotificationPreferencesDto,
+    SubscriptionEmailDeliveryDto,
+    SubscriptionEmailReminderDto,
+)
 from .transaction import PaymentWebhookEventDto, PriceDetailsDto, TransactionDto
 from .user import TelegramUserDto, TempUserDto, UserDto, UserOAuthProviderDto
 
@@ -105,6 +110,9 @@ __all__ = [
     "RemnaSubscriptionDto",
     "SquadInfoDto",
     "SubscriptionDto",
+    "NotificationPreferencesDto",
+    "SubscriptionEmailDeliveryDto",
+    "SubscriptionEmailReminderDto",
     "PriceDetailsDto",
     "PaymentWebhookEventDto",
     "TransactionDto",

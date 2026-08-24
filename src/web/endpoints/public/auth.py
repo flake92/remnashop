@@ -40,6 +40,15 @@ from src.application.use_cases.auth.commands.telegram import (
     LinkTelegramData,
     TelegramAuthData,
 )
+from src.application.use_cases.notification import (
+    GetNotificationPreferences,
+    UpdateNotificationPreferences,
+)
+from src.application.use_cases.notification.commands import (
+    NotificationDeliveryUnavailableError,
+    NotificationEmailNotEligibleError,
+    UpdateNotificationPreferencesDto,
+)
 from src.core.config import AppConfig
 from src.core.exceptions import EmailDeliveryDisabledError, EmailDeliveryError
 from src.web.dependencies import require_auth_service_key
@@ -58,6 +67,7 @@ from src.web.schemas import (
     LoginRequest,
     LogoutResponse,
     MeResponse,
+    NotificationPreferencesResponse,
     PasswordResetConfirmResponse,
     PasswordResetResponse,
     RegisterRequest,
@@ -68,6 +78,7 @@ from src.web.schemas import (
     StartGenericEmailAuthRequest,
     TelegramAuthRequest,
     TelegramWebAppAuthRequest,
+    UpdateNotificationPreferencesRequest,
 )
 
 from ._common import (
@@ -290,6 +301,58 @@ async def link_telegram_account(
 @inject
 async def get_public_user_profile(user: CurrentUser) -> MeResponse:
     return _to_me_response(user)
+
+
+def _to_notification_preferences_response(
+    preferences: object,
+) -> NotificationPreferencesResponse:
+    # Keep the web mapping explicit so the application DTO remains framework-free.
+    return NotificationPreferencesResponse.model_validate(preferences, from_attributes=True)
+
+
+@router.get(
+    "/notification-preferences",
+    response_model=NotificationPreferencesResponse,
+)
+@inject
+async def get_notification_preferences(
+    user: CurrentUser,
+    get_preferences: FromDishka[GetNotificationPreferences],
+) -> NotificationPreferencesResponse:
+    preferences = await get_preferences(user)
+    return _to_notification_preferences_response(preferences)
+
+
+@router.patch(
+    "/notification-preferences",
+    response_model=NotificationPreferencesResponse,
+)
+@inject
+async def update_notification_preferences(
+    body: UpdateNotificationPreferencesRequest,
+    user: CurrentUser,
+    update_preferences: FromDishka[UpdateNotificationPreferences],
+) -> NotificationPreferencesResponse:
+    try:
+        preferences = await update_preferences(
+            user,
+            UpdateNotificationPreferencesDto(
+                subscription_expiration_email_enabled=(
+                    body.subscription_expiration_email_enabled
+                )
+            ),
+        )
+    except NotificationDeliveryUnavailableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    except NotificationEmailNotEligibleError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+    return _to_notification_preferences_response(preferences)
 
 
 @router.post("/change-password", response_model=ChangePasswordResponse)

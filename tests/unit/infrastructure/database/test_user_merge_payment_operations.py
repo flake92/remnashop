@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -48,6 +49,60 @@ def test_identity_resolution_only_suppresses_explicitly_confirmed_conflicts() ->
         )
         == []
     )
+
+
+@pytest.mark.parametrize(
+    (
+        "source_email",
+        "source_verified",
+        "target_email",
+        "target_verified",
+        "expected",
+    ),
+    [
+        (
+            "source@example.com",
+            True,
+            "target@example.com",
+            False,
+            ("target@example.com", False),
+        ),
+        (
+            "source@example.com",
+            True,
+            None,
+            False,
+            ("source@example.com", True),
+        ),
+        (
+            "same@example.com",
+            True,
+            "same@example.com",
+            False,
+            ("same@example.com", True),
+        ),
+        (
+            "source@example.com",
+            False,
+            "target@example.com",
+            True,
+            ("target@example.com", True),
+        ),
+    ],
+)
+def test_merge_email_verification_follows_the_selected_address(
+    source_email: str | None,
+    source_verified: bool,
+    target_email: str | None,
+    target_verified: bool,
+    expected: tuple[str | None, bool],
+) -> None:
+    assert UserMergeDaoImpl._resolve_merged_email_identity(
+        source_email=source_email,
+        source_verified=source_verified,
+        target_email=target_email,
+        target_verified=target_verified,
+    ) == expected
 
 
 def test_payment_resolution_preserves_colliding_operations_without_hiding_subscriptions() -> None:
@@ -278,6 +333,8 @@ async def test_merge_moves_payment_operations_before_marking_source_merged(
         password_reset_expires_at=None,
         password_hash="password",
         is_email_verified=True,
+        subscription_expiration_email_enabled=True,
+        subscription_expiration_email_enabled_at=datetime.now(timezone.utc),
         telegram_id=111,
         username="source_telegram",
         name="Source Telegram",
@@ -305,6 +362,8 @@ async def test_merge_moves_payment_operations_before_marking_source_merged(
         password_reset_expires_at=None,
         password_hash=None,
         is_email_verified=False,
+        subscription_expiration_email_enabled=False,
+        subscription_expiration_email_enabled_at=None,
         telegram_id=222,
         username="target_web",
         name="Target Web",
@@ -355,7 +414,12 @@ async def test_merge_moves_payment_operations_before_marking_source_merged(
     assert source.purchase_discount == 0
     assert source.is_trial_available is False
     assert source.ad_link_id is None
+    assert source.subscription_expiration_email_enabled is False
+    assert source.subscription_expiration_email_enabled_at is None
     assert target.email == "target@example.com"
+    assert target.is_email_verified is False
+    assert target.subscription_expiration_email_enabled is False
+    assert target.subscription_expiration_email_enabled_at is None
     assert target.telegram_id == 111
     assert target.username == "source_telegram"
     assert target.name == "Source Telegram"

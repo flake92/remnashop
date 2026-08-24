@@ -55,6 +55,25 @@ class UserMergeDaoImpl(UserMergeDao):
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
+    @staticmethod
+    def _resolve_merged_email_identity(
+        *,
+        source_email: str | None,
+        source_verified: bool,
+        target_email: str | None,
+        target_verified: bool,
+    ) -> tuple[str | None, bool]:
+        if target_email is not None:
+            # Verification is evidence about a concrete address, not an
+            # account-wide flag. Source evidence applies only when it names the
+            # exact same selected address; a different KEEP_TARGET address keeps
+            # only the target's own verification evidence.
+            return target_email, bool(
+                target_verified
+                or (source_email == target_email and source_verified)
+            )
+        return source_email, bool(source_email is not None and source_verified)
+
     async def plan(
         self,
         source_user_id: int,
@@ -666,6 +685,12 @@ class UserMergeDaoImpl(UserMergeDao):
     ) -> None:
         source_email = source.email
         source_email_verified = source.is_email_verified
+        merged_email, merged_email_verified = self._resolve_merged_email_identity(
+            source_email=source_email,
+            source_verified=source_email_verified,
+            target_email=target.email,
+            target_verified=target.is_email_verified,
+        )
         source_password_hash = source.password_hash
         source_telegram_id = source.telegram_id
         source_username = source.username
@@ -689,6 +714,10 @@ class UserMergeDaoImpl(UserMergeDao):
         source.password_reset_expires_at = None
         source.password_hash = None
         source.is_email_verified = False
+        # Notification consent never crosses an account merge. The canonical
+        # target's existing choice wins, including its enabled timestamp.
+        source.subscription_expiration_email_enabled = False
+        source.subscription_expiration_email_enabled_at = None
         source.telegram_id = None
         source.personal_discount = 0
         source.purchase_discount = 0
@@ -713,9 +742,9 @@ class UserMergeDaoImpl(UserMergeDao):
         source.merged_into_user_id = target.id
         source.merged_at = datetime_now().astimezone(timezone.utc)
 
-        target.email = target.email or source_email
+        target.email = merged_email
         target.password_hash = target.password_hash or source_password_hash
-        target.is_email_verified = target.is_email_verified or source_email_verified
+        target.is_email_verified = merged_email_verified
         target.telegram_id = (
             source_telegram_id
             if telegram_resolution is TelegramConflictResolution.KEEP_SOURCE

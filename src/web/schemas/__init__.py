@@ -29,6 +29,7 @@ from .auth import (
     LogoutResponse,
     MeResponse,
     MigrateTelegramRequest,
+    NotificationPreferencesResponse,
     PasswordResetConfirmResponse,
     PasswordResetResponse,
     RegisterRequest,
@@ -39,6 +40,7 @@ from .auth import (
     StartGenericEmailAuthRequest,
     TelegramAuthRequest,
     TelegramWebAppAuthRequest,
+    UpdateNotificationPreferencesRequest,
 )
 from .health import (
     DatabaseStatusSchema,
@@ -111,6 +113,7 @@ __all__ = [
     "ServiceSessionRequest",
     "LogoutResponse",
     "MeResponse",
+    "NotificationPreferencesResponse",
     "MigrateTelegramRequest",
     "PasswordResetResponse",
     "PasswordResetConfirmResponse",
@@ -121,6 +124,7 @@ __all__ = [
     "StartGenericEmailAuthRequest",
     "TelegramAuthRequest",
     "TelegramWebAppAuthRequest",
+    "UpdateNotificationPreferencesRequest",
     # plans
     "PublicPlanLandingListResponse",
     "PublicPlanLandingResponse",

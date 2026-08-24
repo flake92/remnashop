@@ -6,7 +6,7 @@ from adaptix import Retort
 from adaptix.conversion import ConversionRetort
 from loguru import logger
 from redis.asyncio import Redis
-from sqlalchemy import delete, func, or_, select, update
+from sqlalchemy import case, delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.application.common.dao import UserDao
@@ -189,6 +189,53 @@ class UserDaoImpl(UserDao):
 
         logger.warning(f"Failed to update user '{user.id}'")
         return None
+
+    async def set_subscription_expiration_email_preference(
+        self,
+        user_id: int,
+        *,
+        enabled: bool,
+    ) -> Optional[UserDto]:
+        conditions = [User.id == user_id]
+        if enabled:
+            # This conditional UPDATE is the concurrency boundary with e-mail
+            # change and account merge. PostgreSQL serializes row updates, then
+            # re-evaluates these predicates against the current committed row.
+            conditions.extend(
+                [
+                    User.email.is_not(None),
+                    User.is_email_verified.is_(True),
+                    User.is_blocked.is_(False),
+                    User.merged_into_user_id.is_(None),
+                ]
+            )
+        consent_enabled_at = (
+            case(
+                (
+                    User.subscription_expiration_email_enabled.is_(True),
+                    User.subscription_expiration_email_enabled_at,
+                ),
+                # Evaluate consent time only after PostgreSQL acquires the row
+                # lock and rechecks the conditional UPDATE predicates. An app-
+                # side timestamp could predate a concurrent e-mail change.
+                else_=func.clock_timestamp(),
+            )
+            if enabled
+            else None
+        )
+        stmt = (
+            update(User)
+            .where(*conditions)
+            .values(
+                subscription_expiration_email_enabled=enabled,
+                subscription_expiration_email_enabled_at=consent_enabled_at,
+            )
+            .returning(User)
+        )
+        db_user = await self.session.scalar(stmt)
+        if db_user is None:
+            return None
+        return self._convert_to_dto(db_user)
 
     async def delete(self, user_id: int) -> bool:
         stmt = delete(User).where(User.id == user_id).returning(User.id)

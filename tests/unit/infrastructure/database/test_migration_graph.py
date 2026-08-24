@@ -24,7 +24,9 @@ def test_migration_graph_is_unique_linear_and_preserves_production_0050_path() -
     revision_ids = [revision.revision for revision in revisions]
 
     assert len(revision_ids) == len(set(revision_ids))
-    assert scripts.get_heads() == ["0056"]
+    assert scripts.get_heads() == ["0058"]
+    assert scripts.get_revision("0058").down_revision == "0057"
+    assert scripts.get_revision("0057").down_revision == "0056"
     assert scripts.get_revision("0046").path.endswith("0046_add_password_reset_attempts.py")
     assert scripts.get_revision("0046_user_merge").down_revision == "0046"
     assert scripts.get_revision("0047").down_revision == "0046_user_merge"
@@ -40,6 +42,18 @@ def test_migration_graph_is_unique_linear_and_preserves_production_0050_path() -
         current = down_revision
 
     assert production_upgrade_path == ["0054", "0053", "0052", "0051"]
+
+
+def test_migration_runner_commits_between_two_phase_constraint_steps() -> None:
+    repository = Path(__file__).resolve().parents[4]
+    env_source = (
+        repository / "src" / "infrastructure" / "database" / "migrations" / "env.py"
+    ).read_text(encoding="utf-8")
+
+    # Both online production upgrades and offline SQL generation must preserve
+    # the revision boundary: otherwise 0057's ACCESS EXCLUSIVE lock would be
+    # held while 0058 scans users during VALIDATE CONSTRAINT.
+    assert env_source.count("transaction_per_migration=True") == 2
 
 
 def test_0053_reconciles_password_attempts_without_breaking_old_app_rollback(
