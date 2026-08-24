@@ -49,6 +49,7 @@ from src.application.use_cases.plan.queries.match import (
     MatchPlanDto,
     resolve_renew_plan,
 )
+from src.application.use_cases.plan.queries.renewal import GetRenewalPlanContext
 from src.application.use_cases.promocode.commands.activate import (
     ActivatePromocode,
     ActivatePromocodeDto,
@@ -904,10 +905,9 @@ async def purchase_subscription(
 async def extend_subscription(
     body: ExtendRequest,
     user: CurrentUser,
-    subscription_dao: FromDishka[SubscriptionDao],
     payment_gateway_dao: FromDishka[PaymentGatewayDao],
     pricing_service: FromDishka[PricingService],
-    get_available_plans: FromDishka[GetAvailablePlans],
+    get_renewal_plan_context: FromDishka[GetRenewalPlanContext],
     match_plan: FromDishka[MatchPlan],
     create_payment: FromDishka[CreatePayment],
     process_payment: FromDishka[ProcessPayment],
@@ -931,14 +931,15 @@ async def extend_subscription(
         _assert_web_purchase_email_verified(user)
         await _validate_gateway_for_web(body.gateway_type, payment_gateway_dao)
 
-        current_subscription = await subscription_dao.get_current(user.id)
+        renewal_context = await get_renewal_plan_context.system(user)
+        current_subscription = renewal_context.current_subscription
         if not current_subscription:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Subscription not found",
             )
 
-        available_plans = await get_available_plans.system(user)
+        available_plans = renewal_context.renewal_plans
         exact_match = await match_plan.system(
             MatchPlanDto(plan_snapshot=current_subscription.plan_snapshot, plans=available_plans)
         )
@@ -1032,10 +1033,9 @@ async def extend_subscription(
 @inject
 async def get_subscription_offers(
     user: CurrentUser,
-    subscription_dao: FromDishka[SubscriptionDao],
     payment_gateway_dao: FromDishka[PaymentGatewayDao],
     pricing_service: FromDishka[PricingService],
-    get_available_plans: FromDishka[GetAvailablePlans],
+    get_renewal_plan_context: FromDishka[GetRenewalPlanContext],
     match_plan: FromDishka[MatchPlan],
 ) -> SubscriptionOffersResponse:
     active_gateways = await payment_gateway_dao.get_active()
@@ -1047,8 +1047,10 @@ async def get_subscription_offers(
         and gateway.settings.is_configured
     ]
 
-    available_plans = await get_available_plans.system(user)
-    current_subscription = await subscription_dao.get_current(user.id)
+    renewal_context = await get_renewal_plan_context.system(user)
+    available_plans = renewal_context.available_plans
+    renewal_plans = renewal_context.renewal_plans
+    current_subscription = renewal_context.current_subscription
 
     matched_plan: Optional[PlanDto] = None
     renewal_terms_changed = False
@@ -1056,12 +1058,12 @@ async def get_subscription_offers(
         exact_match = await match_plan.system(
             MatchPlanDto(
                 plan_snapshot=current_subscription.plan_snapshot,
-                plans=available_plans,
+                plans=renewal_plans,
             )
         )
         resolution = resolve_renew_plan(
             current_subscription.plan_snapshot,
-            available_plans,
+            renewal_plans,
             exact_match,
         )
         matched_plan = resolution.plan
