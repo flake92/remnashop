@@ -17,6 +17,8 @@ if TYPE_CHECKING:
 
 LOG_BUFFER_CAPACITY: Final[int] = 200
 LOG_FILENAME: Final[str] = "bot.log"
+TASKIQ_WORKER_LOG_FILENAME: Final[str] = "taskiq-worker.log"
+TASKIQ_SCHEDULER_LOG_FILENAME: Final[str] = "taskiq-scheduler.log"
 LOG_ENCODING: Final[str] = "utf-8"
 LOG_FORMAT: Final[str] = (
     "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | "
@@ -83,7 +85,7 @@ class InterceptHandler(logging.Handler):
         logger.opt(depth=depth, exception=record.exc_info).log(level, record.getMessage())
 
 
-def setup_logger(config: AppConfig) -> None:
+def setup_logger(config: AppConfig, *, filename: str = LOG_FILENAME) -> None:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     logger.remove()
 
@@ -98,7 +100,7 @@ def setup_logger(config: AppConfig) -> None:
 
     if config.log.to_file:
         logger.add(
-            sink=LOG_DIR / LOG_FILENAME,
+            sink=LOG_DIR / filename,
             level=config.log.level,
             format=LOG_FORMAT,
             rotation=config.log.rotation,

@@ -262,3 +262,40 @@ def test_matching_or_omitted_hwid_owner_is_accepted(
     device = SimpleNamespace(user_uuid=nested_uuid, user_id=nested_id)
 
     endpoint._validate_hwid_device_owner(user, device)
+
+
+@pytest.mark.asyncio
+async def test_informational_service_event_is_acknowledged_without_warning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = SimpleNamespace(event="service.login_attempt_success")
+    monkeypatch.setattr(
+        endpoint,
+        "_parse_signed_remnawave_webhook",
+        AsyncMock(return_value=payload),
+    )
+    monkeypatch.setattr(endpoint.WebhookUtility, "is_user_event", lambda _: False)
+    monkeypatch.setattr(
+        endpoint.WebhookUtility,
+        "is_user_hwid_devices_event",
+        lambda _: False,
+    )
+    monkeypatch.setattr(endpoint.WebhookUtility, "is_node_event", lambda _: False)
+    monkeypatch.setattr(
+        endpoint.WebhookUtility,
+        "is_torrent_blocker_event",
+        lambda _: False,
+    )
+    safe_logger = SimpleNamespace(debug=Mock(), warning=Mock(), exception=Mock())
+    monkeypatch.setattr(endpoint, "logger", safe_logger)
+
+    response = await endpoint._process_remnawave_webhook(
+        _Request(),
+        _config(),
+        SimpleNamespace(),
+        SimpleNamespace(publish=AsyncMock()),
+    )
+
+    assert response.status_code == 200
+    safe_logger.debug.assert_called_once()
+    safe_logger.warning.assert_not_called()

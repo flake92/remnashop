@@ -8,7 +8,7 @@ from .payment_cursor import PaymentCursorCodec
 from .payment_idempotency import PaymentIdempotencyService
 from .payment_reconciliation import PaymentReconciliationService
 from .pricing import PricingService
-from .remnawave import RemnaWebhookService
+from .remnawave import RemnaServiceEvent, RemnaWebhookService
 
 __all__ = [
     "LegacyReferralRecoveryAuthorizationError",
@@ -17,6 +17,7 @@ __all__ = [
     "PaymentIdempotencyService",
     "PaymentReconciliationService",
     "PricingService",
+    "RemnaServiceEvent",
     "RemnaWebhookService",
     "canonical_legacy_recovery_manifest_sha256",
 ]

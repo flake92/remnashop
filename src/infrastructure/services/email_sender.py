@@ -8,6 +8,9 @@ from src.application.common.email_sender import EmailSender
 from src.core.config import AppConfig
 from src.core.exceptions import EmailDeliveryError
 
+_SMTP_AUTH_MAX_ATTEMPTS = 2
+_SMTP_AUTH_RETRY_DELAY_SECONDS = 0.5
+
 
 class SmtpEmailSender(EmailSender):
     def __init__(self, config: AppConfig) -> None:
@@ -26,7 +29,7 @@ class SmtpEmailSender(EmailSender):
 
     async def send(self, *, to: str, subject: str, body: str) -> None:
         try:
-            await asyncio.to_thread(self._send_sync, to=to, subject=subject, body=body)
+            await self._send_with_auth_retry(to=to, subject=subject, body=body)
         except Exception as e:
             logger.error(
                 "Failed to send email (error_type={error_type})",
@@ -35,6 +38,20 @@ class SmtpEmailSender(EmailSender):
             raise EmailDeliveryError(
                 "Failed to send verification email. Please try again later."
             ) from e
+
+    async def _send_with_auth_retry(self, *, to: str, subject: str, body: str) -> None:
+        for attempt in range(1, _SMTP_AUTH_MAX_ATTEMPTS + 1):
+            try:
+                await asyncio.to_thread(self._send_sync, to=to, subject=subject, body=body)
+                return
+            except smtplib.SMTPAuthenticationError:
+                if attempt == _SMTP_AUTH_MAX_ATTEMPTS:
+                    raise
+                logger.warning(
+                    "SMTP authentication failed on attempt {attempt}; retrying once",
+                    attempt=attempt,
+                )
+                await asyncio.sleep(_SMTP_AUTH_RETRY_DELAY_SECONDS)
 
     def _send_sync(self, *, to: str, subject: str, body: str) -> None:
         email = self._config.email

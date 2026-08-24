@@ -90,6 +90,20 @@ _MARKUP_ALREADY_CLEAR_ERRORS = (
     "message to edit not found",
     "message can't be edited",
 )
+_UNREACHABLE_CHAT_ERRORS = (
+    "chat not found",
+    "user is deactivated",
+    "bot can't initiate conversation with a user",
+)
+
+
+def _is_unreachable_chat_error(error: Exception) -> bool:
+    if isinstance(error, (TelegramForbiddenError, TelegramNotFound)):
+        return True
+    if not isinstance(error, TelegramBadRequest):
+        return False
+    error_text = str(error).lower()
+    return any(message in error_text for message in _UNREACHABLE_CHAT_ERRORS)
 
 
 class NotificationService(Notifier):
@@ -453,10 +467,10 @@ class NotificationService(Notifier):
 
             return message
 
-        except TelegramForbiddenError:
-            logger.warning(f"Bot was blocked by user {user.log}")
-            return None
         except Exception as e:
+            if _is_unreachable_chat_error(e):
+                logger.info(f"Notification skipped because chat is unavailable for {user.log}")
+                return None
             logger.exception(f"Failed to send notification to {user.log}: {e}")
             raise
 

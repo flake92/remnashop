@@ -19,12 +19,19 @@ from remnapy.models.webhook import (
 
 from src.application.common import EventPublisher
 from src.application.events import ErrorEvent
-from src.application.services import RemnaWebhookService
+from src.application.services import RemnaServiceEvent, RemnaWebhookService
 from src.core.config import AppConfig
 from src.core.constants import API_V1, REMNAWAVE_WEBHOOK_PATH
 
 router = APIRouter(prefix=API_V1, include_in_schema=False)
 _SAFE_CONTRACT_TOKEN = re.compile(r"[^a-zA-Z0-9_.-]+")
+_INFORMATIONAL_EVENT_TYPES = frozenset(
+    {
+        RemnaServiceEvent.PANEL_STARTED.value,
+        RemnaServiceEvent.LOGIN_ATTEMPT_SUCCESS.value,
+    }
+)
+_SECURITY_EVENT_TYPES = frozenset({RemnaServiceEvent.LOGIN_ATTEMPT_FAILED.value})
 
 
 class _WebhookContractError(ValueError):
@@ -182,6 +189,12 @@ async def _process_remnawave_webhook(
         elif WebhookUtility.is_torrent_blocker_event(payload.event):
             report = cast(TorrentBlockerReportDto, WebhookUtility.get_typed_data(payload))
             await remna_webhook_service.handle_torrent_blocker_event(report)
+
+        elif payload.event in _INFORMATIONAL_EVENT_TYPES:
+            logger.debug(f"Informational Remnawave event acknowledged: '{payload.event}'")
+
+        elif payload.event in _SECURITY_EVENT_TYPES:
+            logger.warning(f"Remnawave security event received: '{payload.event}'")
 
         else:
             logger.warning(f"Unhandled Remnawave event type '{payload.event}'")
