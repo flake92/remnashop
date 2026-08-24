@@ -193,6 +193,19 @@ class RemnaWebhookService:
     async def handle_node_event(self, event: str, node: NodeDto) -> None:
         logger.info(f"Received node event '{event}' for node '{node.name}'")
 
+        if event in {
+            RemnaNodeEvent.CREATED,
+            RemnaNodeEvent.MODIFIED,
+            RemnaNodeEvent.DISABLED,
+            RemnaNodeEvent.ENABLED,
+            RemnaNodeEvent.DELETED,
+        }:
+            # These are valid Remnawave lifecycle notifications, but Remnashop
+            # has no user-facing action for them. Treating them as unhandled
+            # warnings makes normal panel administration look like an incident.
+            logger.debug(f"Ignored informational node event '{event}' for node '{node.name}'")
+            return
+
         if event not in {
             RemnaNodeEvent.CONNECTION_LOST,
             RemnaNodeEvent.CONNECTION_RESTORED,
