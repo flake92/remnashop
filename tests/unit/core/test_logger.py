@@ -1,3 +1,6 @@
+import gzip
+import logging
+import multiprocessing
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -5,11 +8,35 @@ from unittest.mock import Mock
 from src.core import logger as logger_module
 from src.core.logger import (
     LOG_FILENAME,
-    TASKIQ_SCHEDULER_LOG_FILENAME,
-    TASKIQ_WORKER_LOG_FILENAME,
+    ConcurrentRetentionRotatingFileHandler,
+    _parse_duration,
+    _parse_size,
     sanitize_log_text,
     setup_logger,
 )
+
+
+def _write_concurrent_log_records(path: str, worker_id: int) -> None:
+    handler = ConcurrentRetentionRotatingFileHandler(
+        Path(path),
+        max_bytes=512,
+        retention_seconds=60 * 60,
+        use_gzip=True,
+    )
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    for record_id in range(80):
+        handler.emit(
+            logging.LogRecord(
+                name="concurrency-test",
+                level=logging.INFO,
+                pathname=__file__,
+                lineno=1,
+                msg=f"worker={worker_id} record={record_id}",
+                args=(),
+                exc_info=None,
+            )
+        )
+    handler.close()
 
 
 def test_sanitize_log_text_redacts_email_and_credentials() -> None:
@@ -35,17 +62,12 @@ def test_sanitize_log_text_keeps_human_readable_context() -> None:
     )
 
 
-def test_runtime_roles_use_distinct_log_files() -> None:
-    assert len(
-        {
-            LOG_FILENAME,
-            TASKIQ_WORKER_LOG_FILENAME,
-            TASKIQ_SCHEDULER_LOG_FILENAME,
-        }
-    ) == 3
+def test_log_size_and_retention_defaults_are_parsed() -> None:
+    assert _parse_size("100 MB") == 100_000_000
+    assert _parse_duration("3 days") == 3 * 24 * 60 * 60
 
 
-def test_setup_logger_uses_requested_file_name(
+def test_setup_logger_keeps_single_multiprocess_safe_bot_log(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -68,7 +90,44 @@ def test_setup_logger_uses_requested_file_name(
         )
     )
 
-    setup_logger(config, filename=TASKIQ_WORKER_LOG_FILENAME)
+    setup_logger(config)
 
-    assert tmp_path / TASKIQ_WORKER_LOG_FILENAME in added_sinks
-    assert tmp_path / LOG_FILENAME not in added_sinks
+    file_sinks = [
+        sink
+        for sink in added_sinks
+        if isinstance(sink, ConcurrentRetentionRotatingFileHandler)
+    ]
+    assert len(file_sinks) == 1
+    assert Path(file_sinks[0].baseFilename) == tmp_path / LOG_FILENAME
+    file_sinks[0].close()
+
+
+def test_concurrent_rotation_preserves_every_record_in_one_log(tmp_path: Path) -> None:
+    log_path = tmp_path / LOG_FILENAME
+    context = multiprocessing.get_context("spawn")
+    processes = [
+        context.Process(target=_write_concurrent_log_records, args=(str(log_path), worker_id))
+        for worker_id in range(4)
+    ]
+
+    for process in processes:
+        process.start()
+    for process in processes:
+        process.join(timeout=30)
+        assert process.exitcode == 0
+
+    records: set[str] = set()
+    for candidate in tmp_path.glob(f"{LOG_FILENAME}*"):
+        if not candidate.is_file() or candidate.suffix == ".lock":
+            continue
+        if candidate.suffix == ".gz":
+            with gzip.open(candidate, mode="rt", encoding="utf-8") as archive:
+                records.update(archive.read().splitlines())
+        else:
+            records.update(candidate.read_text(encoding="utf-8").splitlines())
+    expected = {
+        f"worker={worker_id} record={record_id}"
+        for worker_id in range(4)
+        for record_id in range(80)
+    }
+    assert records == expected

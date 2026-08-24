@@ -282,6 +282,18 @@ wheels = [
 ]
 
 [[package]]
+name = "concurrent-log-handler"
+version = "0.9.29"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "portalocker" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/9c/2c/ba185acc438cff6b58cd8f8dec27e7f4fcabf6968a1facbb6d0cacbde7fe/concurrent_log_handler-0.9.29.tar.gz", hash = "sha256:bc37a76d3f384cbf4a98f693ebd770543edc0f4cd5c6ab6bc70e9e1d7d582265", size = 42114, upload-time = "2026-02-22T18:18:25.758Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/4a/f3/3e3188fdb3e53c6343fd1c7de41c55d4db626f07db3877eae77b28d58bd2/concurrent_log_handler-0.9.29-py3-none-any.whl", hash = "sha256:0d6c077fbaef2dae49a25975dcf72a602fe0a6a4ce80a3b7c37696d37e10459a", size = 32052, upload-time = "2026-02-22T18:18:24.558Z" },
+]
+
+[[package]]
 name = "cryptography"
 version = "48.0.1"
 source = { registry = "https://pypi.org/simple" }
@@ -822,6 +834,15 @@ wheels = [
 ]
 
 [[package]]
+name = "portalocker"
+version = "4.2.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/66/92/d15473a60e4cb7bc450e10d3160d7d531d6fa8cb144e31395afd76cf4be2/portalocker-4.2.0.tar.gz", hash = "sha256:f4c5024903126159c4798e6aec6c32e30a0759db39bf795c0dbeb180a2e8c843", size = 259245, upload-time = "2026-08-22T00:22:15.62Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/32/49/abd8a4154c911cc6c247edb7195d14846b614314c58ae09cf710d7d56098/portalocker-4.2.0-py3-none-any.whl", hash = "sha256:b33a8ce7d9b74922123a6fe64c2d785c015e5e9049ce7f1db5bd44e288731460", size = 128016, upload-time = "2026-08-22T00:22:14.254Z" },
+]
+
+[[package]]
 name = "pre-commit"
 version = "4.5.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1092,7 +1113,7 @@ wheels = [
 
 [[package]]
 name = "remnapy"
-version = "2.7.1.dev7+g06802538e"
+version = "0.1.dev174+g06802538e"
 source = { git = "https://github.com/snoups/remnapy?rev=0680253#06802538e9f7671d4387c597b5f1434557ca3dc9" }
 dependencies = [
     { name = "cryptography" },
@@ -1116,6 +1137,7 @@ dependencies = [
     { name = "alembic" },
     { name = "asyncpg" },
     { name = "click" },
+    { name = "concurrent-log-handler" },
     { name = "cryptography" },
     { name = "dishka" },
     { name = "fastapi" },
@@ -1164,6 +1186,7 @@ requires-dist = [
     { name = "alembic", specifier = "~=1.16.5" },
     { name = "asyncpg", specifier = "~=0.30.0" },
     { name = "click", specifier = ">=8.3.3" },
+    { name = "concurrent-log-handler", specifier = "~=0.9.28" },
     { name = "cryptography", specifier = ">=48.0.1" },
     { name = "dishka", specifier = "~=1.7.2" },
     { name = "fastapi", specifier = ">=0.141.1" },
