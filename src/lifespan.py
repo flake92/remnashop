@@ -167,6 +167,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await event_bus.shutdown()
     await notification_worker.shutdown()
     await telegram_webhook_endpoint.shutdown()
-    await command_service.delete_commands()
-    await webhook_service.delete_webhook()
+    # Telegram commands and the webhook belong to the bot, not this process.
+    # Removing them here lets an older replica tear down the configuration that
+    # a replacement replica just installed during a rolling deployment.
     await container.close()
