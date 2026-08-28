@@ -90,7 +90,7 @@ async def test_claim_due_sets_bounded_processing_lease_and_uses_skip_locked() ->
         sent_at=None,
         canceled_at=None,
         created_at=NOW,
-        updated_at=NOW,
+        updated_at=NOW - timedelta(days=1),
     )
     session = SimpleNamespace(
         scalars=AsyncMock(return_value=RowsResult([reminder])),
@@ -116,6 +116,8 @@ async def test_claim_due_sets_bounded_processing_lease_and_uses_skip_locked() ->
     assert reminder.processing_token_hash == "a" * 64
     assert reminder.processing_lease_expires_at == NOW + timedelta(minutes=10)
     assert reminder.attempt_count == 5
+    assert reminder.updated_at == NOW
+    assert claimed[0].updated_at == NOW
     assert claimed[0].attempt_count == 5
     session.flush.assert_awaited_once()
 

@@ -183,6 +183,11 @@ class SubscriptionEmailReminderDaoImpl(SubscriptionEmailReminderDao):
             row.processing_token_hash = token_hash
             row.processing_lease_expires_at = lease_expires_at
             row.attempt_count += 1
+            # ``updated_at`` normally uses a SQL on-update expression. After
+            # flush SQLAlchemy expires that attribute, and converting the ORM
+            # row to a DTO would then attempt implicit IO outside greenlet_spawn.
+            # The claim timestamp is already authoritative for this transition.
+            row.updated_at = now
         await self.session.flush()
         return [self._to_dto(row) for row in rows]
 
