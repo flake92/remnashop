@@ -16,6 +16,9 @@ from src.application.use_cases.auth._codes import (
     generate_email_verification_code,
     hash_email_verification_code,
 )
+from src.application.use_cases.auth._email_reminder_preferences import (
+    enable_expiration_reminders_after_email_verification,
+)
 from src.core.config import AppConfig
 from src.core.constants import (
     EMAIL_CODE_RESEND_COOLDOWN_SECONDS,
@@ -227,6 +230,7 @@ class ConfirmEmailVerification(Interactor[ConfirmEmailVerificationDto, EmailVeri
 
         actor.pending_email = None
         actor.is_email_verified = True
+        enable_expiration_reminders_after_email_verification(actor)
         actor.email_verification_code_hash = None
         actor.email_verification_expires_at = None
 
