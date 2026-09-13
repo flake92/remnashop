@@ -97,12 +97,15 @@ def test_merge_email_verification_follows_the_selected_address(
     target_verified: bool,
     expected: tuple[str | None, bool],
 ) -> None:
-    assert UserMergeDaoImpl._resolve_merged_email_identity(
-        source_email=source_email,
-        source_verified=source_verified,
-        target_email=target_email,
-        target_verified=target_verified,
-    ) == expected
+    assert (
+        UserMergeDaoImpl._resolve_merged_email_identity(
+            source_email=source_email,
+            source_verified=source_verified,
+            target_email=target_email,
+            target_verified=target_verified,
+        )
+        == expected
+    )
 
 
 def test_payment_resolution_preserves_colliding_operations_without_hiding_subscriptions() -> None:
@@ -294,6 +297,114 @@ class MergeSession:
 
     async def flush(self) -> None:
         self.merged_owner_at_flush.append(self.source.merged_into_user_id)
+
+
+def _merge_user(
+    user_id: int,
+    *,
+    email: str | None,
+    verified: bool,
+    reminders_enabled: bool,
+    reminders_enabled_at: datetime | None,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        id=user_id,
+        email=email,
+        pending_email=None,
+        email_verification_code_hash=None,
+        email_verification_expires_at=None,
+        password_reset_code_hash=None,
+        password_reset_expires_at=None,
+        password_hash=None,
+        is_email_verified=verified,
+        subscription_expiration_email_enabled=reminders_enabled,
+        subscription_expiration_email_enabled_at=reminders_enabled_at,
+        telegram_id=None,
+        username=None,
+        name="User",
+        language="ru",
+        personal_discount=0,
+        purchase_discount=0,
+        points=0,
+        is_bot_blocked=False,
+        is_rules_accepted=False,
+        is_trial_available=True,
+        ad_link_id=None,
+        current_subscription_id=None,
+        token_version=0,
+        is_blocked=False,
+        merged_into_user_id=None,
+        merged_at=None,
+    )
+
+
+async def _merge_identity_only(
+    monkeypatch: pytest.MonkeyPatch,
+    source: SimpleNamespace,
+    target: SimpleNamespace,
+) -> None:
+    dao = UserMergeDaoImpl(MergeSession(source))  # type: ignore[arg-type]
+    monkeypatch.setattr(dao, "_move_simple_fk", AsyncMock(return_value=0))
+    monkeypatch.setattr(dao, "_move_payment_operations", AsyncMock())
+    monkeypatch.setattr(dao, "_move_referrals", AsyncMock())
+    monkeypatch.setattr(dao, "_move_promocode_activations", AsyncMock())
+    monkeypatch.setattr(dao, "_move_oauth_providers", AsyncMock())
+    await dao._merge_records(source, target, {})  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source_enabled", [True, False])
+async def test_merge_transfers_preference_with_first_verified_email(
+    monkeypatch: pytest.MonkeyPatch,
+    source_enabled: bool,
+) -> None:
+    source_enabled_at = datetime(2026, 9, 13, tzinfo=timezone.utc) if source_enabled else None
+    source = _merge_user(
+        11,
+        email="source@example.org",
+        verified=True,
+        reminders_enabled=source_enabled,
+        reminders_enabled_at=source_enabled_at,
+    )
+    target = _merge_user(
+        22,
+        email=None,
+        verified=False,
+        reminders_enabled=False,
+        reminders_enabled_at=None,
+    )
+
+    await _merge_identity_only(monkeypatch, source, target)
+
+    assert target.email == "source@example.org"
+    assert target.is_email_verified is True
+    assert target.subscription_expiration_email_enabled is source_enabled
+    assert target.subscription_expiration_email_enabled_at == source_enabled_at
+
+
+@pytest.mark.asyncio
+async def test_merge_preserves_verified_target_explicit_opt_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _merge_user(
+        11,
+        email="same@example.org",
+        verified=True,
+        reminders_enabled=True,
+        reminders_enabled_at=datetime(2026, 9, 13, tzinfo=timezone.utc),
+    )
+    target = _merge_user(
+        22,
+        email="same@example.org",
+        verified=True,
+        reminders_enabled=False,
+        reminders_enabled_at=None,
+    )
+
+    await _merge_identity_only(monkeypatch, source, target)
+
+    assert target.subscription_expiration_email_enabled is False
+    assert target.subscription_expiration_email_enabled_at is None
 
 
 @pytest.mark.asyncio

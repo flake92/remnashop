@@ -44,9 +44,7 @@ class AttachReferral(Interactor[AttachReferralDto, Optional[UserDto]]):
             referrer = await self.user_dao.get_by_referral_code(data.referral_code)
 
             if not referrer:
-                logger.info(
-                    f"Referral skipped: referrer not found for code '{data.referral_code}'"
-                )
+                logger.info(f"Referral skipped: referrer not found for code '{data.referral_code}'")
                 await self.uow.commit()
                 return None
 
@@ -87,10 +85,7 @@ class AttachReferral(Interactor[AttachReferralDto, Optional[UserDto]]):
                 await self.uow.commit()
                 return None
 
-            logger.info(
-                f"Referral detected '{referrer.remna_name}' -> "
-                f"'{data.user_id}'"
-            )
+            logger.info(f"Referral detected '{referrer.remna_name}' -> '{data.user_id}'")
 
             await self.referral_dao.create_referral(
                 ReferralDto(

@@ -8,8 +8,10 @@ from src.application.common.dao import SettingsDao, UserDao
 from src.application.common.policy import Permission
 from src.application.common.uow import UnitOfWork
 from src.application.dto import BlacklistSourceDto, UserDto
+from src.application.use_cases.blacklist.limits import MAX_PERSISTED_BLACKLIST_IDS
 from src.application.use_cases.blacklist.queries.fetch import FetchBlacklistIds
 from src.core.exceptions import BlacklistSourceAlreadyExistsError
+from src.core.utils.validators import is_valid_public_https_url
 
 
 @dataclass(frozen=True)
@@ -26,6 +28,8 @@ class AddBlacklistSource(Interactor[AddBlacklistSourceDto, BlacklistSourceDto]):
         self.settings_dao = settings_dao
 
     async def _execute(self, actor: UserDto, data: AddBlacklistSourceDto) -> BlacklistSourceDto:
+        if not is_valid_public_https_url(data.url):
+            raise ValueError("Blacklist source must use a public HTTPS URL")
         settings = await self.settings_dao.get()
         sources = settings.blacklist.sources
 
@@ -42,7 +46,7 @@ class AddBlacklistSource(Interactor[AddBlacklistSourceDto, BlacklistSourceDto]):
             await self.settings_dao.update(settings)
             await self.uow.commit()
 
-        logger.info(f"{actor.log} Added blacklist source '{data.url}' (id={new_id})")
+        logger.info(f"{actor.log} Added blacklist source id='{new_id}'")
         return source
 
 
@@ -109,7 +113,7 @@ class SyncBlacklistSources(Interactor[None, SyncResult]):
             ids = await self.fetch_blacklist_ids.system(source.url)
 
             if not ids:
-                logger.info(f"{actor.log} Synced blacklist source '{source.url}': 0 IDs fetched")
+                logger.info(f"{actor.log} Synced blacklist source id='{source.id}': 0 IDs fetched")
                 synced += 1
                 continue
 
@@ -134,9 +138,14 @@ class SyncBlacklistSources(Interactor[None, SyncResult]):
                     blocked = await self.user_dao.block_by_telegram_ids(to_block)
 
                 if new_unknown:
-                    current.blacklist.blocked_ids = list(
+                    combined_blocked_ids = list(
                         dict.fromkeys(current.blacklist.blocked_ids + new_unknown)
                     )
+                    if len(combined_blocked_ids) > MAX_PERSISTED_BLACKLIST_IDS:
+                        raise ValueError(
+                            "Blacklist storage limit exceeded; remove obsolete sources or IDs"
+                        )
+                    current.blacklist.blocked_ids = combined_blocked_ids
                     await self.settings_dao.update(current)
 
                 await self.uow.commit()
@@ -145,7 +154,7 @@ class SyncBlacklistSources(Interactor[None, SyncResult]):
             total_blocked_ids += len(new_unknown)
             total_already_blocked += len(already_blocked_users) + len(already_in_list)
             logger.info(
-                f"{actor.log} Synced blacklist source '{source.url}': "
+                f"{actor.log} Synced blacklist source id='{source.id}': "
                 f"{len(ids)} IDs fetched, {blocked} users blocked, "
                 f"{len(new_unknown)} added to blocked_ids"
             )

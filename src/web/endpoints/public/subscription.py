@@ -1119,11 +1119,7 @@ async def get_subscription_offers(
                 device_limit=plan.device_limit,
                 type=plan.type.value,
                 recommended_purchase_type=recommended_purchase_type,
-                renewal_terms_changed=(
-                    renewal_terms_changed
-                    if is_renew_candidate
-                    else False
-                ),
+                renewal_terms_changed=(renewal_terms_changed if is_renew_candidate else False),
                 durations=duration_offers,
             )
         )

@@ -93,9 +93,7 @@ class RemnaWebhookService:
         if event == RemnaUserEvent.TRAFFIC_RESET:
             # Remnashop does not persist consumed traffic.  Remnawave remains the
             # source of truth, so this event intentionally has no local mutation.
-            logger.debug(
-                f"Traffic reset acknowledged for RemnaUser '{remna_user.telegram_id}'"
-            )
+            logger.debug(f"Traffic reset acknowledged for RemnaUser '{remna_user.telegram_id}'")
             return
 
         user = await self.user_dao.get_by_remna_uuid(remna_user.uuid)

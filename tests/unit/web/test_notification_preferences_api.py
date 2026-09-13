@@ -1,12 +1,17 @@
+from unittest.mock import AsyncMock
+
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-from src.web.endpoints.public.auth import router
+from src.application.dto import UserDto
+from src.core.exceptions import EmailDeliveryRateDeferredError
+from src.web.endpoints.public.auth import request_email_verification_code, router
 from src.web.schemas import (
     NotificationPreferencesResponse,
+    RequestEmailVerificationCodeRequest,
     UpdateNotificationPreferencesRequest,
 )
 
@@ -24,8 +29,7 @@ def test_notification_preferences_api_is_authenticated_and_not_a_send_endpoint()
     patch_route = next(
         route
         for route in routes
-        if route.path == "/auth/notification-preferences"
-        and route.methods == {"PATCH"}
+        if route.path == "/auth/notification-preferences" and route.methods == {"PATCH"}
     )
     assert patch_route.dependencies
     assert all("send-email" not in route.path for route in routes)
@@ -71,3 +75,21 @@ def test_notification_preferences_path_has_a_side_effect_free_rollout_probe() ->
     )
 
     assert response.status_code == 405
+
+
+@pytest.mark.asyncio
+async def test_transactional_rate_defer_is_a_clear_retryable_503() -> None:
+    request_verification = AsyncMock(
+        side_effect=EmailDeliveryRateDeferredError("internal pacing detail")
+    )
+
+    with pytest.raises(HTTPException) as raised:
+        await request_email_verification_code.__dishka_orig_func__(
+            body=RequestEmailVerificationCodeRequest(email="user@example.org"),
+            user=UserDto(id=17, name="User"),
+            request_verification=request_verification,
+        )
+
+    assert raised.value.status_code == 503
+    assert raised.value.detail == ("Email delivery is temporarily busy. Please try again shortly.")
+    assert "remna" not in str(raised.value.detail).lower()

@@ -144,18 +144,15 @@ class LegacyReferralRewardRecoveryRequest(BaseModel):
             self.expected_created_at,
         )
         merge_audit_ids = self.expected_participant_merge_audit_ids
-        if (
-            any(audit_id <= 0 for audit_id in merge_audit_ids)
-            or merge_audit_ids != sorted(set(merge_audit_ids))
+        if any(audit_id <= 0 for audit_id in merge_audit_ids) or merge_audit_ids != sorted(
+            set(merge_audit_ids)
         ):
             raise ValueError(
                 "expected_participant_merge_audit_ids must be positive, sorted, and unique"
             )
         if self.action == "RETRY_PROVEN_MISSING":
             if any(value is None for value in (*source, *snapshot)):
-                raise ValueError(
-                    "RETRY_PROVEN_MISSING requires exact source and historical policy"
-                )
+                raise ValueError("RETRY_PROVEN_MISSING requires exact source and historical policy")
             if (
                 any(value is not None for value in expected_row)
                 or self.source_validation is not None

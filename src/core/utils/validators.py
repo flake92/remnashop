@@ -1,5 +1,7 @@
 import re
+from ipaddress import IPv4Address, IPv6Address, ip_address
 from typing import Optional
+from urllib.parse import urlsplit
 
 from src.core.constants import (
     DOMAIN_REGEX,
@@ -17,7 +19,78 @@ def is_valid_email(value: str) -> bool:
 
 
 def is_valid_url(text: str) -> bool:
-    return bool(URL_PATTERN.match(text))
+    if (
+        not URL_PATTERN.fullmatch(text)
+        or "\\" in text
+        or any(character.isspace() for character in text)
+    ):
+        return False
+    try:
+        parsed = urlsplit(text)
+        _ = parsed.port
+    except ValueError:
+        return False
+    return bool(
+        parsed.scheme == "https"
+        and parsed.hostname
+        and parsed.username is None
+        and parsed.password is None
+    )
+
+
+def is_public_unicast_address(value: str) -> bool:
+    """Accept only an ordinary globally routable unicast IP address."""
+    try:
+        address: IPv4Address | IPv6Address = ip_address(value)
+    except ValueError:
+        return False
+    # Python deliberately reports multicast as ``is_global``. Network source
+    # validation must reject it alongside unspecified/reserved destinations.
+    return bool(
+        address.is_global
+        and not address.is_multicast
+        and not address.is_unspecified
+        and not address.is_reserved
+    )
+
+
+def is_valid_public_https_url(text: str) -> bool:
+    """Reject URL forms that can target local infrastructure before DNS lookup."""
+    if not is_valid_url(text):
+        return False
+    parsed = urlsplit(text)
+    if parsed.fragment:
+        return False
+    hostname = (parsed.hostname or "").rstrip(".").casefold()
+    if not hostname or "%" in hostname:
+        return False
+    try:
+        ip_address(hostname)
+    except ValueError:
+        pass
+    else:
+        return is_public_unicast_address(hostname)
+
+    if "." not in hostname:
+        return False
+    reserved_suffixes = (
+        ".example",
+        ".home.arpa",
+        ".internal",
+        ".invalid",
+        ".local",
+        ".localhost",
+        ".test",
+    )
+    if hostname in {suffix[1:] for suffix in reserved_suffixes} or hostname.endswith(
+        reserved_suffixes
+    ):
+        return False
+    try:
+        hostname.encode("idna")
+    except UnicodeError:
+        return False
+    return True
 
 
 def is_valid_username(text: str) -> bool:

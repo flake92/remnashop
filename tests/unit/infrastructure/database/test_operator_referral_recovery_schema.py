@@ -48,17 +48,11 @@ def test_0055_installs_durable_operator_authorization(
     assert migration.revision == "0055"
     assert migration.down_revision == "0054"
     column = next(
-        args[1]
-        for name, args, _ in calls
-        if name == "add_column" and args[0] == "referral_rewards"
+        args[1] for name, args, _ in calls if name == "add_column" and args[0] == "referral_rewards"
     )
     assert column.name == "operator_recovery_manifest_sha256"
     assert str(column.type) == "VARCHAR(64)"
-    constraints = {
-        args[0]: args[2]
-        for name, args, _ in calls
-        if name == "create_check_constraint"
-    }
+    constraints = {args[0]: args[2] for name, args, _ in calls if name == "create_check_constraint"}
     reward_constraint = constraints[REFERRAL_REWARDS_DURABLE_STATE_CONSTRAINT_NAME]
     assert "operator_recovery_manifest_sha256 ~ '^[0-9a-f]{64}$'" in reward_constraint
     assert "source_transaction_id IS NULL" in reward_constraint

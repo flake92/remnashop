@@ -31,8 +31,7 @@ class SubscriptionEmailReminder(BaseSql, TimestampMixin):
             name="ck_subscription_email_reminder_days_before",
         ),
         CheckConstraint(
-            "state IN ('PENDING', 'PROCESSING', 'RETRY_WAITING', "
-            "'SENT', 'CANCELED', 'FAILED')",
+            "state IN ('PENDING', 'PROCESSING', 'RETRY_WAITING', 'SENT', 'CANCELED', 'FAILED')",
             name="ck_subscription_email_reminder_state",
         ),
         CheckConstraint(

@@ -42,11 +42,7 @@ def _dao(session: AsyncSession) -> ReferralDaoImpl:
 
 class _DtoDumpRetort:
     def dump(self, reward: ReferralRewardDto) -> dict[str, object]:
-        return {
-            key: value
-            for key, value in vars(reward).items()
-            if not key.startswith("_")
-        }
+        return {key: value for key, value in vars(reward).items() if not key.startswith("_")}
 
 
 def _creation_dao(session: AsyncSession) -> ReferralDaoImpl:
@@ -387,14 +383,10 @@ async def _install_recipient_scan_barrier(session: AsyncSession) -> None:
     await session.execute(text(f"CREATE ROLE {CLAIM_B_ROLE} NOLOGIN"))
     await session.execute(text(f"GRANT USAGE ON SCHEMA public TO {CLAIM_B_ROLE}"))
     await session.execute(
-        text(
-            f"GRANT SELECT, UPDATE ON users, referral_rewards TO {CLAIM_B_ROLE}"
-        )
+        text(f"GRANT SELECT, UPDATE ON users, referral_rewards TO {CLAIM_B_ROLE}")
     )
     await session.execute(
-        text(
-            f"GRANT SELECT ON transactions, referral_reward_resolutions TO {CLAIM_B_ROLE}"
-        )
+        text(f"GRANT SELECT ON transactions, referral_reward_resolutions TO {CLAIM_B_ROLE}")
     )
     await session.execute(
         text(
@@ -415,9 +407,7 @@ async def _install_recipient_scan_barrier(session: AsyncSession) -> None:
         )
     )
     await session.execute(text("ALTER TABLE users ENABLE ROW LEVEL SECURITY"))
-    await session.execute(
-        text("DROP POLICY IF EXISTS referral_concurrency_barrier ON users")
-    )
+    await session.execute(text("DROP POLICY IF EXISTS referral_concurrency_barrier ON users"))
     await session.execute(
         text(
             f"""
@@ -432,9 +422,7 @@ async def _install_recipient_scan_barrier(session: AsyncSession) -> None:
 
 
 async def _remove_recipient_scan_barrier(session: AsyncSession) -> None:
-    await session.execute(
-        text("DROP POLICY IF EXISTS referral_concurrency_barrier ON users")
-    )
+    await session.execute(text("DROP POLICY IF EXISTS referral_concurrency_barrier ON users"))
     await session.execute(text("ALTER TABLE users DISABLE ROW LEVEL SECURITY"))
     await session.execute(
         text("DROP FUNCTION IF EXISTS referral_concurrency_candidate_barrier(integer)")
@@ -484,9 +472,7 @@ async def test_two_concurrent_claimants_skip_stale_recipient_candidate() -> None
                 {"key": ADVISORY_LOCK_KEY},
             )
 
-            claimant_b_task = asyncio.create_task(
-                _claim_as_barrier_role(claimant_b)
-            )
+            claimant_b_task = asyncio.create_task(_claim_as_barrier_role(claimant_b))
             await _wait_until_backend_blocks(monitor, backend_b, claimant_b_task)
 
             rewards_a = await _dao(claimant_a).claim_pending_rewards(

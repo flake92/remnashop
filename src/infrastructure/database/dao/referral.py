@@ -136,9 +136,7 @@ class ReferralDaoImpl(ReferralDao):
         descendant_user_id: int,
     ) -> bool:
         return bool(
-            await self.session.scalar(
-                referral_path_statement(ancestor_user_id, descendant_user_id)
-            )
+            await self.session.scalar(referral_path_statement(ancestor_user_id, descendant_user_id))
         )
 
     async def create_referral(self, referral: ReferralDto) -> ReferralDto:
@@ -475,9 +473,7 @@ class ReferralDaoImpl(ReferralDao):
                 ),
             )
 
-        resolution_sources = [
-            ReferralRewardResolution.decision == "CONFIRM_ADMIN_COMPENSATED"
-        ]
+        resolution_sources = [ReferralRewardResolution.decision == "CONFIRM_ADMIN_COMPENSATED"]
         if reward.operator_recovery_manifest_sha256 is not None:
             resolution_sources.append(
                 and_(
@@ -1246,13 +1242,10 @@ class ReferralDaoImpl(ReferralDao):
             operator_eligible_source.exists(),
         )
 
-        due_for_user = (
-            select(ReferralReward.id)
-            .where(
-                ReferralReward.user_id == User.id,
-                due_condition,
-                eligible_source_condition,
-            )
+        due_for_user = select(ReferralReward.id).where(
+            ReferralReward.user_id == User.id,
+            due_condition,
+            eligible_source_condition,
         )
         active_for_user = select(ReferralReward.id).where(
             ReferralReward.user_id == User.id,
@@ -1474,8 +1467,7 @@ class ReferralDaoImpl(ReferralDao):
             )
             .where(
                 ReferralRewardResolution.reward_id == reward_id,
-                ReferralRewardResolution.incident_version
-                == reward.manual_incident_version,
+                ReferralRewardResolution.incident_version == reward.manual_incident_version,
                 ReferralRewardResolution.decision
                 == LegacyReferralRewardRecoveryAction.RETRY_OPERATOR_DIRECTED.value,
                 ReferralRewardResolution.authorization_manifest_sha256
@@ -1982,16 +1974,11 @@ class ReferralDaoImpl(ReferralDao):
             participant_merge_audit_ids = tuple(
                 (
                     await self.session.scalars(
-                        self._operator_recovery_participant_merge_audit_ids_query(
-                            participant_ids
-                        )
+                        self._operator_recovery_participant_merge_audit_ids_query(participant_ids)
                     )
                 ).all()
             )
-            if (
-                participant_merge_audit_ids
-                != recovery.expected_participant_merge_audit_ids
-            ):
+            if participant_merge_audit_ids != recovery.expected_participant_merge_audit_ids:
                 raise ValueError(
                     "Legacy reward participant merge history drifted from the frozen manifest"
                 )
@@ -1999,9 +1986,7 @@ class ReferralDaoImpl(ReferralDao):
                 self._operator_recovery_merge_conflict_query(participant_ids)
             )
             if merge_conflict is not None:
-                raise ValueError(
-                    "Legacy reward participants have non-canonical user-merge history"
-                )
+                raise ValueError("Legacy reward participants have non-canonical user-merge history")
         else:
             real_merge = await self.session.scalar(
                 select(UserMergeAudit.id)
@@ -2235,9 +2220,7 @@ class ReferralDaoImpl(ReferralDao):
         }
         if recovery.action == LegacyReferralRewardRecoveryAction.RETRY_OPERATOR_DIRECTED:
             selected_provenance["selected"]["source_validation"] = (
-                recovery.source_validation.value
-                if recovery.source_validation is not None
-                else None
+                recovery.source_validation.value if recovery.source_validation is not None else None
             )
             selected_provenance["selected"]["participant_merge_audit_ids"] = list(
                 participant_merge_audit_ids
@@ -2474,9 +2457,7 @@ class ReferralDaoImpl(ReferralDao):
                 config_value=recovery.config_value,
             )
         elif recovery.action == LegacyReferralRewardRecoveryAction.RETRY_OPERATOR_DIRECTED:
-            values["operator_recovery_manifest_sha256"] = (
-                recovery.authorization_manifest_sha256
-            )
+            values["operator_recovery_manifest_sha256"] = recovery.authorization_manifest_sha256
         return values
 
     @staticmethod
@@ -2558,8 +2539,7 @@ class ReferralDaoImpl(ReferralDao):
             raise ValueError("Source paid amount is invalid") from exc
         provider_succeeded = (
             action == LegacyReferralRewardRecoveryAction.RETRY_OPERATOR_DIRECTED
-            and source_validation
-            == LegacyReferralRewardSourceValidation.PROVIDER_SUCCEEDED
+            and source_validation == LegacyReferralRewardSourceValidation.PROVIDER_SUCCEEDED
         )
         if (
             source.is_test
@@ -2589,8 +2569,7 @@ class ReferralDaoImpl(ReferralDao):
             raise ValueError("Local recovery source must remain completed and non-refunded")
         if (
             action == LegacyReferralRewardRecoveryAction.RETRY_OPERATOR_DIRECTED
-            and source_validation
-            != LegacyReferralRewardSourceValidation.LOCAL_COMPLETED
+            and source_validation != LegacyReferralRewardSourceValidation.LOCAL_COMPLETED
         ):
             raise ValueError("Operator-directed source validation class is missing")
         if action == LegacyReferralRewardRecoveryAction.RETRY_PROVEN_MISSING:

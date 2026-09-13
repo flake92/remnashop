@@ -2,9 +2,6 @@ version = 1
 revision = 3
 requires-python = "==3.12.*"
 
-[manifest]
-overrides = [{ name = "cryptography", specifier = ">=50.0.0,<51.0.0" }]
-
 [[package]]
 name = "adaptix"
 version = "3.0.0b11"
@@ -1111,8 +1108,8 @@ wheels = [
 
 [[package]]
 name = "remnapy"
-version = "2.7.1.dev7+g06802538e"
-source = { git = "https://github.com/snoups/remnapy?rev=0680253#06802538e9f7671d4387c597b5f1434557ca3dc9" }
+version = "2.7.1.dev7+cleanpay.g06802538"
+source = { path = "vendor/remnapy/remnapy-2.7.1.dev7+cleanpay.g06802538-py3-none-any.whl" }
 dependencies = [
     { name = "cryptography" },
     { name = "httpx" },
@@ -1120,6 +1117,20 @@ dependencies = [
     { name = "pydantic", extra = ["email"] },
     { name = "pydantic-core" },
     { name = "rapid-api-client" },
+]
+wheels = [
+    { filename = "remnapy-2.7.1.dev7+cleanpay.g06802538-py3-none-any.whl", hash = "sha256:f293db6ad658b948cef792fe0afb9b4c06fdc4a2d533038f45897b24baa01e61" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "cryptography", specifier = ">=50.0.0,<51.0.0" },
+    { name = "httpx", specifier = ">=0.27.2,<0.28.0" },
+    { name = "orjson", specifier = ">=3.10.15,<4.0.0" },
+    { name = "pydantic", specifier = ">=2.9.2,<3.0.0" },
+    { name = "pydantic", extras = ["email"], specifier = ">=2.9.2,<3.0.0" },
+    { name = "pydantic-core", specifier = ">=2.33.1,<2.34.0" },
+    { name = "rapid-api-client", specifier = "==0.6.0" },
 ]
 
 [[package]]
@@ -1202,7 +1213,7 @@ requires-dist = [
     { name = "python-multipart", specifier = ">=0.0.31" },
     { name = "qrcode", extras = ["pil"], specifier = ">=8.2" },
     { name = "redis", specifier = "~=7.0.0" },
-    { name = "remnapy", git = "https://github.com/snoups/remnapy?rev=0680253" },
+    { name = "remnapy", path = "vendor/remnapy/remnapy-2.7.1.dev7+cleanpay.g06802538-py3-none-any.whl" },
     { name = "sqlalchemy", specifier = ">=2.0.0" },
     { name = "starlette", specifier = ">=1.3.1" },
     { name = "taskiq", extras = ["orjson"], specifier = "~=0.12.1" },

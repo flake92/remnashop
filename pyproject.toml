@@ -11,7 +11,7 @@ dependencies = [
     "fastapi>=0.141.1",
     "starlette>=1.3.1",
     "python-multipart>=0.0.31",
-    "remnapy==2.7.0",
+    "remnapy==2.7.1.dev7+cleanpay.g06802538",
     #
     "dishka~=1.7.2",
     "adaptix==3.0.0b11",
@@ -45,14 +45,7 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-remnapy = { git = "https://github.com/snoups/remnapy", rev = "0680253" }
-
-[tool.uv]
-# The pinned remnapy revision still declares cryptography<47. Its Fernet/RSA
-# usage is compatible with 50.x, while older releases have published security
-# advisories. Remove this override after remnapy publishes the corrected range.
-# Security remediation owner: review by 2026-09-30.
-override-dependencies = ["cryptography>=50.0.0,<51.0.0"]
+remnapy = { path = "vendor/remnapy/remnapy-2.7.1.dev7+cleanpay.g06802538-py3-none-any.whl" }
 
 [project.urls]
 homepage = "https://t.me/@remna_shop"

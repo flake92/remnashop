@@ -12,10 +12,7 @@ def test_referral_levels_are_derived_from_the_attribution_graph() -> None:
     engine = create_engine("sqlite:///:memory:")
     with engine.begin() as connection:
         connection.execute(
-            text(
-                "CREATE TABLE users ("
-                "id INTEGER PRIMARY KEY, merged_into_user_id INTEGER NULL)"
-            )
+            text("CREATE TABLE users (id INTEGER PRIMARY KEY, merged_into_user_id INTEGER NULL)")
         )
     Referral.__table__.create(engine)
     timestamp = datetime(2026, 8, 22, tzinfo=UTC)
@@ -35,10 +32,7 @@ def test_referral_levels_are_derived_from_the_attribution_graph() -> None:
     with engine.begin() as connection:
         connection.execute(
             text("INSERT INTO users (id, merged_into_user_id) VALUES (:id, :target)"),
-            [
-                {"id": user_id, "target": 2 if user_id == 8 else None}
-                for user_id in range(1, 9)
-            ],
+            [{"id": user_id, "target": 2 if user_id == 8 else None} for user_id in range(1, 9)],
         )
         connection.execute(
             insert(Referral.__table__),
@@ -55,24 +49,26 @@ def test_referral_levels_are_derived_from_the_attribution_graph() -> None:
             ],
         )
 
-        global_stats = connection.execute(
-            ReferralDaoImpl._referral_network_stats_statement()
-        ).mappings().one()
-        user_a_stats = connection.execute(
-            ReferralDaoImpl._user_referral_network_stats_statement(1)
-        ).mappings().one()
-        user_b_stats = connection.execute(
-            ReferralDaoImpl._user_referral_network_stats_statement(2)
-        ).mappings().one()
-        leaf_stats = connection.execute(
-            ReferralDaoImpl._user_referral_network_stats_statement(7)
-        ).mappings().one()
-        ancestor_path_count = connection.scalar(
-            UserMergeDaoImpl._referral_path_statement(1, 7)
+        global_stats = (
+            connection.execute(ReferralDaoImpl._referral_network_stats_statement()).mappings().one()
         )
-        reverse_path_count = connection.scalar(
-            UserMergeDaoImpl._referral_path_statement(7, 1)
+        user_a_stats = (
+            connection.execute(ReferralDaoImpl._user_referral_network_stats_statement(1))
+            .mappings()
+            .one()
         )
+        user_b_stats = (
+            connection.execute(ReferralDaoImpl._user_referral_network_stats_statement(2))
+            .mappings()
+            .one()
+        )
+        leaf_stats = (
+            connection.execute(ReferralDaoImpl._user_referral_network_stats_statement(7))
+            .mappings()
+            .one()
+        )
+        ancestor_path_count = connection.scalar(UserMergeDaoImpl._referral_path_statement(1, 7))
+        reverse_path_count = connection.scalar(UserMergeDaoImpl._referral_path_statement(7, 1))
 
     assert dict(global_stats) == {
         "total_referrals": 6,

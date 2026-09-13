@@ -4,7 +4,7 @@ from pydantic import SecretStr, ValidationInfo, field_validator
 from src.core.utils.validators import is_valid_domain
 
 from .base import BaseConfig
-from .validators import validate_not_change_me
+from .validators import validate_not_change_me, validate_strong_secret
 
 
 class RemnawaveConfig(BaseConfig, env_prefix="REMNAWAVE_"):
@@ -61,7 +61,7 @@ class RemnawaveConfig(BaseConfig, env_prefix="REMNAWAVE_"):
         field: SecretStr,
         info: ValidationInfo,
     ) -> SecretStr:
-        validate_not_change_me(field, info)
+        validate_strong_secret(field, info, minimum_length=32, env_prefix="REMNAWAVE_")
         return field
 
     @field_validator("cookie")

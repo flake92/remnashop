@@ -87,18 +87,12 @@ class Transaction(BaseSql, TimestampMixin):
     fulfillment_completed_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
     fulfillment_last_error: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     fulfillment_alerted_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
-    fulfillment_alert_token_hash: Mapped[Optional[str]] = mapped_column(
-        String(64), nullable=True
-    )
-    fulfillment_alert_lease_expires_at: Mapped[Optional[datetime]] = mapped_column(
-        nullable=True
-    )
+    fulfillment_alert_token_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    fulfillment_alert_lease_expires_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
     fulfillment_alert_attempt_count: Mapped[int] = mapped_column(
         default=0,
         server_default="0",
     )
-    fulfillment_alert_next_attempt_at: Mapped[Optional[datetime]] = mapped_column(
-        nullable=True
-    )
+    fulfillment_alert_next_attempt_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
 
     user: Mapped["User"] = relationship(foreign_keys=[user_id])

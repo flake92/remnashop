@@ -73,6 +73,70 @@ async def test_old_runtime_email_updates_clear_subscription_email_consent() -> N
             ).one()
             assert changed_email == (False, None)
 
+            # The current runtime confirms a new identity and records its
+            # default-on consent in one atomic UPDATE. Migration 0059 must let
+            # that fresh timestamp survive the identity-change trigger.
+            await session.execute(
+                text(
+                    """
+                    UPDATE users
+                    SET email = 'fresh@example.org',
+                        is_email_verified = true,
+                        subscription_expiration_email_enabled = true,
+                        subscription_expiration_email_enabled_at = clock_timestamp()
+                    WHERE id = :id
+                    """
+                ),
+                {"id": USER_ID},
+            )
+            await session.commit()
+            fresh_identity = (
+                await session.execute(
+                    text(
+                        """
+                        SELECT subscription_expiration_email_enabled,
+                               subscription_expiration_email_enabled_at
+                        FROM users
+                        WHERE id = :id
+                        """
+                    ),
+                    {"id": USER_ID},
+                )
+            ).one()
+            assert fresh_identity[0] is True
+            assert fresh_identity[1] is not None
+
+            # A rolling/old writer that carries an existing consent timestamp
+            # to a different address must still fail closed.
+            await session.execute(
+                text(
+                    """
+                    UPDATE users
+                    SET email = 'carried@example.org',
+                        is_email_verified = true,
+                        subscription_expiration_email_enabled = true,
+                        subscription_expiration_email_enabled_at = :old_enabled_at
+                    WHERE id = :id
+                    """
+                ),
+                {"id": USER_ID, "old_enabled_at": fresh_identity[1]},
+            )
+            await session.commit()
+            carried_identity = (
+                await session.execute(
+                    text(
+                        """
+                        SELECT subscription_expiration_email_enabled,
+                               subscription_expiration_email_enabled_at
+                        FROM users
+                        WHERE id = :id
+                        """
+                    ),
+                    {"id": USER_ID},
+                )
+            ).one()
+            assert carried_identity == (False, None)
+
             await session.execute(
                 text(
                     """
@@ -94,16 +158,19 @@ async def test_old_runtime_email_updates_clear_subscription_email_consent() -> N
                 {"id": USER_ID},
             )
             await session.commit()
-            assert await session.scalar(
-                text(
-                    """
+            assert (
+                await session.scalar(
+                    text(
+                        """
                     SELECT subscription_expiration_email_enabled
                     FROM users
                     WHERE id = :id
                     """
-                ),
-                {"id": USER_ID},
-            ) is True
+                    ),
+                    {"id": USER_ID},
+                )
+                is True
+            )
 
             await session.execute(
                 text("UPDATE users SET is_email_verified = false WHERE id = :id"),

@@ -24,7 +24,7 @@ class TempUserDto:
 
     @property
     def log(self) -> str:
-        return f"[{self.role}:{self.remna_name} ({self.name})]"
+        return f"[{self.role}:pending]"
 
     @classmethod
     def from_aiogram(cls, aiogram_user: AiogramUser) -> Self:
@@ -53,6 +53,7 @@ class UserDto(BaseDto, TrackableMixin, TimestampMixin):
     password_reset_expires_at: Optional[datetime] = None
     password_reset_attempts: int = 0
     token_version: int = 0
+    merged_into_user_id: Optional[int] = None
     subscription_expiration_email_enabled: bool = False
     subscription_expiration_email_enabled_at: Optional[datetime] = None
 
@@ -99,7 +100,7 @@ class UserDto(BaseDto, TrackableMixin, TimestampMixin):
 
     @property
     def log(self) -> str:
-        return f"[{self.role}:{self.id}:{self.remna_name} ({self.name})]"
+        return f"[{self.role}:{self.id}]"
 
     @property
     def remna_name(self) -> str:  # NOTE: DONT USE FOR GET USER!

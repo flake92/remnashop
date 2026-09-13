@@ -45,12 +45,15 @@ from src.application.use_cases.notification import (
     UpdateNotificationPreferences,
 )
 from src.application.use_cases.notification.commands import (
-    NotificationDeliveryUnavailableError,
     NotificationEmailNotEligibleError,
     UpdateNotificationPreferencesDto,
 )
 from src.core.config import AppConfig
-from src.core.exceptions import EmailDeliveryDisabledError, EmailDeliveryError
+from src.core.exceptions import (
+    EmailDeliveryDisabledError,
+    EmailDeliveryError,
+    EmailDeliveryRateDeferredError,
+)
 from src.web.dependencies import require_auth_service_key
 from src.web.schemas import (
     AuthResponse,
@@ -337,16 +340,9 @@ async def update_notification_preferences(
         preferences = await update_preferences(
             user,
             UpdateNotificationPreferencesDto(
-                subscription_expiration_email_enabled=(
-                    body.subscription_expiration_email_enabled
-                )
+                subscription_expiration_email_enabled=(body.subscription_expiration_email_enabled)
             ),
         )
-    except NotificationDeliveryUnavailableError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=str(exc),
-        ) from exc
     except NotificationEmailNotEligibleError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -433,6 +429,11 @@ async def request_email_verification_code(
         result = await request_verification(user, RequestEmailVerificationDto(email=body.email))
     except EmailDeliveryDisabledError as e:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(e)) from e
+    except EmailDeliveryRateDeferredError as e:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Email delivery is temporarily busy. Please try again shortly.",
+        ) from e
     except EmailDeliveryError as e:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(e)) from e
     return RequestEmailVerificationCodeResponse(

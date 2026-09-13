@@ -135,10 +135,10 @@ class _ManifestEntryV2(BaseModel):
 
     @model_validator(mode="after")
     def validate_canonical_timestamp(self) -> "_ManifestEntryV2":
-        if (
-            any(audit_id <= 0 for audit_id in self.expected_participant_merge_audit_ids)
-            or self.expected_participant_merge_audit_ids
-            != sorted(set(self.expected_participant_merge_audit_ids))
+        if any(
+            audit_id <= 0 for audit_id in self.expected_participant_merge_audit_ids
+        ) or self.expected_participant_merge_audit_ids != sorted(
+            set(self.expected_participant_merge_audit_ids)
         ):
             raise ValueError(
                 "expected_participant_merge_audit_ids must be positive, sorted, and unique"
@@ -149,15 +149,10 @@ class _ManifestEntryV2(BaseModel):
             raise ValueError("expected_created_at must be an ISO-8601 timestamp") from exc
         if parsed.tzinfo is None or parsed.isoformat() != self.expected_created_at:
             raise ValueError("expected_created_at must be canonical and timezone-aware")
-        if (
-            self.source_validation == "PROVIDER_SUCCEEDED"
-            and (
-                self.reward_id != PROVIDER_SUCCEEDED_REFERRAL_REWARD_ID
-                or self.source_transaction_id
-                != PROVIDER_SUCCEEDED_REFERRAL_SOURCE_TRANSACTION_ID
-                or self.evidence_sha256
-                != PROVIDER_SUCCEEDED_REFERRAL_EVIDENCE_SHA256
-            )
+        if self.source_validation == "PROVIDER_SUCCEEDED" and (
+            self.reward_id != PROVIDER_SUCCEEDED_REFERRAL_REWARD_ID
+            or self.source_transaction_id != PROVIDER_SUCCEEDED_REFERRAL_SOURCE_TRANSACTION_ID
+            or self.evidence_sha256 != PROVIDER_SUCCEEDED_REFERRAL_EVIDENCE_SHA256
         ):
             raise ValueError("PROVIDER_SUCCEEDED requires the pinned rr65 provider evidence")
         return self
@@ -281,9 +276,7 @@ class LegacyReferralRecoveryAuthorizer:
                     else None
                 ),
                 "reward_strategy": (
-                    recovery.reward_strategy.value
-                    if recovery.reward_strategy is not None
-                    else None
+                    recovery.reward_strategy.value if recovery.reward_strategy is not None else None
                 ),
                 "config_value": recovery.config_value,
                 "operator_reference": recovery.operator_reference,

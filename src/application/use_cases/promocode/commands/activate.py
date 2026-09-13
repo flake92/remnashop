@@ -98,7 +98,7 @@ class ActivatePromocode(Interactor[ActivatePromocodeDto, PromocodeDto]):
             await self._persist_reward(user, pending)
             await self.uow.commit()
 
-        logger.info(f"{actor.log} Activated promocode '{promo.code}'")
+        logger.info(f"{actor.log} Activated promocode id='{promo.id}'")
 
         event = PromocodeActivatedEvent(
             user_id=user.id,

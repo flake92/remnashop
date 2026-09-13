@@ -79,9 +79,7 @@ class SweepPaymentFulfillments(Interactor[None, None]):
     async def _execute(self, actor: UserDto, data: None) -> None:
         token_hash = _alert_token_hash("fulfillment-alert")
         async with self.uow:
-            expired = await self.transaction_dao.expire_fulfillments(
-                limit=FULFILLMENT_SWEEP_BATCH
-            )
+            expired = await self.transaction_dao.expire_fulfillments(limit=FULFILLMENT_SWEEP_BATCH)
             transactions = await self.transaction_dao.claim_manual_fulfillment_alerts(
                 token_hash=token_hash,
                 lease_for=ALERT_LEASE,
@@ -168,8 +166,7 @@ class ReplayPendingPaymentWebhooks(Interactor[None, None]):
         replay_token_hash = _alert_token_hash("webhook-replay")
         async with self.uow:
             expired = await self.transaction_dao.mark_expired_orphaned_webhook_events(
-                retention=WEBHOOK_RETENTION,
-                limit=WEBHOOK_REPLAY_BATCH
+                retention=WEBHOOK_RETENTION, limit=WEBHOOK_REPLAY_BATCH
             )
             events = await self.transaction_dao.claim_replayable_webhook_events(
                 token_hash=replay_token_hash,
@@ -201,9 +198,7 @@ class ReplayPendingPaymentWebhooks(Interactor[None, None]):
                     await self.transaction_dao.release_webhook_event(
                         event.id,
                         token_hash=replay_token_hash,
-                        retry_after=(
-                            timedelta(0) if manual_required else WEBHOOK_RETRY
-                        ),
+                        retry_after=(timedelta(0) if manual_required else WEBHOOK_RETRY),
                         error_code=_webhook_error_code(exc),
                         manual_required=manual_required,
                     )
@@ -235,9 +230,7 @@ class ReplayPendingPaymentWebhooks(Interactor[None, None]):
                         event.id,
                         token_hash=alert_token_hash,
                         retry_after=ALERT_RETRY,
-                        error_code=(
-                            event.processing_last_error or "WEBHOOK_MANUAL_REQUIRED"
-                        ),
+                        error_code=(event.processing_last_error or "WEBHOOK_MANUAL_REQUIRED"),
                         manual_required=True,
                     )
                     await self.uow.commit()
@@ -300,12 +293,10 @@ class SweepPaymentOperationAlerts(Interactor[None, None]):
             expired = await self.payment_operation_dao.expire_reconciliations(
                 limit=PAYMENT_OPERATION_ALERT_BATCH
             )
-            operations = (
-                await self.payment_operation_dao.claim_manual_reconciliation_alerts(
-                    token_hash=token_hash,
-                    lease_for=ALERT_LEASE,
-                    limit=PAYMENT_OPERATION_ALERT_BATCH,
-                )
+            operations = await self.payment_operation_dao.claim_manual_reconciliation_alerts(
+                token_hash=token_hash,
+                lease_for=ALERT_LEASE,
+                limit=PAYMENT_OPERATION_ALERT_BATCH,
             )
             alerts = [
                 (operation, await self.user_dao.get_by_id(operation.user_id))

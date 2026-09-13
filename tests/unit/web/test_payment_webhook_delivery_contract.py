@@ -53,9 +53,7 @@ async def test_terminal_callbacks_are_persisted_before_ack_for_every_gateway(
     enqueue = AsyncMock()
     monkeypatch.setattr(handle_payment_transaction_task, "kiq", enqueue)
     gateway = SimpleNamespace(
-        handle_webhook=AsyncMock(
-            return_value=(PAYMENT_ID, TransactionStatus.COMPLETED)
-        ),
+        handle_webhook=AsyncMock(return_value=(PAYMENT_ID, TransactionStatus.COMPLETED)),
         build_webhook_response=AsyncMock(return_value=Response(status_code=200)),
     )
 

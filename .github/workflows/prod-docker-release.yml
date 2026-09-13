@@ -12,6 +12,7 @@ on:
         type: string
 
 permissions:
+  actions: read
   contents: write
   packages: write
 
@@ -30,6 +31,7 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: 🔖 Get latest tag
@@ -41,14 +43,51 @@ jobs:
         run: |
           SHORT_SHA=$(git rev-parse --short HEAD)
           BUILD_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-          IMAGE_REPO="ghcr.io/${GITHUB_REPOSITORY}"
-          IMAGE_TAGS="${IMAGE_REPO}:latest,${IMAGE_REPO}:${RELEASE_TAG}"
+          IMAGE_REPOSITORY="${GITHUB_REPOSITORY,,}"
+          IMAGE_REPO="ghcr.io/${IMAGE_REPOSITORY}"
+          if [[ ! "${RELEASE_TAG}" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
+            echo "Release tag must be a Docker-safe semantic version" >&2
+            exit 1
+          fi
 
-          echo "image_tag=${IMAGE_TAGS}" >> $GITHUB_OUTPUT
-          echo "short_sha=${SHORT_SHA}" >> $GITHUB_OUTPUT
-          echo "build_time=${BUILD_TIME}" >> $GITHUB_OUTPUT
+          if [[ "${RELEASE_TAG}" == *-* ]]; then
+            IS_PRERELEASE=true
+          else
+            IS_PRERELEASE=false
+          fi
+
+          IMAGE_TAGS="${IMAGE_REPO}:${RELEASE_TAG}"
+          LATEST_STABLE_TAG=$(git tag --list --sort=-v:refname \
+            | grep -E '^v?[0-9]+\.[0-9]+\.[0-9]+$' \
+            | head -n 1 || true)
+          if [ -n "${LATEST_STABLE_TAG}" ] && [ "${RELEASE_TAG}" = "${LATEST_STABLE_TAG}" ]; then
+            IMAGE_TAGS="${IMAGE_TAGS},${IMAGE_REPO}:latest"
+          fi
+
+          echo "image_repository=${IMAGE_REPOSITORY}" >> "$GITHUB_OUTPUT"
+          echo "image_repo=${IMAGE_REPO}" >> "$GITHUB_OUTPUT"
+          echo "image_tags=${IMAGE_TAGS}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "build_time=${BUILD_TIME}" >> "$GITHUB_OUTPUT"
+          echo "prerelease=${IS_PRERELEASE}" >> "$GITHUB_OUTPUT"
           echo "✅ Tags: ${IMAGE_TAGS}"
           echo "✅ SHA: ${SHORT_SHA}"
+
+      - name: ✅ Require successful Quality run for the exact release commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          RELEASE_SHA=$(git rev-parse HEAD)
+          TAG_SHA=$(git rev-parse --verify "refs/tags/${RELEASE_TAG}^{commit}")
+          test "${RELEASE_SHA}" = "${TAG_SHA}"
+
+          SUCCESSFUL_RUNS=$(gh api \
+            "/repos/${GITHUB_REPOSITORY}/actions/workflows/quality.yml/runs?head_sha=${RELEASE_SHA}&status=success&per_page=1" \
+            --jq '.total_count')
+          if [ "${SUCCESSFUL_RUNS}" -lt 1 ]; then
+            echo "No successful Quality run exists for release commit ${RELEASE_SHA}" >&2
+            exit 1
+          fi
 
       - name: 🛠️ Set Up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
@@ -58,21 +97,31 @@ jobs:
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.GHCR_TOKEN }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: 🏗️ Build and Push Docker Image
+        id: build
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5.4.0
         with:
           context: .
           push: true
           platforms: linux/amd64,linux/arm64
-          tags: |
-            ghcr.io/snoups/remnashop:latest
-            ghcr.io/snoups/remnashop:${{ env.RELEASE_TAG }}
+          tags: ${{ steps.vars.outputs.image_tags }}
           build-args: |
             BUILD_TIME=${{ steps.vars.outputs.build_time }}
             BUILD_BRANCH=${{ env.RELEASE_TAG }}
             BUILD_COMMIT=${{ steps.vars.outputs.short_sha }}
             BUILD_TAG=${{ env.RELEASE_TAG }}
+
+      - name: 🧾 Create deployment environment file
+        env:
+          IMAGE_REPOSITORY: ${{ steps.vars.outputs.image_repository }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          {
+            echo "REMNASHOP_IMAGE_REPOSITORY=${IMAGE_REPOSITORY}"
+            echo "REMNASHOP_IMAGE_DIGEST=${IMAGE_DIGEST}"
+          } > remnashop-release.env
+          test -n "${IMAGE_DIGEST}"
 
       - name: 📦 Create GitHub Release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
@@ -82,6 +131,7 @@ jobs:
           tag_name: ${{ env.RELEASE_TAG }}
           name: ${{ env.RELEASE_TAG }}
           generate_release_notes: false
+          files: remnashop-release.env
           body: |
             # 🛍 Remnashop ${{ env.RELEASE_TAG }}
             [![Telegram Group](https://img.shields.io/badge/public_group-white?style=social&logo=Telegram&logoColor=blue)](https://t.me/remna_shop)
@@ -89,20 +139,20 @@ jobs:
 
             ---
 
-            - [Compare changes (${{ steps.latest-tag.outputs.previousTag }}...${{ steps.latest-tag.outputs.latestTag }})](https://github.com/snoups/remnashop/compare/${{ steps.latest-tag.outputs.previousTag }}...${{ steps.latest-tag.outputs.latestTag }})
+            - [Compare changes (${{ steps.latest-tag.outputs.previousTag }}...${{ steps.latest-tag.outputs.latestTag }})](https://github.com/${{ github.repository }}/compare/${{ steps.latest-tag.outputs.previousTag }}...${{ steps.latest-tag.outputs.latestTag }})
 
             ---
 
             ## 🐳 Docker Images
 
-            ### Latest:
-            ```
-            ghcr.io/snoups/remnashop:latest
-            ```
-
             ### Versioned:
             ```
-            ghcr.io/snoups/remnashop:${{ env.RELEASE_TAG }}
+            ${{ steps.vars.outputs.image_repo }}:${{ env.RELEASE_TAG }}
+            ```
+
+            ### Immutable deployment reference:
+            ```
+            ${{ steps.vars.outputs.image_repo }}@${{ steps.build.outputs.digest }}
             ```
           draft: false
-          prerelease: false
+          prerelease: ${{ steps.vars.outputs.prerelease }}

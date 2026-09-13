@@ -49,7 +49,15 @@ class BroadcastDaoImpl(BroadcastDao):
         return self._convert_to_dto(db_broadcast)
 
     async def get_by_task_id(self, task_id: UUID) -> Optional[BroadcastDto]:
-        stmt = select(Broadcast).where(Broadcast.task_id == task_id)
+        # This DAO is request-scoped and the same AsyncSession is reused by the
+        # long-running Taskiq broadcast handlers.  Force a refresh so an admin
+        # cancellation or a status/message update committed by another session
+        # is not hidden by SQLAlchemy's identity map.
+        stmt = (
+            select(Broadcast)
+            .where(Broadcast.task_id == task_id)
+            .execution_options(populate_existing=True)
+        )
         db_broadcast = await self.session.scalar(stmt)
 
         if db_broadcast:

@@ -22,10 +22,8 @@ class SubscriptionEmailReminderDao(Protocol):
         self,
         *,
         now: datetime,
-        delivery_not_before: datetime,
         token_hash: str,
         lease_for: timedelta,
-        max_attempts: int,
         limit: int,
     ) -> list[SubscriptionEmailReminderDto]: ...
 
@@ -33,8 +31,6 @@ class SubscriptionEmailReminderDao(Protocol):
         self,
         *,
         now: datetime,
-        delivery_not_before: datetime,
-        max_attempts: int,
         limit: int,
     ) -> int: ...
 
@@ -45,6 +41,14 @@ class SubscriptionEmailReminderDao(Protocol):
         token_hash: str,
         now: datetime,
     ) -> SubscriptionEmailDeliveryDto | None: ...
+
+    async def release_unattempted(
+        self,
+        reminder_id: int,
+        *,
+        token_hash: str,
+        now: datetime,
+    ) -> bool: ...
 
     async def renew_processing_lease(
         self,
@@ -69,7 +73,7 @@ class SubscriptionEmailReminderDao(Protocol):
         token_hash: str,
         now: datetime,
         error_code: str,
-        max_attempts: int,
+        retryable: bool,
         retry_after: timedelta,
     ) -> bool: ...
 

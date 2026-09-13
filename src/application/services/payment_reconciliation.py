@@ -135,14 +135,10 @@ class PaymentReconciliationService:
             )
             if (
                 requires_fulfillment_proof
-                and
-                transaction is not None
-                and transaction.fulfillment_status
-                == TransactionFulfillmentStatus.PROCESSING
+                and transaction is not None
+                and transaction.fulfillment_status == TransactionFulfillmentStatus.PROCESSING
             ):
-                expired = await self.transaction_dao.expire_fulfillment(
-                    transaction.payment_id
-                )
+                expired = await self.transaction_dao.expire_fulfillment(transaction.payment_id)
                 if expired:
                     logger.critical(
                         "Payment fulfillment expired without proof for transaction '{}'",
@@ -161,8 +157,7 @@ class PaymentReconciliationService:
                 requires_fulfillment_proof
                 and transaction is not None
                 and (
-                    transaction.fulfillment_status
-                    != TransactionFulfillmentStatus.SUCCEEDED
+                    transaction.fulfillment_status != TransactionFulfillmentStatus.SUCCEEDED
                     or transaction.fulfillment_completed_at is None
                 )
             )
@@ -189,10 +184,8 @@ class PaymentReconciliationService:
             )
             if (
                 requires_fulfillment_proof
-                and
-                transaction is not None
-                and transaction.fulfillment_status
-                == TransactionFulfillmentStatus.MANUAL_REQUIRED
+                and transaction is not None
+                and transaction.fulfillment_status == TransactionFulfillmentStatus.MANUAL_REQUIRED
             ):
                 return PaymentOperationView(
                     operation=record.operation,
@@ -201,13 +194,17 @@ class PaymentReconciliationService:
                     transaction=None,
                     retry_after_seconds=None,
                 )
-            if requires_fulfillment_proof and transaction is not None and (
-                transaction.fulfillment_status
-                in {
-                    TransactionFulfillmentStatus.NOT_STARTED,
-                    TransactionFulfillmentStatus.PROCESSING,
-                }
-                and transaction.status != TransactionStatus.REFUNDED
+            if (
+                requires_fulfillment_proof
+                and transaction is not None
+                and (
+                    transaction.fulfillment_status
+                    in {
+                        TransactionFulfillmentStatus.NOT_STARTED,
+                        TransactionFulfillmentStatus.PROCESSING,
+                    }
+                    and transaction.status != TransactionStatus.REFUNDED
+                )
             ):
                 return PaymentOperationView(
                     operation=record.operation,
@@ -390,9 +387,7 @@ class PaymentReconciliationService:
         request = record.provider_request_snapshot
         resolved = record.resolved_payment_snapshot
         if request is None or resolved is None:
-            raise InvalidPaymentRecoverySnapshotError(
-                "Provider recovery snapshot is incomplete"
-            )
+            raise InvalidPaymentRecoverySnapshotError("Provider recovery snapshot is incomplete")
         expected = transaction_from_resolved_snapshot(
             resolved,
             expected_user_id=record.user_id,
@@ -534,9 +529,7 @@ class PaymentReconciliationService:
         ):
             return
         if transaction.fulfillment_status == TransactionFulfillmentStatus.MANUAL_REQUIRED:
-            raise InvalidPaymentRecoverySnapshotError(
-                "Payment fulfillment requires manual review"
-            )
+            raise InvalidPaymentRecoverySnapshotError("Payment fulfillment requires manual review")
         if transaction.fulfillment_status == TransactionFulfillmentStatus.PROCESSING:
             await self.uow.commit()
             raise PaymentFulfillmentInProgressError
@@ -686,14 +679,12 @@ class PaymentReconciliationService:
                 gateway_type=transaction.gateway_type,
                 status=TransactionStatus.COMPLETED,
             )
-            linked = (
-                await self.payment_operation_dao.link_pending_fulfillment_reconciliation(
-                    refreshed.id,
-                    token_hash=token_hash,
-                    transaction_id=transaction.id,
-                    provider_result=provider_result,
-                    retry_after=timedelta(seconds=MIN_RETRY_SECONDS),
-                )
+            linked = await self.payment_operation_dao.link_pending_fulfillment_reconciliation(
+                refreshed.id,
+                token_hash=token_hash,
+                transaction_id=transaction.id,
+                provider_result=provider_result,
+                retry_after=timedelta(seconds=MIN_RETRY_SECONDS),
             )
             if not linked:
                 raise RuntimeError("Local fulfillment recovery link lost its fence")
@@ -931,9 +922,7 @@ class PaymentReconciliationService:
                 await self.uow.commit()
                 return view
 
-            await self.payment_operation_dao.mark_expired_provider_replay_manual(
-                record.id
-            )
+            await self.payment_operation_dao.mark_expired_provider_replay_manual(record.id)
             await self.payment_operation_dao.mark_exhausted_reconciliation_manual(
                 record.id,
                 max_attempts=MAX_RECONCILIATION_ATTEMPTS,
@@ -957,9 +946,7 @@ class PaymentReconciliationService:
             if not claimed:
                 # The replay deadline may have crossed while this request waited
                 # for a concurrent claimant. Re-evaluate with PostgreSQL's clock.
-                await self.payment_operation_dao.mark_expired_provider_replay_manual(
-                    record.id
-                )
+                await self.payment_operation_dao.mark_expired_provider_replay_manual(record.id)
                 await self.payment_operation_dao.mark_exhausted_reconciliation_manual(
                     record.id,
                     max_attempts=MAX_RECONCILIATION_ATTEMPTS,

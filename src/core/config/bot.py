@@ -7,7 +7,7 @@ from src.core.constants import API_V1, BOT_WEBHOOK_PATH
 from src.core.utils.validators import is_valid_url
 
 from .base import BaseConfig
-from .validators import validate_not_change_me, validate_username
+from .validators import validate_not_change_me, validate_strong_secret, validate_username
 
 
 class BotConfig(BaseConfig, env_prefix="BOT_"):
@@ -49,10 +49,16 @@ class BotConfig(BaseConfig, env_prefix="BOT_"):
     def safe_webhook_url(self, domain: SecretStr) -> str:
         return f"https://{domain}{self.webhook_path}"
 
-    @field_validator("token", "secret_token", "support_username")
+    @field_validator("token", "support_username")
     @classmethod
     def validate_bot_fields(cls, field: object, info: ValidationInfo) -> object:
         validate_not_change_me(field, info)
+        return field
+
+    @field_validator("secret_token")
+    @classmethod
+    def validate_webhook_secret(cls, field: SecretStr, info: ValidationInfo) -> SecretStr:
+        validate_strong_secret(field, info, minimum_length=32, env_prefix="BOT_")
         return field
 
     @field_validator("support_username")

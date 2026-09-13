@@ -1,10 +1,11 @@
-FROM python:3.12-alpine
+FROM python:3.12-alpine@sha256:b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a
 WORKDIR /opt/remnashop
 
 RUN apk add --no-cache git postgresql-client
 
 COPY pyproject.toml .
 COPY uv.lock .
+COPY vendor/remnapy/remnapy-2.7.1.dev7+cleanpay.g06802538-py3-none-any.whl ./vendor/remnapy/
 COPY docker-entrypoint.sh .
 
 RUN pip install --no-cache-dir uv && uv sync --frozen

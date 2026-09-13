@@ -69,8 +69,7 @@ class UserMergeDaoImpl(UserMergeDao):
             # exact same selected address; a different KEEP_TARGET address keeps
             # only the target's own verification evidence.
             return target_email, bool(
-                target_verified
-                or (source_email == target_email and source_verified)
+                target_verified or (source_email == target_email and source_verified)
             )
         return source_email, bool(source_email is not None and source_verified)
 
@@ -685,6 +684,9 @@ class UserMergeDaoImpl(UserMergeDao):
     ) -> None:
         source_email = source.email
         source_email_verified = source.is_email_verified
+        source_reminders_enabled = source.subscription_expiration_email_enabled
+        source_reminders_enabled_at = source.subscription_expiration_email_enabled_at
+        target_had_verified_email = bool(target.email and target.is_email_verified)
         merged_email, merged_email_verified = self._resolve_merged_email_identity(
             source_email=source_email,
             source_verified=source_email_verified,
@@ -714,8 +716,9 @@ class UserMergeDaoImpl(UserMergeDao):
         source.password_reset_expires_at = None
         source.password_hash = None
         source.is_email_verified = False
-        # Notification consent never crosses an account merge. The canonical
-        # target's existing choice wins, including its enabled timestamp.
+        # The retired source must never retain a deliverable preference. Its
+        # captured choice is transferred below only when its verified address
+        # becomes the target's first verified identity.
         source.subscription_expiration_email_enabled = False
         source.subscription_expiration_email_enabled_at = None
         source.telegram_id = None
@@ -745,6 +748,20 @@ class UserMergeDaoImpl(UserMergeDao):
         target.email = merged_email
         target.password_hash = target.password_hash or source_password_hash
         target.is_email_verified = merged_email_verified
+        if merged_email_verified and not target_had_verified_email:
+            # A verified identity selected from source carries the user's
+            # current preference with it. This enables the product default for
+            # migrated/default-on source accounts without erasing a later
+            # explicit source opt-out. An already verified target keeps its own
+            # choice regardless of the source account.
+            source_identity_selected = bool(
+                source_email_verified and source_email is not None and source_email == merged_email
+            )
+            if source_identity_selected:
+                target.subscription_expiration_email_enabled = source_reminders_enabled
+                target.subscription_expiration_email_enabled_at = (
+                    source_reminders_enabled_at if source_reminders_enabled else None
+                )
         target.telegram_id = (
             source_telegram_id
             if telegram_resolution is TelegramConflictResolution.KEEP_SOURCE

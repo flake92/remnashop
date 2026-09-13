@@ -1,3 +1,5 @@
+import base64
+import binascii
 import re
 import secrets
 from pathlib import Path
@@ -18,7 +20,21 @@ from .email import EmailConfig
 from .log import LogConfig
 from .redis import RedisConfig
 from .remnawave import RemnawaveConfig
-from .validators import validate_not_change_me
+from .validators import validate_not_change_me, validate_strong_secret
+
+
+def _validate_distinct_application_secrets(
+    configured_secrets: dict[str, Optional[SecretStr]],
+) -> None:
+    present_secrets = [
+        (name, value.get_secret_value())
+        for name, value in configured_secrets.items()
+        if value is not None
+    ]
+    for index, (left_name, left_value) in enumerate(present_secrets):
+        for right_name, right_value in present_secrets[index + 1 :]:
+            if secrets.compare_digest(left_value, right_value):
+                raise ValueError(f"{left_name} and {right_name} must use different secrets")
 
 
 class AppConfig(BaseConfig, env_prefix="APP_"):
@@ -114,6 +130,18 @@ class AppConfig(BaseConfig, env_prefix="APP_"):
                 self.api_key.get_secret_value(), self.auth_service_key.get_secret_value()
             ):
                 raise ValueError("APP_AUTH_SERVICE_KEY must not reuse APP_API_KEY")
+        _validate_distinct_application_secrets(
+            {
+                "APP_CRYPT_KEY": self.crypt_key,
+                "APP_JWT_SECRET": self.jwt_secret,
+                "APP_API_KEY": self.api_key,
+                "APP_AUTH_SERVICE_KEY": self.auth_service_key,
+                "BOT_SECRET_TOKEN": self.bot.secret_token,
+                "REMNAWAVE_WEBHOOK_SECRET": self.remnawave.webhook_secret,
+                "DATABASE_PASSWORD": self.database.password,
+                "REDIS_PASSWORD": self.redis.password,
+            }
+        )
         if self.referral_reward_legacy_recovery_enabled:
             manifest_path = self.referral_reward_legacy_recovery_manifest_path
             manifest_sha256 = self.referral_reward_legacy_recovery_manifest_sha256
@@ -157,7 +185,31 @@ class AppConfig(BaseConfig, env_prefix="APP_"):
     def validate_crypt_key(cls, field: SecretStr, info: ValidationInfo) -> SecretStr:
         validate_not_change_me(field, info)
 
-        if not re.match(r"^[A-Za-z0-9+/=]{44}$", field.get_secret_value()):
-            raise ValueError("APP_CRYPT_KEY must be a valid 44-character Base64 string")
+        value = field.get_secret_value()
+        try:
+            decoded = base64.b64decode(value, altchars=b"-_", validate=True)
+        except (binascii.Error, ValueError) as error:
+            raise ValueError("APP_CRYPT_KEY must be a valid Base64-encoded 32-byte key") from error
+        if len(decoded) != 32:
+            raise ValueError("APP_CRYPT_KEY must be a valid Base64-encoded 32-byte key")
+        validate_strong_secret(field, info, minimum_length=44, env_prefix="APP_")
 
+        return field
+
+    @field_validator("jwt_secret")
+    @classmethod
+    def validate_jwt_secret(
+        cls, field: Optional[SecretStr], info: ValidationInfo
+    ) -> Optional[SecretStr]:
+        if field is not None:
+            validate_strong_secret(field, info, minimum_length=32, env_prefix="APP_")
+        return field
+
+    @field_validator("api_key", "auth_service_key")
+    @classmethod
+    def validate_service_secret(
+        cls, field: Optional[SecretStr], info: ValidationInfo
+    ) -> Optional[SecretStr]:
+        if field is not None:
+            validate_strong_secret(field, info, minimum_length=24, env_prefix="APP_")
         return field

@@ -32,9 +32,7 @@ async def test_new_verification_target_clears_any_previous_reminder_consent() ->
         email=None,
         is_email_verified=False,
         subscription_expiration_email_enabled=True,
-        subscription_expiration_email_enabled_at=datetime(
-            2026, 8, 24, tzinfo=timezone.utc
-        ),
+        subscription_expiration_email_enabled_at=datetime(2026, 8, 24, tzinfo=timezone.utc),
     )
     user_dao = SimpleNamespace(
         get_by_email=AsyncMock(return_value=None),

@@ -702,9 +702,9 @@ async def on_allowed_user_remove(
         if email in plan.allowed_emails:
             plan.allowed_emails.remove(email)
             dialog_manager.dialog_data[PlanDto.__name__] = retort.dump(plan)
-            logger.info(f"{user.log} Removed allowed email '{email}' from plan in memory")
+            logger.info(f"{user.log} Removed allowed email identity from plan in memory")
         else:
-            logger.warning(f"{user.log} Tried to remove non-existent email '{email}' from plan")
+            logger.warning(f"{user.log} Tried to remove non-existent email identity from plan")
 
 
 @inject

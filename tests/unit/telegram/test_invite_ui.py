@@ -8,9 +8,7 @@ DIALOG_PATH = Path("src/telegram/routers/menu/dialog.py")
 
 
 def _ru_bundle() -> FluentBundle:
-    source = "\n".join(
-        path.read_text("utf8") for path in sorted(TRANSLATIONS_DIR.glob("*.ftl"))
-    )
+    source = "\n".join(path.read_text("utf8") for path in sorted(TRANSLATIONS_DIR.glob("*.ftl")))
     return FluentBundle.from_string(locale="ru", text=source, use_isolating=False)
 
 
@@ -78,9 +76,7 @@ def test_invite_dialog_uses_one_compact_link_row_without_duplicate_web_copy() ->
 
     assert len(link_rows) == 1
     link_row = link_rows[0]
-    widgets = [
-        _call_name(widget) for widget in link_row.args if isinstance(widget, ast.Call)
-    ]
+    widgets = [_call_name(widget) for widget in link_row.args if isinstance(widget, ast.Call)]
     assert widgets == ["CopyText", "Url"]
 
     url_widget = link_row.args[1]
@@ -96,8 +92,7 @@ def test_invite_qr_dialog_requires_explicit_telegram_or_clean_pay_choice() -> No
         for node in module.body
         if isinstance(node, ast.Assign)
         and any(
-            isinstance(target, ast.Name) and target.id == "invite_qr"
-            for target in node.targets
+            isinstance(target, ast.Name) and target.id == "invite_qr" for target in node.targets
         )
     )
     assert isinstance(qr_assignment.value, ast.Call)

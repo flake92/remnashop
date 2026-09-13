@@ -255,7 +255,7 @@ class RemnawaveImpl(Remnawave):
 
     async def get_user_by_email(self, email: str) -> list[UserResponseDto]:
         response = await self.sdk.users.get_users_by_email(email)
-        logger.debug(f"Fetched {len(response.root)} RemnaUsers for email '{email}'")
+        logger.debug(f"Fetched {len(response.root)} RemnaUsers by email identity")
         return response.root
 
     async def get_devices(self, user_uuid: UUID) -> list[HwidDeviceDto]:
@@ -343,9 +343,7 @@ class RemnawaveImpl(Remnawave):
                 new_value = getattr(source, source_field)
 
                 if old_value != new_value:
-                    logger.debug(
-                        f"Field '{target_field}' changed from '{old_value}' to '{new_value}'"
-                    )
+                    logger.debug(f"Field '{target_field}' changed during Remnawave sync")
                     setattr(target, target_field, new_value)
 
         common_fields = target_fields & source_fields
@@ -355,7 +353,7 @@ class RemnawaveImpl(Remnawave):
             new_value = getattr(source, field_name)
 
             if old_value != new_value:
-                logger.debug(f"Field '{field_name}' changed from '{old_value}' to '{new_value}'")
+                logger.debug(f"Field '{field_name}' changed during Remnawave sync")
                 setattr(target, field_name, new_value)
 
         return target

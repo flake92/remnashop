@@ -1,7 +1,7 @@
 from pydantic import PostgresDsn, SecretStr, ValidationInfo, field_validator
 
 from .base import BaseConfig
-from .validators import validate_not_change_me
+from .validators import validate_strong_secret
 
 
 class DatabaseConfig(BaseConfig, env_prefix="DATABASE_"):
@@ -32,5 +32,5 @@ class DatabaseConfig(BaseConfig, env_prefix="DATABASE_"):
     @field_validator("password")
     @classmethod
     def validate_database_password(cls, field: SecretStr, info: ValidationInfo) -> SecretStr:
-        validate_not_change_me(field, info)
+        validate_strong_secret(field, info, minimum_length=24, env_prefix="DATABASE_")
         return field

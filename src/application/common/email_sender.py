@@ -13,4 +13,6 @@ class EmailSender(Protocol):
         subject: str,
         body: str,
         message_id: str | None = None,
+        rate_limit_per_minute: int | None = None,
+        rate_limit_max_wait_seconds: float | None = None,
     ) -> None: ...

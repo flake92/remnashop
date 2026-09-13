@@ -389,8 +389,7 @@ class AddSubscriptionDuration(Interactor[AddSubscriptionDurationDto, None]):
             Role.OWNER,
         }:
             raise ValueError(
-                "Manual subscription-duration changes are paused during legacy "
-                "referral recovery"
+                "Manual subscription-duration changes are paused during legacy referral recovery"
             )
         async with self.subscription_mutation_lock.hold(data.user_id):
             await self._execute_locked(actor, data)

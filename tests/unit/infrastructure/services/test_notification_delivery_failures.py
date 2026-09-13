@@ -6,7 +6,10 @@ from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.methods import SendMessage
 
 from src.application.dto import MessagePayloadDto, TempUserDto
-from src.infrastructure.services.notification import NotificationService
+from src.infrastructure.services.notification import (
+    NotificationService,
+    _sanitized_error_diagnostics,
+)
 
 
 def _service_with_send_error(error: Exception) -> NotificationService:
@@ -58,3 +61,20 @@ async def test_other_bad_request_remains_visible() -> None:
 
     with pytest.raises(TelegramBadRequest):
         await service.notify_user(_user(), payload=_payload())
+
+
+def test_error_diagnostics_redact_attachment_and_visible_message() -> None:
+    try:
+        raise RuntimeError("private@example.com password=hunter2")
+    except RuntimeError as error:
+        safe_message, attachment = _sanitized_error_diagnostics(
+            error,
+            "Authorization: Bearer bearer-secret",
+        )
+
+    combined = f"{safe_message}\n{attachment}"
+    assert "private@example.com" not in combined
+    assert "hunter2" not in combined
+    assert "bearer-secret" not in combined
+    assert "[EMAIL]" in combined
+    assert "[REDACTED]" in combined

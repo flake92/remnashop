@@ -25,13 +25,13 @@ class AddAllowedUserToPlan(Interactor[AddAllowedUserToPlanDto, PlanDto]):
 
         if "@" in value:
             if not is_valid_email(value):
-                logger.warning(f"{actor.log} Invalid email format: '{value}'")
+                logger.warning(f"{actor.log} Invalid email format supplied")
                 raise ValueError(f"Invalid email format: '{value}'")
             if value in data.plan.allowed_emails:
-                logger.warning(f"{actor.log} Email '{value}' is already in allowed list")
+                logger.warning(f"{actor.log} Email is already in allowed list")
                 raise UserAlreadyAllowedError(f"Email '{value}' already allowed")
             data.plan.allowed_emails.append(value)
-            logger.info(f"{actor.log} Added email '{value}' to allowed list of plan in memory")
+            logger.info(f"{actor.log} Added email identity to allowed list of plan in memory")
         elif value.isdigit():
             tg_id = int(value)
             if tg_id in data.plan.allowed_telegram_ids:

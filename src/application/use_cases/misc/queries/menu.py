@@ -58,9 +58,7 @@ class GetMenuData(Interactor[None, GetMenuDataResultDto]):
                 or (current_subscription is not None and current_subscription.is_active)
             )
             if button.is_active and role_ok and sub_ok:
-                custom_buttons.append(
-                    replace(button, text=self.i18n.get_or_raw(button.text))
-                )
+                custom_buttons.append(replace(button, text=self.i18n.get_or_raw(button.text)))
 
         return GetMenuDataResultDto(
             is_referral_enabled=is_referral_enabled,

@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import delete, extract, func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from src.application.common.dao import SubscriptionEmailReminderDao
 from src.application.dto import (
@@ -27,9 +28,7 @@ FAILED = "FAILED"
 # Keep this literal predicate identical to the terminal-retention partial index.
 # PostgreSQL cannot generally prove a parameterized state IN (...) implies a
 # partial-index predicate when it switches to a generic prepared-statement plan.
-TERMINAL_RETENTION_PREDICATE = text(
-    "state IN ('SENT', 'CANCELED', 'FAILED')"
-)
+TERMINAL_RETENTION_PREDICATE = text("state IN ('SENT', 'CANCELED', 'FAILED')")
 
 
 class SubscriptionEmailReminderDaoImpl(SubscriptionEmailReminderDao):
@@ -94,9 +93,8 @@ class SubscriptionEmailReminderDaoImpl(SubscriptionEmailReminderDao):
                 # A snapshot with less than the smallest threshold remaining
                 # cannot produce a useful reminder and would otherwise occupy a
                 # bounded candidate batch forever.
-                Subscription.expire_at > (
-                    now + timedelta(days=min(days_before)) - generation_grace
-                ),
+                Subscription.expire_at
+                > (now + timedelta(days=min(days_before)) - generation_grace),
                 Subscription.expire_at <= horizon,
                 extract("year", Subscription.expire_at) != UNLIMITED_EXPIRE_YEAR,
                 ~already_generated,
@@ -143,13 +141,11 @@ class SubscriptionEmailReminderDaoImpl(SubscriptionEmailReminderDao):
         self,
         *,
         now: datetime,
-        delivery_not_before: datetime,
         token_hash: str,
         lease_for: timedelta,
-        max_attempts: int,
         limit: int,
     ) -> list[SubscriptionEmailReminderDto]:
-        if limit <= 0 or max_attempts <= 0:
+        if limit <= 0:
             return []
 
         claimable = or_(
@@ -159,14 +155,53 @@ class SubscriptionEmailReminderDaoImpl(SubscriptionEmailReminderDao):
                 & (SubscriptionEmailReminder.processing_lease_expires_at <= now)
             ),
         )
+        newer_due_reminder = aliased(SubscriptionEmailReminder)
+        superseded = (
+            select(newer_due_reminder.id)
+            .where(
+                newer_due_reminder.user_id == SubscriptionEmailReminder.user_id,
+                newer_due_reminder.subscription_id == SubscriptionEmailReminder.subscription_id,
+                newer_due_reminder.expire_at_snapshot
+                == SubscriptionEmailReminder.expire_at_snapshot,
+                newer_due_reminder.due_at > SubscriptionEmailReminder.due_at,
+                newer_due_reminder.due_at <= now,
+            )
+            .exists()
+        )
         stmt = (
             select(SubscriptionEmailReminder)
+            .join(User, User.id == SubscriptionEmailReminder.user_id)
+            .join(
+                Subscription,
+                Subscription.id == SubscriptionEmailReminder.subscription_id,
+            )
             .where(
                 claimable,
                 SubscriptionEmailReminder.due_at <= now,
-                SubscriptionEmailReminder.due_at >= delivery_not_before,
+                # A delayed reminder remains relevant until the subscription
+                # snapshot expires. Outages must not silently discard it merely
+                # because an arbitrary one-hour delivery window elapsed.
+                SubscriptionEmailReminder.expire_at_snapshot > now,
                 SubscriptionEmailReminder.next_attempt_at <= now,
-                SubscriptionEmailReminder.attempt_count < max_attempts,
+                # Prioritize rows that are eligible in the claim snapshot so
+                # stale/opted-out/renewed rows cannot head-of-line block valid
+                # SMTP work. prepare_delivery repeats every predicate while
+                # holding the row locks, so this is only a safe queue filter.
+                User.merged_into_user_id.is_(None),
+                User.is_blocked.is_(False),
+                User.email.is_not(None),
+                User.is_email_verified.is_(True),
+                User.subscription_expiration_email_enabled.is_(True),
+                User.subscription_expiration_email_enabled_at.is_not(None),
+                User.subscription_expiration_email_enabled_at <= SubscriptionEmailReminder.due_at,
+                User.current_subscription_id == Subscription.id,
+                Subscription.user_id == User.id,
+                Subscription.status == SubscriptionStatus.ACTIVE,
+                Subscription.is_trial.is_(False),
+                Subscription.expire_at == SubscriptionEmailReminder.expire_at_snapshot,
+                Subscription.expire_at > now,
+                extract("year", Subscription.expire_at) != UNLIMITED_EXPIRE_YEAR,
+                ~superseded,
             )
             .order_by(
                 SubscriptionEmailReminder.next_attempt_at,
@@ -174,7 +209,7 @@ class SubscriptionEmailReminderDaoImpl(SubscriptionEmailReminderDao):
                 SubscriptionEmailReminder.id,
             )
             .limit(limit)
-            .with_for_update(skip_locked=True)
+            .with_for_update(of=SubscriptionEmailReminder, skip_locked=True)
         )
         rows = list((await self.session.scalars(stmt)).all())
         lease_expires_at = now + lease_for
@@ -182,7 +217,6 @@ class SubscriptionEmailReminderDaoImpl(SubscriptionEmailReminderDao):
             row.state = PROCESSING
             row.processing_token_hash = token_hash
             row.processing_lease_expires_at = lease_expires_at
-            row.attempt_count += 1
             # ``updated_at`` normally uses a SQL on-update expression. After
             # flush SQLAlchemy expires that attribute, and converting the ORM
             # row to a DTO would then attempt implicit IO outside greenlet_spawn.
@@ -195,26 +229,24 @@ class SubscriptionEmailReminderDaoImpl(SubscriptionEmailReminderDao):
         self,
         *,
         now: datetime,
-        delivery_not_before: datetime,
-        max_attempts: int,
         limit: int,
     ) -> int:
-        if limit <= 0 or max_attempts <= 0:
+        if limit <= 0:
             return 0
 
-        inactive_processing = (
-            (SubscriptionEmailReminder.state == PROCESSING)
-            & (SubscriptionEmailReminder.processing_lease_expires_at <= now)
+        inactive_processing = (SubscriptionEmailReminder.state == PROCESSING) & (
+            SubscriptionEmailReminder.processing_lease_expires_at <= now
         )
         mutable_state = or_(
             SubscriptionEmailReminder.state.in_([PENDING, RETRY_WAITING]),
             inactive_processing,
         )
-        stale = SubscriptionEmailReminder.due_at < delivery_not_before
-        exhausted = SubscriptionEmailReminder.attempt_count >= max_attempts
         stmt = (
             select(SubscriptionEmailReminder)
-            .where(mutable_state, or_(stale, exhausted))
+            .where(
+                mutable_state,
+                SubscriptionEmailReminder.expire_at_snapshot <= now,
+            )
             .order_by(
                 SubscriptionEmailReminder.due_at,
                 SubscriptionEmailReminder.id,
@@ -224,13 +256,9 @@ class SubscriptionEmailReminderDaoImpl(SubscriptionEmailReminderDao):
         )
         reminders = list((await self.session.scalars(stmt)).all())
         for reminder in reminders:
-            if reminder.attempt_count >= max_attempts:
-                reminder.state = FAILED
-                reminder.last_error_code = "ATTEMPTS_EXHAUSTED"
-            else:
-                reminder.state = CANCELED
-                reminder.canceled_at = now
-                reminder.last_error_code = "DELIVERY_WINDOW_EXPIRED"
+            reminder.state = CANCELED
+            reminder.canceled_at = now
+            reminder.last_error_code = "SUBSCRIPTION_EXPIRED_BEFORE_DELIVERY"
             reminder.processing_token_hash = None
             reminder.processing_lease_expires_at = None
         if reminders:
@@ -265,6 +293,27 @@ class SubscriptionEmailReminderDaoImpl(SubscriptionEmailReminderDao):
         if not owns_fence:
             return None
 
+        newer_reminder = aliased(SubscriptionEmailReminder)
+        superseded = await self.session.scalar(
+            select(newer_reminder.id)
+            .where(
+                newer_reminder.user_id == reminder.user_id,
+                newer_reminder.subscription_id == reminder.subscription_id,
+                newer_reminder.expire_at_snapshot == reminder.expire_at_snapshot,
+                newer_reminder.due_at > reminder.due_at,
+                newer_reminder.due_at <= now,
+            )
+            .limit(1)
+        )
+        if superseded is not None:
+            reminder.state = CANCELED
+            reminder.canceled_at = now
+            reminder.last_error_code = "SUPERSEDED_BY_NEWER_REMINDER"
+            reminder.processing_token_hash = None
+            reminder.processing_lease_expires_at = None
+            await self.session.flush()
+            return None
+
         eligible = (
             user.merged_into_user_id is None
             and not user.is_blocked
@@ -297,6 +346,36 @@ class SubscriptionEmailReminderDaoImpl(SubscriptionEmailReminderDao):
             days_before=reminder.days_before,
             attempt_count=reminder.attempt_count,
         )
+
+    async def release_unattempted(
+        self,
+        reminder_id: int,
+        *,
+        token_hash: str,
+        now: datetime,
+    ) -> bool:
+        stmt = (
+            select(SubscriptionEmailReminder)
+            .where(
+                SubscriptionEmailReminder.id == reminder_id,
+                SubscriptionEmailReminder.state == PROCESSING,
+                SubscriptionEmailReminder.processing_token_hash == token_hash,
+            )
+            .with_for_update()
+        )
+        reminder = await self.session.scalar(stmt)
+        if reminder is None:
+            return False
+
+        # claim_due no longer counts an attempt. Restore the runnable state
+        # without fabricating provider failures or entering a tight loop inside
+        # this run; the caller always stops after a no-room result.
+        reminder.state = PENDING if reminder.attempt_count == 0 else RETRY_WAITING
+        reminder.next_attempt_at = now
+        reminder.processing_token_hash = None
+        reminder.processing_lease_expires_at = None
+        await self.session.flush()
+        return True
 
     async def renew_processing_lease(
         self,
@@ -335,6 +414,7 @@ class SubscriptionEmailReminderDaoImpl(SubscriptionEmailReminderDao):
             )
             .values(
                 state=SENT,
+                attempt_count=SubscriptionEmailReminder.attempt_count + 1,
                 sent_at=sent_at,
                 last_error_code=None,
                 processing_token_hash=None,
@@ -351,7 +431,7 @@ class SubscriptionEmailReminderDaoImpl(SubscriptionEmailReminderDao):
         token_hash: str,
         now: datetime,
         error_code: str,
-        max_attempts: int,
+        retryable: bool,
         retry_after: timedelta,
     ) -> bool:
         stmt = (
@@ -367,8 +447,8 @@ class SubscriptionEmailReminderDaoImpl(SubscriptionEmailReminderDao):
         if reminder is None:
             return False
 
-        exhausted = reminder.attempt_count >= max_attempts
-        reminder.state = FAILED if exhausted else RETRY_WAITING
+        reminder.attempt_count += 1
+        reminder.state = RETRY_WAITING if retryable else FAILED
         reminder.next_attempt_at = now + retry_after
         reminder.last_error_code = error_code[:64]
         reminder.processing_token_hash = None
@@ -400,9 +480,7 @@ class SubscriptionEmailReminderDaoImpl(SubscriptionEmailReminderDao):
         )
         stmt = (
             delete(SubscriptionEmailReminder)
-            .where(
-                SubscriptionEmailReminder.id.in_(select(candidates.c.id))
-            )
+            .where(SubscriptionEmailReminder.id.in_(select(candidates.c.id)))
             .returning(SubscriptionEmailReminder.id)
         )
         deleted_ids = await self.session.scalars(stmt)

@@ -55,6 +55,11 @@ class SyncBotRunningKey(StorageKey, prefix="sync_bot_running"): ...
 
 
 @dataclass(frozen=True)
+class TaskiqPipelineHeartbeatKey(StorageKey, prefix="taskiq_pipeline_heartbeat"):
+    deployment_id: str
+
+
+@dataclass(frozen=True)
 class RefreshTokenKey(StorageKey, prefix="refresh"):
     token: str
 

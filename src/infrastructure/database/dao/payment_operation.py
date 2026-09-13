@@ -50,9 +50,7 @@ class PaymentOperationDaoImpl(PaymentOperationDao):
             reconcile_last_error=operation.reconcile_last_error,
             reconcile_alerted_at=operation.reconcile_alerted_at,
             reconcile_alert_token_hash=operation.reconcile_alert_token_hash,
-            reconcile_alert_lease_expires_at=(
-                operation.reconcile_alert_lease_expires_at
-            ),
+            reconcile_alert_lease_expires_at=(operation.reconcile_alert_lease_expires_at),
             reconcile_alert_attempt_count=operation.reconcile_alert_attempt_count,
             reconcile_alert_next_attempt_at=operation.reconcile_alert_next_attempt_at,
             created_at=operation.created_at,
@@ -242,8 +240,7 @@ class PaymentOperationDaoImpl(PaymentOperationDao):
         linked_fulfilled = exists(
             select(Transaction.id).where(
                 Transaction.id == PaymentOperation.transaction_id,
-                Transaction.fulfillment_status
-                == TransactionFulfillmentStatus.SUCCEEDED,
+                Transaction.fulfillment_status == TransactionFulfillmentStatus.SUCCEEDED,
                 Transaction.fulfillment_completed_at.is_not(None),
             )
         )
@@ -303,8 +300,7 @@ class PaymentOperationDaoImpl(PaymentOperationDao):
 
     async def delete_expired_claimed(self, operation_id: int) -> bool:
         result = await self.session.execute(
-            delete(PaymentOperation)
-            .where(
+            delete(PaymentOperation).where(
                 PaymentOperation.id == operation_id,
                 PaymentOperation.status == PaymentOperationStatus.CLAIMED.value,
                 PaymentOperation.lease_expires_at <= func.clock_timestamp(),
@@ -628,8 +624,7 @@ class PaymentOperationDaoImpl(PaymentOperationDao):
         candidates = (
             select(PaymentOperation.id)
             .where(
-                PaymentOperation.status
-                == PaymentOperationStatus.MANUAL_REQUIRED.value,
+                PaymentOperation.status == PaymentOperationStatus.MANUAL_REQUIRED.value,
                 PaymentOperation.reconcile_alerted_at.is_(None),
                 or_(
                     PaymentOperation.reconcile_alert_next_attempt_at.is_(None),
@@ -676,8 +671,7 @@ class PaymentOperationDaoImpl(PaymentOperationDao):
             update(PaymentOperation)
             .where(
                 PaymentOperation.id == operation_id,
-                PaymentOperation.status
-                == PaymentOperationStatus.MANUAL_REQUIRED.value,
+                PaymentOperation.status == PaymentOperationStatus.MANUAL_REQUIRED.value,
                 PaymentOperation.reconcile_alerted_at.is_(None),
                 PaymentOperation.reconcile_alert_token_hash == token_hash,
             )

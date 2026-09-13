@@ -38,9 +38,7 @@ def _compile(statement: object) -> tuple[str, dict[str, object]]:
 
 async def test_generator_sql_is_bounded_paid_current_finite_and_skips_old_thresholds() -> None:
     session = SimpleNamespace(
-        execute=AsyncMock(
-            return_value=RowsResult([(9, 17, NOW + timedelta(days=6))])
-        ),
+        execute=AsyncMock(return_value=RowsResult([(9, 17, NOW + timedelta(days=6))])),
         scalars=AsyncMock(return_value=RowsResult([101, 102])),
     )
     dao = SubscriptionEmailReminderDaoImpl(session)  # type: ignore[arg-type]
@@ -66,9 +64,7 @@ async def test_generator_sql_is_bounded_paid_current_finite_and_skips_old_thresh
     insert_sql, insert_params = _compile(session.scalars.await_args.args[0])
     assert "ON CONFLICT ON CONSTRAINT UQ_SUBSCRIPTION_EMAIL_REMINDER_IDENTITY" in insert_sql
     inserted_thresholds = {
-        value
-        for key, value in insert_params.items()
-        if "days_before" in key.lower()
+        value for key, value in insert_params.items() if "days_before" in key.lower()
     }
     assert inserted_thresholds == {3, 1}
 
@@ -100,33 +96,36 @@ async def test_claim_due_sets_bounded_processing_lease_and_uses_skip_locked() ->
 
     claimed = await dao.claim_due(
         now=NOW,
-        delivery_not_before=NOW - timedelta(hours=1),
         token_hash="a" * 64,
         lease_for=timedelta(minutes=10),
-        max_attempts=5,
         limit=1,
     )
 
     sql, params = _compile(session.scalars.await_args.args[0])
-    assert "FOR UPDATE SKIP LOCKED" in sql
+    assert "FOR UPDATE OF SUBSCRIPTION_EMAIL_REMINDERS SKIP LOCKED" in sql
+    assert "JOIN USERS" in sql
+    assert "JOIN SUBSCRIPTIONS" in sql
+    assert "USERS.SUBSCRIPTION_EXPIRATION_EMAIL_ENABLED IS TRUE" in sql
+    assert "NOT (EXISTS" in sql
     assert 1 in params.values()
-    assert "SUBSCRIPTION_EMAIL_REMINDERS.ATTEMPT_COUNT <" in sql
-    assert "SUBSCRIPTION_EMAIL_REMINDERS.DUE_AT >=" in sql
+    assert "SUBSCRIPTION_EMAIL_REMINDERS.ATTEMPT_COUNT <" not in sql
+    assert "SUBSCRIPTION_EMAIL_REMINDERS.EXPIRE_AT_SNAPSHOT >" in sql
     assert reminder.state == PROCESSING
     assert reminder.processing_token_hash == "a" * 64
     assert reminder.processing_lease_expires_at == NOW + timedelta(minutes=10)
-    assert reminder.attempt_count == 5
+    assert reminder.attempt_count == 4
     assert reminder.updated_at == NOW
     assert claimed[0].updated_at == NOW
-    assert claimed[0].attempt_count == 5
+    assert claimed[0].attempt_count == 4
     session.flush.assert_awaited_once()
 
 
-async def test_sweep_terminalizes_stale_and_crashed_exhausted_rows_boundedly() -> None:
+async def test_sweep_cancels_only_expired_reminders_boundedly() -> None:
     stale = SimpleNamespace(
         id=40,
         state="RETRY_WAITING",
         due_at=NOW - timedelta(hours=1, seconds=1),
+        expire_at_snapshot=NOW,
         attempt_count=2,
         processing_token_hash=None,
         processing_lease_expires_at=None,
@@ -137,6 +136,7 @@ async def test_sweep_terminalizes_stale_and_crashed_exhausted_rows_boundedly() -
         id=41,
         state=PROCESSING,
         due_at=NOW - timedelta(minutes=10),
+        expire_at_snapshot=NOW - timedelta(seconds=1),
         attempt_count=5,
         processing_token_hash="a" * 64,
         processing_lease_expires_at=NOW - timedelta(seconds=1),
@@ -144,32 +144,28 @@ async def test_sweep_terminalizes_stale_and_crashed_exhausted_rows_boundedly() -
         last_error_code=None,
     )
     session = SimpleNamespace(
-        scalars=AsyncMock(
-            return_value=RowsResult([stale, exhausted_after_crash])
-        ),
+        scalars=AsyncMock(return_value=RowsResult([stale, exhausted_after_crash])),
         flush=AsyncMock(),
     )
     dao = SubscriptionEmailReminderDaoImpl(session)  # type: ignore[arg-type]
 
     terminalized = await dao.sweep_undeliverable(
         now=NOW,
-        delivery_not_before=NOW - timedelta(hours=1),
-        max_attempts=5,
         limit=500,
     )
 
     assert terminalized == 2
     assert stale.state == CANCELED
     assert stale.canceled_at == NOW
-    assert stale.last_error_code == "DELIVERY_WINDOW_EXPIRED"
-    assert exhausted_after_crash.state == FAILED
-    assert exhausted_after_crash.last_error_code == "ATTEMPTS_EXHAUSTED"
+    assert stale.last_error_code == "SUBSCRIPTION_EXPIRED_BEFORE_DELIVERY"
+    assert exhausted_after_crash.state == CANCELED
+    assert exhausted_after_crash.last_error_code == "SUBSCRIPTION_EXPIRED_BEFORE_DELIVERY"
     assert exhausted_after_crash.processing_token_hash is None
     assert exhausted_after_crash.processing_lease_expires_at is None
     sql, params = _compile(session.scalars.await_args.args[0])
     assert "FOR UPDATE SKIP LOCKED" in sql
-    assert "SUBSCRIPTION_EMAIL_REMINDERS.ATTEMPT_COUNT >=" in sql
-    assert "SUBSCRIPTION_EMAIL_REMINDERS.DUE_AT <" in sql
+    assert "SUBSCRIPTION_EMAIL_REMINDERS.ATTEMPT_COUNT >=" not in sql
+    assert "SUBSCRIPTION_EMAIL_REMINDERS.EXPIRE_AT_SNAPSHOT <=" in sql
     assert 500 in params.values()
     session.flush.assert_awaited_once()
 
@@ -239,6 +235,7 @@ async def test_prepare_delivery_cancels_outbox_due_before_latest_opt_in() -> Non
     record = _delivery_record(enabled_at=NOW + timedelta(minutes=1))
     session = SimpleNamespace(
         execute=AsyncMock(return_value=OneResult(record)),
+        scalar=AsyncMock(return_value=None),
         flush=AsyncMock(),
     )
     dao = SubscriptionEmailReminderDaoImpl(session)  # type: ignore[arg-type]
@@ -256,6 +253,7 @@ async def test_prepare_delivery_accepts_consent_that_predates_threshold() -> Non
     record = _delivery_record(enabled_at=NOW - timedelta(days=1))
     session = SimpleNamespace(
         execute=AsyncMock(return_value=OneResult(record)),
+        scalar=AsyncMock(return_value=None),
         flush=AsyncMock(),
     )
     dao = SubscriptionEmailReminderDaoImpl(session)  # type: ignore[arg-type]
@@ -266,6 +264,123 @@ async def test_prepare_delivery_accepts_consent_that_predates_threshold() -> Non
     assert delivery.reminder_id == 42
     assert delivery.recipient_email == "user@example.org"
     session.flush.assert_not_awaited()
+
+
+async def test_prepare_delivery_cancels_overdue_threshold_superseded_by_newer_one() -> None:
+    record = _delivery_record(
+        enabled_at=NOW - timedelta(days=30),
+        due_at=NOW - timedelta(days=4),
+    )
+    session = SimpleNamespace(
+        execute=AsyncMock(return_value=OneResult(record)),
+        scalar=AsyncMock(return_value=43),
+        flush=AsyncMock(),
+    )
+    dao = SubscriptionEmailReminderDaoImpl(session)  # type: ignore[arg-type]
+
+    delivery = await dao.prepare_delivery(42, token_hash="b" * 64, now=NOW)
+
+    assert delivery is None
+    assert record[0].state == CANCELED
+    assert record[0].last_error_code == "SUPERSEDED_BY_NEWER_REMINDER"
+    superseded_sql, _ = _compile(session.scalar.await_args.args[0])
+    assert "SUBSCRIPTION_EMAIL_REMINDERS_1.DUE_AT >" in superseded_sql
+    assert "SUBSCRIPTION_EMAIL_REMINDERS_1.DUE_AT <=" in superseded_sql
+
+
+async def test_release_failed_retries_transient_and_terminalizes_permanent() -> None:
+    reminder = SimpleNamespace(
+        id=42,
+        state=PROCESSING,
+        attempt_count=9,
+        next_attempt_at=NOW,
+        processing_token_hash="b" * 64,
+        processing_lease_expires_at=NOW + timedelta(minutes=10),
+        last_error_code=None,
+    )
+    session = SimpleNamespace(
+        scalar=AsyncMock(return_value=reminder),
+        flush=AsyncMock(),
+    )
+    dao = SubscriptionEmailReminderDaoImpl(session)  # type: ignore[arg-type]
+
+    released = await dao.release_failed(
+        42,
+        token_hash="b" * 64,
+        now=NOW,
+        error_code="SMTP_RATE_LIMITED",
+        retryable=True,
+        retry_after=timedelta(hours=1),
+    )
+
+    assert released is True
+    assert reminder.state == "RETRY_WAITING"
+    assert reminder.next_attempt_at == NOW + timedelta(hours=1)
+    assert reminder.attempt_count == 10
+
+    reminder.state = PROCESSING
+    reminder.processing_token_hash = "b" * 64
+    released = await dao.release_failed(
+        42,
+        token_hash="b" * 64,
+        now=NOW,
+        error_code="SMTP_RECIPIENT_REJECTED",
+        retryable=False,
+        retry_after=timedelta(hours=1),
+    )
+
+    assert released is True
+    assert reminder.state == FAILED
+    assert reminder.last_error_code == "SMTP_RECIPIENT_REJECTED"
+    assert reminder.attempt_count == 11
+
+
+async def test_release_unattempted_restores_fenced_row_without_fake_attempt() -> None:
+    reminder = SimpleNamespace(
+        id=42,
+        state=PROCESSING,
+        attempt_count=0,
+        next_attempt_at=NOW - timedelta(minutes=1),
+        processing_token_hash="b" * 64,
+        processing_lease_expires_at=NOW + timedelta(minutes=10),
+    )
+    session = SimpleNamespace(
+        scalar=AsyncMock(return_value=reminder),
+        flush=AsyncMock(),
+    )
+    dao = SubscriptionEmailReminderDaoImpl(session)  # type: ignore[arg-type]
+
+    released = await dao.release_unattempted(
+        42,
+        token_hash="b" * 64,
+        now=NOW,
+    )
+
+    assert released is True
+    assert reminder.state == "PENDING"
+    assert reminder.attempt_count == 0
+    assert reminder.next_attempt_at == NOW
+    assert reminder.processing_token_hash is None
+    assert reminder.processing_lease_expires_at is None
+
+
+async def test_mark_sent_counts_real_smtp_attempt_under_fence() -> None:
+    session = SimpleNamespace(scalar=AsyncMock(return_value=42))
+    dao = SubscriptionEmailReminderDaoImpl(session)  # type: ignore[arg-type]
+
+    assert (
+        await dao.mark_sent(
+            42,
+            token_hash="b" * 64,
+            sent_at=NOW,
+        )
+        is True
+    )
+
+    sql, params = _compile(session.scalar.await_args.args[0])
+    assert "ATTEMPT_COUNT=(SUBSCRIPTION_EMAIL_REMINDERS.ATTEMPT_COUNT +" in sql
+    assert "PROCESSING_TOKEN_HASH" in sql
+    assert "b" * 64 in params.values()
 
 
 async def test_retention_cleanup_is_bounded_to_old_terminal_states() -> None:

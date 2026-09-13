@@ -194,8 +194,7 @@ def operator_directed_source_predicate(
                 resolution.source_status == TransactionStatus.FAILED.value,
                 resolution.reward_id == PROVIDER_SUCCEEDED_REFERRAL_REWARD_ID,
                 transaction.id == PROVIDER_SUCCEEDED_REFERRAL_SOURCE_TRANSACTION_ID,
-                resolution.evidence_sha256
-                == PROVIDER_SUCCEEDED_REFERRAL_EVIDENCE_SHA256,
+                resolution.evidence_sha256 == PROVIDER_SUCCEEDED_REFERRAL_EVIDENCE_SHA256,
                 *provider_succeeded_local_failed_source_predicate(transaction),
             ),
         ),

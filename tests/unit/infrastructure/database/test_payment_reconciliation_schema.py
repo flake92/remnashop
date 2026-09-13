@@ -91,8 +91,7 @@ def test_0049_installs_owner_fence_and_exact_only_backfill(
     legacy_backfill = next(
         str(call[1][0]).upper()
         for call in calls
-        if call[0] == "execute"
-        and "UPDATE PAYMENT_OPERATIONS AS PO" in str(call[1][0]).upper()
+        if call[0] == "execute" and "UPDATE PAYMENT_OPERATIONS AS PO" in str(call[1][0]).upper()
     )
     assert "FINAL_AMOUNT" not in legacy_backfill
     assert "PLAN_SNAPSHOT" not in legacy_backfill

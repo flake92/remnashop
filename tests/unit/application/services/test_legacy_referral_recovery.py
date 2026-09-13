@@ -116,8 +116,7 @@ def _operator_manifest(recovery: LegacyReferralRewardRecoveryDto) -> dict[str, o
         ],
         "audit_evidence_sha256": (
             recovery.evidence_sha256
-            if recovery.source_validation
-            == LegacyReferralRewardSourceValidation.LOCAL_COMPLETED
+            if recovery.source_validation == LegacyReferralRewardSourceValidation.LOCAL_COMPLETED
             else "f" * 64
         ),
         "allocation_rule": "ADMIN_DAYS_FIFO_AFTER_REWARD",
@@ -431,10 +430,10 @@ def test_tracked_v2_operator_manifest_and_audit_are_exact_and_reproducible() -> 
     assert manifest["entries"][0]["evidence_sha256"] == (
         PROVIDER_SUCCEEDED_REFERRAL_EVIDENCE_SHA256
     )
-    assert sum(
-        entry["source_validation"] == "PROVIDER_SUCCEEDED"
-        for entry in manifest["entries"]
-    ) == 1
+    assert (
+        sum(entry["source_validation"] == "PROVIDER_SUCCEEDED" for entry in manifest["entries"])
+        == 1
+    )
     assert all(
         entry["evidence_sha256"] == manifest["audit_evidence_sha256"]
         for entry in manifest["entries"]
@@ -457,12 +456,11 @@ def test_tracked_v2_operator_manifest_and_audit_are_exact_and_reproducible() -> 
     assert audit["user_merge_lineage_audit"]["direct_reward_audit_mapping_sha256"] == (
         "5e77ef5c3cd03a23b236886d30743bd59f360cfd8457857108676bad1ab74060"
     )
-    assert audit["admin_duration_audit"][
-        "retained_positive_events_to_merged_recipient_aliases"
-    ] == 0
+    assert (
+        audit["admin_duration_audit"]["retained_positive_events_to_merged_recipient_aliases"] == 0
+    )
     source_levels = {
-        (entry["source_transaction_id"], entry["level"])
-        for entry in manifest["entries"]
+        (entry["source_transaction_id"], entry["level"]) for entry in manifest["entries"]
     }
     assert len(source_levels) == len(manifest["entries"])
 
@@ -495,9 +493,7 @@ def test_tracked_v2_operator_manifest_and_audit_are_exact_and_reproducible() -> 
             expected_participant_merge_audit_ids=tuple(
                 entry.get("expected_participant_merge_audit_ids", [])
             ),
-            source_validation=LegacyReferralRewardSourceValidation(
-                entry["source_validation"]
-            ),
+            source_validation=LegacyReferralRewardSourceValidation(entry["source_validation"]),
         )
         assert authorizer.authorize(recovery) == (
             "85bd8c980abc52f6457c015f17ae635f86e3f5c42e8dc1105f6dfc82292fb23c"

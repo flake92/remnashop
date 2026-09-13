@@ -3,7 +3,9 @@ from dishka import AnyOf, Provider, Scope, alias, provide
 from src.application.common import (
     BotService,
     BroadcastDispatcher,
+    BroadcastExecutionLock,
     Cryptographer,
+    EmailDeliveryRunLock,
     EmailSender,
     EventPublisher,
     EventSubscriber,
@@ -41,7 +43,9 @@ from src.infrastructure.services import (
     NotificationWorker,
     PasswordHasherImpl,
     PaymentNotificationDispatcherImpl,
+    PostgresBroadcastExecutionLock,
     RedirectImpl,
+    RedisEmailDeliveryRunLock,
     RedisSubscriptionMutationLock,
     RemnawaveImpl,
     SmtpEmailSender,
@@ -54,10 +58,18 @@ class ServicesProvider(Provider):
     scope = Scope.APP
 
     bot = provide(source=BotServiceImpl, provides=BotService)
+    broadcast_execution_lock = provide(
+        source=PostgresBroadcastExecutionLock,
+        provides=BroadcastExecutionLock,
+    )
     health = provide(source=HealthService)
     cryptographer = provide(source=CryptographerImpl, provides=Cryptographer)
     password_hasher = provide(source=PasswordHasherImpl, provides=PasswordHasher)
     email_sender = provide(source=SmtpEmailSender, provides=EmailSender)
+    email_delivery_run_lock = provide(
+        source=RedisEmailDeliveryRunLock,
+        provides=EmailDeliveryRunLock,
+    )
     http_client = provide(source=AiohttpClient, provides=HttpClient)
     redirect = provide(source=RedirectImpl, provides=Redirect)
     pricing = provide(source=PricingService)

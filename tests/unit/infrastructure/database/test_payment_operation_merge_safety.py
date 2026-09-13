@@ -139,9 +139,7 @@ def test_migration_installs_restrict_fk_and_serializing_trigger(
         if "CREATE TRIGGER TRG_USERS_MERGE_WITHOUT_PAYMENT_OPERATIONS" in statement
     )
     preexisting_data_check_index = next(
-        index
-        for index, statement in enumerate(statements)
-        if "MIGRATION 0048 BLOCKED" in statement
+        index for index, statement in enumerate(statements) if "MIGRATION 0048 BLOCKED" in statement
     )
     assert user_trigger_index < preexisting_data_check_index
 

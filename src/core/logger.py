@@ -5,6 +5,7 @@ import logging
 import re
 import sys
 import time
+import traceback
 from collections import deque
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Union
@@ -25,19 +26,38 @@ LOG_BACKUP_LIMIT: Final[int] = 100
 LOG_FORMAT: Final[str] = (
     "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | "
     "<level>{level: <8}</level> | "
-    "<cyan>{name}</cyan>:<cyan>{line}</cyan> | <level>{message}</level>"
+    "<cyan>{name}</cyan>:<cyan>{line}</cyan> | "
+    "<level>{message}</level>{extra[sanitized_exception]}"
 )
 LOG_REDACTED: Final[str] = "[REDACTED]"
-_EMAIL_PATTERN: Final[re.Pattern[str]] = re.compile(
-    r"(?<![\w.+-])[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}(?![\w.-])"
+_URL_USERINFO_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"(?i)(\b[a-z][a-z0-9+.-]*://)[^/\s?#@]+@"
 )
-_BEARER_PATTERN: Final[re.Pattern[str]] = re.compile(
-    r"(?i)\b(bearer\s+)[A-Za-z0-9._~+/=-]+"
+_TELEGRAM_BOT_TOKEN_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"(?<!\d)\d{5,}:[A-Za-z0-9_-]{20,}(?![\w-])"
+)
+_EMAIL_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"(?<![\w.+-])[\w.+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+(?![\w.-])"
+)
+_BEARER_PATTERN: Final[re.Pattern[str]] = re.compile(r"(?i)\b(bearer\s+)[A-Za-z0-9._~+/=-]+")
+_BASIC_AUTH_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"(?i)\b(basic\s+)[A-Za-z0-9+/]+={0,2}(?![A-Za-z0-9+/=])"
 )
 _SECRET_VALUE_PATTERN: Final[re.Pattern[str]] = re.compile(
     r"(?i)([\"']?(?:password|passwd|secret|token|authorization|api[_-]?key|signature|sign)"
     r"[\"']?\s*[:=]\s*)([\"']?)[^\s,;&}\]]+"
 )
+_UUID_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b"
+)
+_REMNA_NAME_PATTERN: Final[re.Pattern[str]] = re.compile(r"(?i)\brs_(?:web_)?\d+\b")
+_TELEGRAM_HANDLE_PATTERN: Final[re.Pattern[str]] = re.compile(r"(?<![\w@])@[A-Za-z0-9_]{5,32}\b")
+_LABELED_EXTERNAL_ID_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"(?i)(\b(?:telegram(?:[_ ]?id)?|chat(?:[_ ]?id)?|remna(?:user|_uuid)?|"
+    r"hwid(?:_uuid)?|user(?:_id)?)"
+    r"\b\s*(?:[:=]|\bis\b)?\s*['\"]?)(?:rs_(?:web_)?\d+|\d{5,})(['\"]?)"
+)
+_LOG_CONTROL_PATTERN: Final[re.Pattern[str]] = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _SIZE_PATTERN: Final[re.Pattern[str]] = re.compile(
     r"^\s*(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>[KMGT]?B)?\s*$",
     re.IGNORECASE,
@@ -65,13 +85,65 @@ _DURATION_MULTIPLIERS: Final[dict[str, int]] = {
 
 def sanitize_log_text(value: str) -> str:
     """Remove common credentials and personal email addresses from log messages."""
-    sanitized = _EMAIL_PATTERN.sub("[EMAIL]", value)
+    # Redact URL userinfo before the e-mail pattern can consume the
+    # ``password@host`` portion and leave the username behind.
+    # Match handles before inserting ``[REDACTED]@host`` for URL userinfo;
+    # otherwise the generated marker could make a host look like a handle.
+    sanitized = _TELEGRAM_HANDLE_PATTERN.sub("[USERNAME]", value)
+    sanitized = _URL_USERINFO_PATTERN.sub(rf"\1{LOG_REDACTED}@", sanitized)
+    sanitized = _TELEGRAM_BOT_TOKEN_PATTERN.sub(LOG_REDACTED, sanitized)
+    sanitized = _EMAIL_PATTERN.sub("[EMAIL]", sanitized)
     sanitized = _BEARER_PATTERN.sub(rf"\1{LOG_REDACTED}", sanitized)
-    return _SECRET_VALUE_PATTERN.sub(rf"\1{LOG_REDACTED}", sanitized)
+    sanitized = _BASIC_AUTH_PATTERN.sub(rf"\1{LOG_REDACTED}", sanitized)
+    sanitized = _SECRET_VALUE_PATTERN.sub(rf"\1{LOG_REDACTED}", sanitized)
+    sanitized = _UUID_PATTERN.sub("[UUID]", sanitized)
+    sanitized = _REMNA_NAME_PATTERN.sub("[USER]", sanitized)
+    return _LABELED_EXTERNAL_ID_PATTERN.sub(r"\1[ID]\2", sanitized)
+
+
+def sanitize_log_message(value: str) -> str:
+    """Keep a record on one terminal-safe line after redacting its contents."""
+    sanitized = sanitize_log_text(value).replace("\r", r"\r").replace("\n", r"\n")
+    return _LOG_CONTROL_PATTERN.sub(
+        lambda match: rf"\x{ord(match.group(0)):02x}",
+        sanitized,
+    )
+
+
+def sanitize_log_exception(exception: object) -> str:
+    """Render an exception without bypassing the normal log redaction rules."""
+    exception_type = getattr(exception, "type", None)
+    exception_value = getattr(exception, "value", None)
+    exception_traceback = getattr(exception, "traceback", None)
+    if isinstance(exception_type, type) and isinstance(exception_value, BaseException):
+        rendered = "".join(
+            traceback.format_exception(
+                exception_type,
+                exception_value,
+                exception_traceback,
+            )
+        )
+    else:
+        rendered = str(exception)
+    # A traceback is attached after one formatter-controlled newline. Escape
+    # every newline and terminal control byte originating from the exception
+    # itself so user/provider text cannot forge a second log record.
+    return sanitize_log_message(rendered).rstrip()
 
 
 def _sanitize_record(record: Record) -> bool:
-    record["message"] = sanitize_log_text(str(record["message"]))
+    record["message"] = sanitize_log_message(str(record["message"]))
+    exception = record["exception"]
+    if exception is not None:
+        record["extra"]["sanitized_exception"] = f"\n{sanitize_log_exception(exception)}"
+    else:
+        # Multiple sinks may apply this filter to the same record. Preserve a
+        # traceback already sanitized by an earlier sink.
+        record["extra"].setdefault("sanitized_exception", "")
+    # Loguru appends record["exception"] after the configured format. Clear the
+    # raw object so its message cannot bypass the sanitizer, and render the
+    # sanitized traceback through the explicit format field above instead.
+    record["exception"] = None
     return True
 
 

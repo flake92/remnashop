@@ -538,11 +538,14 @@ async def test_worker_rechecks_processing_reward_after_recipient_lock() -> None:
     dao = ReferralDaoImpl.__new__(ReferralDaoImpl)
     dao.session = session  # type: ignore[assignment]
 
-    assert await dao.claim_pending_rewards(
-        token_hash="a" * 64,
-        lease_for=timedelta(minutes=5),
-        limit=100,
-    ) == []
+    assert (
+        await dao.claim_pending_rewards(
+            token_hash="a" * 64,
+            lease_for=timedelta(minutes=5),
+            limit=100,
+        )
+        == []
+    )
 
     assert len(session.scalar_queries) == 1
     compiled = session.scalar_queries[0].compile(
@@ -564,11 +567,14 @@ async def test_claim_transition_revalidates_mutable_candidate_conditions() -> No
     dao.session = session  # type: ignore[assignment]
     dao._convert_to_reward_list = lambda rows: rows  # type: ignore[method-assign]
 
-    assert await dao.claim_pending_rewards(
-        token_hash="a" * 64,
-        lease_for=timedelta(minutes=5),
-        limit=100,
-    ) == []
+    assert (
+        await dao.claim_pending_rewards(
+            token_hash="a" * 64,
+            lease_for=timedelta(minutes=5),
+            limit=100,
+        )
+        == []
+    )
 
     assert len(session.scalar_statements) == 2
     claim_update = session.scalar_statements[1].compile(
@@ -1315,9 +1321,7 @@ async def test_operator_recovery_keeps_reward_source_less_and_audits_validation_
     assert resolution.decision == "RETRY_OPERATOR_DIRECTED"
     assert resolution.selected_source_transaction_id == 77
     assert resolution.selected_provenance["request"]["source_validation"] == "LOCAL_COMPLETED"
-    assert resolution.selected_provenance["request"][
-        "expected_participant_merge_audit_ids"
-    ] == []
+    assert resolution.selected_provenance["request"]["expected_participant_merge_audit_ids"] == []
     assert resolution.selected_provenance["selected"]["source_validation"] == "LOCAL_COMPLETED"
     assert resolution.selected_provenance["selected"]["participant_merge_audit_ids"] == []
     values = ReferralDaoImpl._legacy_recovery_transition_values(
@@ -1462,9 +1466,7 @@ async def test_legacy_recovery_rejects_any_real_participant_merge() -> None:
 
 
 def test_operator_recovery_pins_exact_real_participant_merge_ids() -> None:
-    statement = ReferralDaoImpl._operator_recovery_participant_merge_audit_ids_query(
-        {2, 7}
-    )
+    statement = ReferralDaoImpl._operator_recovery_participant_merge_audit_ids_query({2, 7})
     compiled = statement.compile(dialect=postgresql.dialect())  # type: ignore[attr-defined]
     sql = str(compiled).upper()
 
@@ -1497,12 +1499,11 @@ async def test_operator_recovery_accepts_exact_pinned_merge_ids_and_audits_them(
     assert await dao.recover_legacy_extra_days_reward(recovery)
 
     resolution = session.added[0]
-    assert resolution.selected_provenance["request"][
-        "expected_participant_merge_audit_ids"
-    ] == [3, 17]
-    assert resolution.selected_provenance["selected"][
-        "participant_merge_audit_ids"
-    ] == [3, 17]
+    assert resolution.selected_provenance["request"]["expected_participant_merge_audit_ids"] == [
+        3,
+        17,
+    ]
+    assert resolution.selected_provenance["selected"]["participant_merge_audit_ids"] == [3, 17]
 
 
 @pytest.mark.asyncio
@@ -1547,10 +1548,7 @@ def test_operator_recovery_merge_guard_allows_only_canonical_inbound_targets() -
     # point exactly to it and retain the canonical source-tombstone shape.
     assert "USERS.MERGED_INTO_USER_ID IS NOT NULL" in sql
     assert "USERS.MERGED_AT IS NOT NULL" in sql
-    assert (
-        "LEGACY_RECOVERY_MERGE_SOURCE.MERGED_INTO_USER_ID "
-        "IS DISTINCT FROM USERS.ID"
-    ) in sql
+    assert ("LEGACY_RECOVERY_MERGE_SOURCE.MERGED_INTO_USER_ID IS DISTINCT FROM USERS.ID") in sql
     assert "LEGACY_RECOVERY_MERGE_SOURCE.MERGED_AT IS NULL" in sql
     assert "LEGACY_RECOVERY_MERGE_SOURCE.IS_BLOCKED IS NOT TRUE" in sql
     assert "LEGACY_RECOVERY_MERGE_SOURCE.TELEGRAM_ID IS NOT NULL" in sql
@@ -1703,11 +1701,14 @@ def test_operator_recovery_merge_guard_semantics(
     audits: list[dict[str, object]],
     expected: set[int],
 ) -> None:
-    assert _operator_merge_conflicts(
-        users=users,
-        audits=audits,
-        participant_ids={10},
-    ) == expected
+    assert (
+        _operator_merge_conflicts(
+            users=users,
+            audits=audits,
+            participant_ids={10},
+        )
+        == expected
+    )
 
 
 @pytest.mark.asyncio

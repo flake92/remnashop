@@ -1042,9 +1042,7 @@ class RecoverLegacyReferralReward(Interactor[LegacyReferralRewardRecoveryDto, No
         if (
             not isinstance(merge_audit_ids, tuple)
             or any(
-                isinstance(audit_id, bool)
-                or not isinstance(audit_id, int)
-                or audit_id <= 0
+                isinstance(audit_id, bool) or not isinstance(audit_id, int) or audit_id <= 0
                 for audit_id in merge_audit_ids
             )
             or merge_audit_ids != tuple(sorted(set(merge_audit_ids)))
@@ -1079,11 +1077,14 @@ class RecoverLegacyReferralReward(Interactor[LegacyReferralRewardRecoveryDto, No
                     "CONFIRM_ADMIN_COMPENSATED must not invent a historical policy snapshot"
                 )
         elif data.action == LegacyReferralRewardRecoveryAction.RETRY_OPERATOR_DIRECTED:
-            if any(value is not None for value in snapshot) or any(
-                value is None for value in expected_row
-            ) or data.source_validation not in (
-                LegacyReferralRewardSourceValidation.LOCAL_COMPLETED,
-                LegacyReferralRewardSourceValidation.PROVIDER_SUCCEEDED,
+            if (
+                any(value is not None for value in snapshot)
+                or any(value is None for value in expected_row)
+                or data.source_validation
+                not in (
+                    LegacyReferralRewardSourceValidation.LOCAL_COMPLETED,
+                    LegacyReferralRewardSourceValidation.PROVIDER_SUCCEEDED,
+                )
             ):
                 raise ValueError(
                     "RETRY_OPERATOR_DIRECTED requires exact row hints and no policy snapshot"
@@ -1091,9 +1092,7 @@ class RecoverLegacyReferralReward(Interactor[LegacyReferralRewardRecoveryDto, No
             if data.expected_created_at is None or data.expected_created_at.tzinfo is None:
                 raise ValueError("Operator-directed expected_created_at must include a timezone")
         else:
-            raise ValueError(
-                f"Unsupported legacy recovery action '{data.action}'"
-            )
+            raise ValueError(f"Unsupported legacy recovery action '{data.action}'")
         if (
             not data.operator_reference
             or data.operator_reference != data.operator_reference.strip()

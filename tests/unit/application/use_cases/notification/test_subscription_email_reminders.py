@@ -1,5 +1,7 @@
 import asyncio
 import re
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -7,6 +9,7 @@ from unittest.mock import AsyncMock
 import pytest
 from pydantic import SecretStr, ValidationError
 
+from src.application.common import EmailDeliveryRunBusyError
 from src.application.dto import (
     SubscriptionEmailDeliveryDto,
     SubscriptionEmailReminderDto,
@@ -14,21 +17,20 @@ from src.application.dto import (
 )
 from src.application.use_cases.notification import commands as notification_commands
 from src.application.use_cases.notification.commands import (
-    DELIVERY_GRACE,
     DELIVERY_LEASE,
-    DELIVERY_MAX_ATTEMPTS,
+    GENERATION_BATCHES_PER_RUN,
     GENERATION_MAX_ROWS_PER_RUN,
     TERMINAL_CLEANUP_BATCH_SIZE,
     DeliverSubscriptionExpirationEmailReminders,
     GenerateSubscriptionExpirationEmailReminders,
     GetNotificationPreferences,
-    NotificationDeliveryUnavailableError,
     NotificationEmailNotEligibleError,
     UpdateNotificationPreferences,
     UpdateNotificationPreferencesDto,
     _message_id,
 )
 from src.core.config.email import EmailConfig
+from src.core.exceptions import EmailDeliveryError, EmailDeliveryRateDeferredError
 
 NOW = datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc)
 
@@ -63,6 +65,9 @@ def _config(*, reminders_enabled: bool = True) -> SimpleNamespace:
         email=SimpleNamespace(
             subscription_expiration_reminders_enabled=reminders_enabled,
             subscription_expiration_cabinet_url="https://cabinet.example.org/cabinet",
+            subscription_expiration_delivery_rate_per_minute=600,
+            subscription_expiration_delivery_max_per_run=20,
+            subscription_expiration_delivery_max_runtime_seconds=45,
             from_email="notice@example.org",
         ),
     )
@@ -72,16 +77,28 @@ def _sender(*, enabled: bool = True) -> SimpleNamespace:
     return SimpleNamespace(is_enabled=enabled, send=AsyncMock())
 
 
-def _user(*, verified: bool = True, opted_in: bool = False) -> UserDto:
+def _delivery_lock() -> SimpleNamespace:
+    @asynccontextmanager
+    async def hold() -> AsyncIterator[None]:
+        yield
+
+    return SimpleNamespace(hold=hold)
+
+
+def _user(
+    *,
+    verified: bool = True,
+    opted_in: bool = False,
+    merged_into_user_id: int | None = None,
+) -> UserDto:
     return UserDto(
         id=17,
         name="User",
         email="user@example.org",
         is_email_verified=verified,
+        merged_into_user_id=merged_into_user_id,
         subscription_expiration_email_enabled=opted_in,
-        subscription_expiration_email_enabled_at=(
-            NOW - timedelta(days=30) if opted_in else None
-        ),
+        subscription_expiration_email_enabled_at=(NOW - timedelta(days=30) if opted_in else None),
     )
 
 
@@ -114,10 +131,22 @@ def test_reminder_cabinet_url_must_be_browser_safe_https() -> None:
     config = EmailConfig(
         subscription_expiration_cabinet_url="  https://cabinet.example.org/cabinet  "
     )
-    assert (
-        config.subscription_expiration_cabinet_url
-        == "https://cabinet.example.org/cabinet"
-    )
+    assert config.subscription_expiration_cabinet_url == "https://cabinet.example.org/cabinet"
+
+
+def test_delivery_rate_and_runtime_are_explicitly_bounded() -> None:
+    config = EmailConfig()
+    assert config.subscription_expiration_reminders_enabled is True
+    assert config.subscription_expiration_delivery_rate_per_minute == 10
+    assert config.subscription_expiration_delivery_max_per_run == 20
+    assert config.subscription_expiration_delivery_max_runtime_seconds == 45
+
+    with pytest.raises(ValidationError):
+        EmailConfig(subscription_expiration_delivery_rate_per_minute=0)
+    with pytest.raises(ValidationError):
+        EmailConfig(subscription_expiration_delivery_max_runtime_seconds=60)
+    with pytest.raises(ValidationError):
+        EmailConfig(timeout_seconds=31)
 
 
 @pytest.mark.parametrize(
@@ -128,12 +157,17 @@ def test_reminder_cabinet_url_must_be_browser_safe_https() -> None:
         "https://user@cabinet.example.org/cabinet",
         "https://user:password@cabinet.example.org/cabinet",
         "https://cabinet.example.org:99999/cabinet",
+        "https://cabinet.example.org/cabinet?token=secret",
+        "https://cabinet.example.org/cabinet#account",
     ],
 )
-def test_reminder_cabinet_url_requires_host_and_rejects_userinfo(
+def test_reminder_cabinet_url_rejects_unsafe_authority_and_suffixes(
     unsafe_url: str,
 ) -> None:
-    with pytest.raises(ValidationError, match="hostname.*without userinfo"):
+    with pytest.raises(
+        ValidationError,
+        match="hostname.*without userinfo, query, or fragment",
+    ):
         EmailConfig(subscription_expiration_cabinet_url=unsafe_url)
 
 
@@ -141,13 +175,12 @@ async def test_preferences_keep_stored_consent_visible_when_delivery_is_unavaila
     user = _user(opted_in=True)
     use_case = GetNotificationPreferences(
         _config(reminders_enabled=False),  # type: ignore[arg-type]
-        _sender(),  # type: ignore[arg-type]
     )
 
     result = await use_case(user)
 
     assert result.subscription_expiration_email_enabled is True
-    assert result.email_eligible is False
+    assert result.email_eligible is True
     assert result.sender_email == "notice@example.org"
     assert result.days_before == (7, 3, 1)
 
@@ -158,32 +191,26 @@ async def test_stored_opt_in_can_be_disabled_during_delivery_outage() -> None:
     uow = FakeUnitOfWork()
     use_case = UpdateNotificationPreferences(
         _config(reminders_enabled=False),  # type: ignore[arg-type]
-        _sender(),  # type: ignore[arg-type]
         user_dao,  # type: ignore[arg-type]
         uow,  # type: ignore[arg-type]
     )
 
     result = await use_case(
         user,
-        UpdateNotificationPreferencesDto(
-            subscription_expiration_email_enabled=False
-        ),
+        UpdateNotificationPreferencesDto(subscription_expiration_email_enabled=False),
     )
 
     assert result.subscription_expiration_email_enabled is False
-    assert result.email_eligible is False
+    assert result.email_eligible is True
     assert user.subscription_expiration_email_enabled_at is None
     assert uow.commits == 1
 
 
-async def test_enabling_requires_verified_email_and_ready_delivery() -> None:
-    user_dao = SimpleNamespace(
-        set_subscription_expiration_email_preference=AsyncMock()
-    )
+async def test_enabling_requires_verified_email_but_not_live_smtp() -> None:
+    user_dao = SimpleNamespace(set_subscription_expiration_email_preference=AsyncMock())
     uow = FakeUnitOfWork()
     use_case = UpdateNotificationPreferences(
         _config(),  # type: ignore[arg-type]
-        _sender(),  # type: ignore[arg-type]
         user_dao,  # type: ignore[arg-type]
         uow,  # type: ignore[arg-type]
     )
@@ -191,26 +218,31 @@ async def test_enabling_requires_verified_email_and_ready_delivery() -> None:
     with pytest.raises(NotificationEmailNotEligibleError):
         await use_case(
             _user(verified=False),
-            UpdateNotificationPreferencesDto(
-                subscription_expiration_email_enabled=True
-            ),
+            UpdateNotificationPreferencesDto(subscription_expiration_email_enabled=True),
         )
 
+    with pytest.raises(NotificationEmailNotEligibleError):
+        await use_case(
+            _user(merged_into_user_id=99),
+            UpdateNotificationPreferencesDto(subscription_expiration_email_enabled=True),
+        )
+
+    user = _user()
+    unavailable_dao = _preference_dao(user)
     unavailable = UpdateNotificationPreferences(
         _config(reminders_enabled=False),  # type: ignore[arg-type]
-        _sender(),  # type: ignore[arg-type]
-        user_dao,  # type: ignore[arg-type]
+        unavailable_dao,  # type: ignore[arg-type]
         uow,  # type: ignore[arg-type]
     )
-    with pytest.raises(NotificationDeliveryUnavailableError):
-        await unavailable(
-            _user(),
-            UpdateNotificationPreferencesDto(
-                subscription_expiration_email_enabled=True
-            ),
-        )
+    result = await unavailable(
+        user,
+        UpdateNotificationPreferencesDto(subscription_expiration_email_enabled=True),
+    )
 
     user_dao.set_subscription_expiration_email_preference.assert_not_awaited()
+    unavailable_dao.set_subscription_expiration_email_preference.assert_awaited_once()
+    assert result.subscription_expiration_email_enabled is True
+    assert result.email_eligible is True
 
 
 async def test_enabling_persists_explicit_consent_timestamp() -> None:
@@ -219,7 +251,6 @@ async def test_enabling_persists_explicit_consent_timestamp() -> None:
     uow = FakeUnitOfWork()
     use_case = UpdateNotificationPreferences(
         _config(),  # type: ignore[arg-type]
-        _sender(),  # type: ignore[arg-type]
         user_dao,  # type: ignore[arg-type]
         uow,  # type: ignore[arg-type]
     )
@@ -241,7 +272,6 @@ async def test_repeated_enable_preserves_original_consent_timestamp() -> None:
     user_dao = _preference_dao(user)
     use_case = UpdateNotificationPreferences(
         _config(),  # type: ignore[arg-type]
-        _sender(),  # type: ignore[arg-type]
         user_dao,  # type: ignore[arg-type]
         FakeUnitOfWork(),  # type: ignore[arg-type]
     )
@@ -267,7 +297,6 @@ async def test_atomic_enable_rejects_stale_profile_after_email_change() -> None:
     uow = FakeUnitOfWork()
     use_case = UpdateNotificationPreferences(
         _config(),  # type: ignore[arg-type]
-        _sender(),  # type: ignore[arg-type]
         user_dao,  # type: ignore[arg-type]
         uow,  # type: ignore[arg-type]
     )
@@ -275,9 +304,7 @@ async def test_atomic_enable_rejects_stale_profile_after_email_change() -> None:
     with pytest.raises(NotificationEmailNotEligibleError):
         await use_case(
             stale_user,
-            UpdateNotificationPreferencesDto(
-                subscription_expiration_email_enabled=True
-            ),
+            UpdateNotificationPreferencesDto(subscription_expiration_email_enabled=True),
         )
 
     user_dao.set_subscription_expiration_email_preference.assert_awaited_once()
@@ -291,8 +318,6 @@ async def test_generation_uses_paid_subscription_thresholds_and_bounded_batch() 
         delete_terminal_before=AsyncMock(return_value=0),
     )
     use_case = GenerateSubscriptionExpirationEmailReminders(
-        _config(),  # type: ignore[arg-type]
-        _sender(),  # type: ignore[arg-type]
         reminder_dao,  # type: ignore[arg-type]
         FakeUnitOfWork(),  # type: ignore[arg-type]
     )
@@ -304,25 +329,23 @@ async def test_generation_uses_paid_subscription_thresholds_and_bounded_batch() 
     assert kwargs["candidate_limit"] == 500
     assert kwargs["generation_grace"] == timedelta(hours=1)
     cleanup = reminder_dao.delete_terminal_before.await_args.kwargs
-    assert GENERATION_MAX_ROWS_PER_RUN == 500 * 3
+    assert GENERATION_MAX_ROWS_PER_RUN == 500 * GENERATION_BATCHES_PER_RUN * 3
     assert cleanup["limit"] == TERMINAL_CLEANUP_BATCH_SIZE
     assert cleanup["limit"] > GENERATION_MAX_ROWS_PER_RUN
 
 
-async def test_terminal_cleanup_still_runs_while_delivery_is_disabled() -> None:
+async def test_generation_and_cleanup_continue_while_delivery_is_disabled() -> None:
     reminder_dao = SimpleNamespace(
-        generate=AsyncMock(),
+        generate=AsyncMock(return_value=2),
         delete_terminal_before=AsyncMock(return_value=2),
     )
     use_case = GenerateSubscriptionExpirationEmailReminders(
-        _config(reminders_enabled=False),  # type: ignore[arg-type]
-        _sender(),  # type: ignore[arg-type]
         reminder_dao,  # type: ignore[arg-type]
         FakeUnitOfWork(),  # type: ignore[arg-type]
     )
 
-    assert await use_case.system() == 0
-    reminder_dao.generate.assert_not_awaited()
+    assert await use_case.system() == 2
+    reminder_dao.generate.assert_awaited_once()
     cleanup = reminder_dao.delete_terminal_before.await_args.kwargs
     assert cleanup["limit"] == TERMINAL_CLEANUP_BATCH_SIZE
     assert cleanup["limit"] > GENERATION_MAX_ROWS_PER_RUN
@@ -369,6 +392,7 @@ async def test_delivery_uses_stable_message_id_and_required_russian_copy() -> No
     use_case = DeliverSubscriptionExpirationEmailReminders(
         _config(),  # type: ignore[arg-type]
         sender,  # type: ignore[arg-type]
+        _delivery_lock(),  # type: ignore[arg-type]
         reminder_dao,  # type: ignore[arg-type]
         uow,  # type: ignore[arg-type]
     )
@@ -388,12 +412,16 @@ async def test_delivery_uses_stable_message_id_and_required_russian_copy() -> No
     assert "Если вы уже продлили подписку" in send["body"]
     assert "белый список" in send["body"]
     assert "https://cabinet.example.org/cabinet" in send["body"]
+    assert send["subject"] == "Напоминание: срок подписки скоро закончится"
+    assert "через 3" not in send["subject"]
+    assert send["rate_limit_per_minute"] == 600
+    assert send["rate_limit_max_wait_seconds"] > 0
     assert uow.commits == 5
     claim = reminder_dao.claim_due.await_args_list[0].kwargs
     assert claim["limit"] == 1
-    assert claim["max_attempts"] == DELIVERY_MAX_ATTEMPTS
     assert claim["lease_for"] == DELIVERY_LEASE
-    assert claim["now"] - claim["delivery_not_before"] == DELIVERY_GRACE
+    assert "delivery_not_before" not in claim
+    assert "max_attempts" not in claim
     reminder_dao.release_failed.assert_not_awaited()
 
 
@@ -410,6 +438,9 @@ def test_message_id_is_stable_opaque_and_domain_scoped() -> None:
     )
     assert "subscription-expiration-42@" not in first
 
+    with pytest.raises(ValueError, match="valid domain"):
+        _message_id(42, "invalid-sender", "test-message-id-secret")
+
 
 async def test_delivery_failure_is_retried_with_safe_non_pii_error_code() -> None:
     delivery = SubscriptionEmailDeliveryDto(
@@ -417,7 +448,9 @@ async def test_delivery_failure_is_retried_with_safe_non_pii_error_code() -> Non
         recipient_email="user@example.org",
         expire_at=NOW + timedelta(days=3),
         days_before=3,
-        attempt_count=2,
+        # One prior SMTP attempt; this send is the second and therefore gets a
+        # two-minute retry. claim_due itself no longer fabricates an attempt.
+        attempt_count=1,
     )
     reminder_dao = SimpleNamespace(
         sweep_undeliverable=AsyncMock(return_value=0),
@@ -427,10 +460,14 @@ async def test_delivery_failure_is_retried_with_safe_non_pii_error_code() -> Non
         release_failed=AsyncMock(return_value=True),
     )
     sender = _sender()
-    sender.send.side_effect = RuntimeError("private user@example.org SMTP detail")
+    sender.send.side_effect = EmailDeliveryError(
+        code="SMTP_RATE_LIMITED",
+        retryable=True,
+    )
     use_case = DeliverSubscriptionExpirationEmailReminders(
         _config(),  # type: ignore[arg-type]
         sender,  # type: ignore[arg-type]
+        _delivery_lock(),  # type: ignore[arg-type]
         reminder_dao,  # type: ignore[arg-type]
         FakeUnitOfWork(),  # type: ignore[arg-type]
     )
@@ -438,9 +475,47 @@ async def test_delivery_failure_is_retried_with_safe_non_pii_error_code() -> Non
     assert await use_case.system() == 0
 
     retry = reminder_dao.release_failed.await_args.kwargs
-    assert retry["error_code"] == "EMAIL_RUNTIMEERROR"
+    assert retry["error_code"] == "SMTP_RATE_LIMITED"
     assert "user@example.org" not in retry["error_code"]
+    assert retry["retryable"] is True
     assert retry["retry_after"] == timedelta(minutes=2)
+    reminder_dao.mark_sent.assert_not_awaited()
+
+
+async def test_permanent_smtp_rejection_is_terminalized_without_retry() -> None:
+    reminder_dao = SimpleNamespace(
+        sweep_undeliverable=AsyncMock(return_value=0),
+        claim_due=AsyncMock(side_effect=[[_claimed_reminder()], []]),
+        prepare_delivery=AsyncMock(
+            return_value=SubscriptionEmailDeliveryDto(
+                reminder_id=42,
+                recipient_email="user@example.org",
+                expire_at=NOW + timedelta(days=3),
+                days_before=3,
+                attempt_count=1,
+            )
+        ),
+        mark_sent=AsyncMock(),
+        release_failed=AsyncMock(return_value=True),
+    )
+    sender = _sender()
+    sender.send.side_effect = EmailDeliveryError(
+        code="SMTP_RECIPIENT_REJECTED",
+        retryable=False,
+    )
+    use_case = DeliverSubscriptionExpirationEmailReminders(
+        _config(),  # type: ignore[arg-type]
+        sender,  # type: ignore[arg-type]
+        _delivery_lock(),  # type: ignore[arg-type]
+        reminder_dao,  # type: ignore[arg-type]
+        FakeUnitOfWork(),  # type: ignore[arg-type]
+    )
+
+    assert await use_case.system() == 0
+
+    failure = reminder_dao.release_failed.await_args.kwargs
+    assert failure["error_code"] == "SMTP_RECIPIENT_REJECTED"
+    assert failure["retryable"] is False
     reminder_dao.mark_sent.assert_not_awaited()
 
 
@@ -498,6 +573,7 @@ async def test_long_running_delivery_renews_fenced_lease_before_finalization(
     use_case = DeliverSubscriptionExpirationEmailReminders(
         _config(),  # type: ignore[arg-type]
         sender,  # type: ignore[arg-type]
+        _delivery_lock(),  # type: ignore[arg-type]
         reminder_dao,  # type: ignore[arg-type]
         uow,  # type: ignore[arg-type]
     )
@@ -549,6 +625,7 @@ async def test_delivery_does_not_finalize_after_heartbeat_loses_fence(
     use_case = DeliverSubscriptionExpirationEmailReminders(
         _config(),  # type: ignore[arg-type]
         sender,  # type: ignore[arg-type]
+        _delivery_lock(),  # type: ignore[arg-type]
         reminder_dao,  # type: ignore[arg-type]
         FakeUnitOfWork(),  # type: ignore[arg-type]
     )
@@ -606,6 +683,7 @@ async def test_delivery_heartbeat_retries_safe_transient_database_error(
     use_case = DeliverSubscriptionExpirationEmailReminders(
         _config(),  # type: ignore[arg-type]
         sender,  # type: ignore[arg-type]
+        _delivery_lock(),  # type: ignore[arg-type]
         reminder_dao,  # type: ignore[arg-type]
         uow,  # type: ignore[arg-type]
     )
@@ -626,6 +704,7 @@ async def test_delivery_maintenance_runs_fail_closed_when_sending_is_disabled() 
     use_case = DeliverSubscriptionExpirationEmailReminders(
         _config(reminders_enabled=False),  # type: ignore[arg-type]
         sender,  # type: ignore[arg-type]
+        _delivery_lock(),  # type: ignore[arg-type]
         reminder_dao,  # type: ignore[arg-type]
         FakeUnitOfWork(),  # type: ignore[arg-type]
     )
@@ -633,8 +712,259 @@ async def test_delivery_maintenance_runs_fail_closed_when_sending_is_disabled() 
     assert await use_case.system() == 0
 
     sweep = reminder_dao.sweep_undeliverable.await_args.kwargs
-    assert sweep["now"] - sweep["delivery_not_before"] == DELIVERY_GRACE
-    assert sweep["max_attempts"] == DELIVERY_MAX_ATTEMPTS
+    assert "delivery_not_before" not in sweep
+    assert "max_attempts" not in sweep
     assert sweep["limit"] == 500
     reminder_dao.claim_due.assert_not_awaited()
     sender.send.assert_not_awaited()
+
+
+async def test_delivery_rate_limits_attempt_starts_and_caps_each_run() -> None:
+    config = _config()
+    config.email.subscription_expiration_delivery_rate_per_minute = 60
+    config.email.subscription_expiration_delivery_max_per_run = 3
+    reminder_dao = SimpleNamespace(
+        sweep_undeliverable=AsyncMock(return_value=0),
+        claim_due=AsyncMock(return_value=[_claimed_reminder()]),
+        prepare_delivery=AsyncMock(
+            return_value=SubscriptionEmailDeliveryDto(
+                reminder_id=42,
+                recipient_email="user@example.org",
+                expire_at=NOW + timedelta(days=3),
+                days_before=3,
+                attempt_count=1,
+            )
+        ),
+        mark_sent=AsyncMock(return_value=True),
+        release_failed=AsyncMock(),
+    )
+    sender = _sender()
+    use_case = DeliverSubscriptionExpirationEmailReminders(
+        config,  # type: ignore[arg-type]
+        sender,  # type: ignore[arg-type]
+        _delivery_lock(),  # type: ignore[arg-type]
+        reminder_dao,  # type: ignore[arg-type]
+        FakeUnitOfWork(),  # type: ignore[arg-type]
+    )
+
+    assert await use_case.system() == 3
+
+    assert reminder_dao.claim_due.await_count == 3
+    assert sender.send.await_count == 3
+    assert all(
+        call.kwargs["rate_limit_per_minute"] == 60
+        and call.kwargs["rate_limit_max_wait_seconds"] > 0
+        for call in sender.send.await_args_list
+    )
+
+
+async def test_rate_defer_releases_fence_without_counting_smtp_attempt() -> None:
+    reminder_dao = SimpleNamespace(
+        sweep_undeliverable=AsyncMock(return_value=0),
+        claim_due=AsyncMock(return_value=[_claimed_reminder()]),
+        prepare_delivery=AsyncMock(
+            return_value=SubscriptionEmailDeliveryDto(
+                reminder_id=42,
+                recipient_email="user@example.org",
+                expire_at=NOW + timedelta(days=3),
+                days_before=3,
+                attempt_count=4,
+            )
+        ),
+        release_unattempted=AsyncMock(return_value=True),
+        mark_sent=AsyncMock(),
+        release_failed=AsyncMock(),
+    )
+    sender = _sender()
+    sender.send.side_effect = EmailDeliveryRateDeferredError("no room")
+    use_case = DeliverSubscriptionExpirationEmailReminders(
+        _config(),  # type: ignore[arg-type]
+        sender,  # type: ignore[arg-type]
+        _delivery_lock(),  # type: ignore[arg-type]
+        reminder_dao,  # type: ignore[arg-type]
+        FakeUnitOfWork(),  # type: ignore[arg-type]
+    )
+
+    assert await use_case.system() == 0
+
+    reminder_dao.release_unattempted.assert_awaited_once()
+    reminder_dao.release_failed.assert_not_awaited()
+
+
+async def test_cancelled_delivery_persists_smtp_success_before_releasing_run_lock() -> None:
+    smtp_started = asyncio.Event()
+    allow_smtp_completion = asyncio.Event()
+    run_lock_released = asyncio.Event()
+
+    @asynccontextmanager
+    async def hold() -> AsyncIterator[None]:
+        try:
+            yield
+        finally:
+            run_lock_released.set()
+
+    async def controlled_send(**kwargs: object) -> None:
+        assert kwargs
+        smtp_started.set()
+        await allow_smtp_completion.wait()
+
+    reminder_dao = SimpleNamespace(
+        prepare_delivery=AsyncMock(
+            return_value=SubscriptionEmailDeliveryDto(
+                reminder_id=42,
+                recipient_email="user@example.org",
+                expire_at=NOW + timedelta(days=3),
+                days_before=3,
+                attempt_count=0,
+            )
+        ),
+        renew_processing_lease=AsyncMock(return_value=True),
+        mark_sent=AsyncMock(return_value=True),
+        release_failed=AsyncMock(),
+        release_unattempted=AsyncMock(),
+    )
+
+    use_case = DeliverSubscriptionExpirationEmailReminders(
+        _config(),  # type: ignore[arg-type]
+        SimpleNamespace(is_enabled=True, send=controlled_send),  # type: ignore[arg-type]
+        SimpleNamespace(hold=hold),  # type: ignore[arg-type]
+        reminder_dao,  # type: ignore[arg-type]
+        FakeUnitOfWork(),  # type: ignore[arg-type]
+    )
+
+    async def run_under_delivery_lock() -> None:
+        async with use_case.delivery_run_lock.hold():
+            await use_case._deliver_one(
+                reminder_id=42,
+                token_hash="a" * 64,
+                sender_email="notice@example.org",
+                cabinet_url="https://cabinet.example.org/cabinet",
+                deadline_monotonic=asyncio.get_running_loop().time() + 30,
+            )
+
+    waiter = asyncio.create_task(run_under_delivery_lock())
+    await smtp_started.wait()
+
+    waiter.cancel()
+    await asyncio.sleep(0)
+    assert waiter.done() is False
+    assert run_lock_released.is_set() is False
+    reminder_dao.mark_sent.assert_not_awaited()
+
+    allow_smtp_completion.set()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+    reminder_dao.mark_sent.assert_awaited_once()
+    reminder_dao.release_failed.assert_not_awaited()
+    assert run_lock_released.is_set() is True
+
+
+async def test_cancelled_delivery_persists_smtp_failure_before_propagating() -> None:
+    smtp_started = asyncio.Event()
+    allow_smtp_completion = asyncio.Event()
+
+    async def controlled_send(**kwargs: object) -> None:
+        assert kwargs
+        smtp_started.set()
+        await allow_smtp_completion.wait()
+        raise EmailDeliveryError(code="SMTP_CONNECTION_ERROR", retryable=True)
+
+    reminder_dao = SimpleNamespace(
+        prepare_delivery=AsyncMock(
+            return_value=SubscriptionEmailDeliveryDto(
+                reminder_id=42,
+                recipient_email="user@example.org",
+                expire_at=NOW + timedelta(days=3),
+                days_before=3,
+                attempt_count=2,
+            )
+        ),
+        renew_processing_lease=AsyncMock(return_value=True),
+        mark_sent=AsyncMock(),
+        release_failed=AsyncMock(return_value=True),
+        release_unattempted=AsyncMock(),
+    )
+    use_case = DeliverSubscriptionExpirationEmailReminders(
+        _config(),  # type: ignore[arg-type]
+        SimpleNamespace(is_enabled=True, send=controlled_send),  # type: ignore[arg-type]
+        _delivery_lock(),  # type: ignore[arg-type]
+        reminder_dao,  # type: ignore[arg-type]
+        FakeUnitOfWork(),  # type: ignore[arg-type]
+    )
+    delivery = asyncio.create_task(
+        use_case._deliver_one(
+            reminder_id=42,
+            token_hash="a" * 64,
+            sender_email="notice@example.org",
+            cabinet_url="https://cabinet.example.org/cabinet",
+            deadline_monotonic=asyncio.get_running_loop().time() + 30,
+        )
+    )
+    await smtp_started.wait()
+
+    delivery.cancel()
+    await asyncio.sleep(0)
+    assert delivery.done() is False
+    reminder_dao.release_failed.assert_not_awaited()
+
+    allow_smtp_completion.set()
+    with pytest.raises(asyncio.CancelledError):
+        await delivery
+    reminder_dao.release_failed.assert_awaited_once()
+    assert reminder_dao.release_failed.await_args.kwargs["error_code"] == ("SMTP_CONNECTION_ERROR")
+    assert reminder_dao.release_failed.await_args.kwargs["retryable"] is True
+    reminder_dao.mark_sent.assert_not_awaited()
+
+
+async def test_stale_rows_do_not_consume_smtp_attempt_budget() -> None:
+    config = _config()
+    config.email.subscription_expiration_delivery_max_per_run = 1
+    delivery = SubscriptionEmailDeliveryDto(
+        reminder_id=42,
+        recipient_email="user@example.org",
+        expire_at=NOW + timedelta(days=3),
+        days_before=3,
+        attempt_count=0,
+    )
+    reminder_dao = SimpleNamespace(
+        sweep_undeliverable=AsyncMock(return_value=0),
+        claim_due=AsyncMock(return_value=[_claimed_reminder()]),
+        prepare_delivery=AsyncMock(side_effect=[None, None, delivery]),
+        mark_sent=AsyncMock(return_value=True),
+        release_failed=AsyncMock(),
+    )
+    sender = _sender()
+    use_case = DeliverSubscriptionExpirationEmailReminders(
+        config,  # type: ignore[arg-type]
+        sender,  # type: ignore[arg-type]
+        _delivery_lock(),  # type: ignore[arg-type]
+        reminder_dao,  # type: ignore[arg-type]
+        FakeUnitOfWork(),  # type: ignore[arg-type]
+    )
+
+    assert await use_case.system() == 1
+    assert reminder_dao.claim_due.await_count == 3
+    sender.send.assert_awaited_once()
+
+
+async def test_overlapping_delivery_run_does_not_claim_or_sweep() -> None:
+    @asynccontextmanager
+    async def busy_hold() -> AsyncIterator[None]:
+        raise EmailDeliveryRunBusyError("already running")
+        yield
+
+    reminder_dao = SimpleNamespace(
+        sweep_undeliverable=AsyncMock(),
+        claim_due=AsyncMock(),
+    )
+    use_case = DeliverSubscriptionExpirationEmailReminders(
+        _config(),  # type: ignore[arg-type]
+        _sender(),  # type: ignore[arg-type]
+        SimpleNamespace(hold=busy_hold),  # type: ignore[arg-type]
+        reminder_dao,  # type: ignore[arg-type]
+        FakeUnitOfWork(),  # type: ignore[arg-type]
+    )
+
+    assert await use_case.system() == 0
+    reminder_dao.sweep_undeliverable.assert_not_awaited()
+    reminder_dao.claim_due.assert_not_awaited()

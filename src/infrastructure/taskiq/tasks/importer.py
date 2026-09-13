@@ -36,11 +36,11 @@ async def import_exported_users_task(
             await remnawave_sdk.users.create_user(created_user)
             success_count += 1
         except BadRequestError as error:
-            logger.warning(f"User '{user.username}' already exists, skipping. Error: {error}")
+            logger.warning(f"Imported user already exists, skipping. Error: {error}")
             failed_count += 1
 
         except Exception as exception:
-            logger.exception(f"Failed to create user '{user.username}' exception: {exception}")
+            logger.exception(f"Failed to create imported user. Exception: {exception}")
             failed_count += 1
 
     logger.info(f"Import completed: '{success_count}' successful, '{failed_count}' failed")

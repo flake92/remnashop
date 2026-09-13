@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+from itertools import batched
 from typing import Optional, cast
 from uuid import UUID
 
@@ -15,6 +16,7 @@ from src.core.enums import Role, SubscriptionStatus
 from src.infrastructure.database.models import Referral, Subscription, User
 
 MAX_USER_MERGE_CHAIN_DEPTH = 64
+DATABASE_ID_BATCH_SIZE = 1_000
 
 
 class UserDaoImpl(UserDao):
@@ -85,10 +87,10 @@ class UserDaoImpl(UserDao):
         db_user = await self.session.scalar(stmt)
 
         if db_user:
-            logger.debug(f"User with email '{email}' found in database")
+            logger.debug("User lookup by email found a database record")
             return self._convert_to_dto(db_user)
 
-        logger.debug(f"User with email '{email}' not found")
+        logger.debug("User lookup by email found no database record")
         return None
 
     async def get_by_email_for_update(self, email: str) -> Optional[UserDto]:
@@ -98,16 +100,19 @@ class UserDaoImpl(UserDao):
         if db_user:
             return self._convert_to_dto(db_user)
 
-        logger.debug(f"User with email '{email}' not found for update")
+        logger.debug("Locked user lookup by email found no database record")
         return None
 
     async def get_by_telegram_ids(self, telegram_ids: list[int]) -> list[UserDto]:
         if not telegram_ids:
             return []
 
-        stmt = select(User).where(User.telegram_id.in_(telegram_ids))
-        result = await self.session.scalars(stmt)
-        db_users = cast(list, result.all())
+        db_users: list[User] = []
+        unique_ids = dict.fromkeys(telegram_ids)
+        for id_batch in batched(unique_ids, DATABASE_ID_BATCH_SIZE):
+            stmt = select(User).where(User.telegram_id.in_(id_batch))
+            result = await self.session.scalars(stmt)
+            db_users.extend(cast(list[User], result.all()))
 
         logger.debug(f"Retrieved '{len(db_users)}' users by telegram ID list")
         return self._convert_to_dto_list(db_users)
@@ -123,28 +128,24 @@ class UserDaoImpl(UserDao):
         result = await self.session.scalars(stmt)
         db_users = cast(list, result.all())
 
-        logger.debug(f"Found '{len(db_users)}' users matching query '{query_name}'")
+        logger.debug(f"Found '{len(db_users)}' users matching a partial-name query")
         return self._convert_to_dto_list(db_users)
 
     async def get_by_referral_code(self, referral_code: str) -> Optional[UserDto]:
         stmt = select(User).where(User.referral_code == referral_code)
         db_user = await self.session.scalar(stmt)
         if db_user is None:
-            logger.debug(f"User with referral code '{referral_code}' not found")
+            logger.debug("User lookup by referral code found no database record")
             return None
 
         visited: set[int] = set()
         for _ in range(MAX_USER_MERGE_CHAIN_DEPTH):
             if db_user is None:
-                logger.warning(
-                    f"Referral code '{referral_code}' points to a missing merge target"
-                )
+                logger.warning(f"Referral code '{referral_code}' points to a missing merge target")
                 return None
 
             if db_user.id in visited:
-                logger.error(
-                    f"Referral code '{referral_code}' has a cyclic user merge chain"
-                )
+                logger.error(f"Referral code '{referral_code}' has a cyclic user merge chain")
                 return None
             visited.add(db_user.id)
 
@@ -159,9 +160,7 @@ class UserDaoImpl(UserDao):
                 select(User).where(User.id == db_user.merged_into_user_id)
             )
 
-        logger.error(
-            f"Referral code '{referral_code}' exceeds the maximum user merge chain depth"
-        )
+        logger.error(f"Referral code '{referral_code}' exceeds the maximum user merge chain depth")
         return None
 
     async def get_all(self, limit: Optional[int] = None, offset: int = 0) -> list[UserDto]:
@@ -184,7 +183,10 @@ class UserDaoImpl(UserDao):
         db_user = await self.session.scalar(stmt)
 
         if db_user:
-            logger.debug(f"User '{user.id}' updated successfully with data '{user.changed_data}'")
+            logger.debug(
+                f"User '{user.id}' updated successfully; "
+                f"changed fields: '{sorted(user.changed_data)}'"
+            )
             return self._convert_to_dto(db_user)
 
         logger.warning(f"Failed to update user '{user.id}'")
@@ -358,15 +360,18 @@ class UserDaoImpl(UserDao):
     async def block_by_telegram_ids(self, telegram_ids: list[int]) -> int:
         if not telegram_ids:
             return 0
-        stmt = (
-            update(User)
-            .where(User.telegram_id.in_(telegram_ids))
-            .where(User.is_blocked.is_(False))
-            .values(is_blocked=True)
-            .returning(User.telegram_id)
-        )
-        result = await self.session.execute(stmt)
-        blocked = len(result.scalars().all())
+        blocked = 0
+        unique_ids = dict.fromkeys(telegram_ids)
+        for id_batch in batched(unique_ids, DATABASE_ID_BATCH_SIZE):
+            stmt = (
+                update(User)
+                .where(User.telegram_id.in_(id_batch))
+                .where(User.is_blocked.is_(False))
+                .values(is_blocked=True)
+                .returning(User.telegram_id)
+            )
+            result = await self.session.execute(stmt)
+            blocked += len(result.scalars().all())
         logger.debug(f"Bulk-blocked '{blocked}' users from external blacklist")
         return blocked
 

@@ -69,9 +69,7 @@ def _legacy_recovery_dto(
         expected_user_id=body.expected_user_id,
         expected_referral_id=body.expected_referral_id,
         expected_created_at=body.expected_created_at,
-        expected_participant_merge_audit_ids=tuple(
-            body.expected_participant_merge_audit_ids
-        ),
+        expected_participant_merge_audit_ids=tuple(body.expected_participant_merge_audit_ids),
         source_validation=(
             LegacyReferralRewardSourceValidation(body.source_validation)
             if body.source_validation is not None

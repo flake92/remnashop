@@ -1,8 +1,9 @@
 from typing import Optional
 
-from pydantic import RedisDsn, SecretStr
+from pydantic import RedisDsn, SecretStr, ValidationInfo, field_validator
 
 from .base import BaseConfig
+from .validators import validate_strong_secret
 
 
 class RedisConfig(BaseConfig, env_prefix="REDIS_"):
@@ -10,6 +11,17 @@ class RedisConfig(BaseConfig, env_prefix="REDIS_"):
     port: int = 6379
     name: str = "0"
     password: Optional[SecretStr] = None
+
+    @field_validator("password")
+    @classmethod
+    def validate_redis_password(
+        cls,
+        field: Optional[SecretStr],
+        info: ValidationInfo,
+    ) -> Optional[SecretStr]:
+        if field is not None:
+            validate_strong_secret(field, info, minimum_length=24, env_prefix="REDIS_")
+        return field
 
     @property
     def dsn(self) -> str:

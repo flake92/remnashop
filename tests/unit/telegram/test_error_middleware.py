@@ -17,9 +17,7 @@ async def test_stale_dialog_context_is_recovered_without_rethrowing() -> None:
     notifier = SimpleNamespace(notify_user=AsyncMock())
     redirect_menu = SimpleNamespace(system=AsyncMock())
     user_dao = SimpleNamespace(
-        get_by_telegram_id=AsyncMock(
-            return_value=SimpleNamespace(is_privileged=False)
-        )
+        get_by_telegram_id=AsyncMock(return_value=SimpleNamespace(is_privileged=False))
     )
     dependencies = {
         BotService: bot_service,
