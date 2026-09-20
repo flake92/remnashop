@@ -74,7 +74,7 @@ async def test_old_runtime_email_updates_clear_subscription_email_consent() -> N
             assert changed_email == (False, None)
 
             # The current runtime confirms a new identity and records its
-            # default-on consent in one atomic UPDATE. Migration 0059 must let
+            # default-on preference in one atomic UPDATE. Migration 0059 must let
             # that fresh timestamp survive the identity-change trigger.
             await session.execute(
                 text(

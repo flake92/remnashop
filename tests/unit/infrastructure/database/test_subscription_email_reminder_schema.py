@@ -6,14 +6,14 @@ import pytest
 from src.infrastructure.database.models import SubscriptionEmailReminder, User
 
 
-def test_reminder_schema_migrations_are_linear_two_phase_steps() -> None:
+def test_reminder_schema_migrations_are_linear_steps() -> None:
     create_migration = importlib.import_module(
         "src.infrastructure.database.migrations.versions.0057_add_subscription_email_reminders"
     )
     validate_migration = importlib.import_module(
         "src.infrastructure.database.migrations.versions.0058_validate_subscription_email_consent"
     )
-    backfill_migration = importlib.import_module(
+    trigger_migration = importlib.import_module(
         "src.infrastructure.database.migrations.versions.0059_enable_verified_user_email_reminders"
     )
 
@@ -21,38 +21,29 @@ def test_reminder_schema_migrations_are_linear_two_phase_steps() -> None:
     assert create_migration.down_revision == "0056"
     assert validate_migration.revision == "0058"
     assert validate_migration.down_revision == "0057"
-    assert backfill_migration.revision == "0059"
-    assert backfill_migration.down_revision == "0058"
+    assert trigger_migration.revision == "0059"
+    assert trigger_migration.down_revision == "0058"
 
 
-def test_0059_force_enables_verified_users_with_reversible_audit(
+def test_0059_updates_trigger_without_overwriting_existing_preferences(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     migration = importlib.import_module(
         "src.infrastructure.database.migrations.versions.0059_enable_verified_user_email_reminders"
     )
     upgrade_sql: list[str] = []
-    created_tables: list[tuple[str, str | None]] = []
-    dropped_tables: list[tuple[str, str | None]] = []
+    create_table = Mock()
+    drop_table = Mock()
     monkeypatch.setattr(
         migration.op,
         "execute",
         lambda statement: upgrade_sql.append(str(statement)),
     )
-    monkeypatch.setattr(
-        migration.op,
-        "create_table",
-        lambda name, *args, **kwargs: created_tables.append((name, kwargs.get("schema"))),
-    )
-    monkeypatch.setattr(
-        migration.op,
-        "drop_table",
-        lambda name, **kwargs: dropped_tables.append((name, kwargs.get("schema"))),
-    )
+    monkeypatch.setattr(migration.op, "create_table", create_table)
+    monkeypatch.setattr(migration.op, "drop_table", drop_table)
 
     migration.upgrade()
 
-    assert created_tables == [("subscription_email_consent_backfill_0059", "public")]
     assert "SET LOCAL lock_timeout = '5s'" in upgrade_sql[0]
     assert "SET LOCAL statement_timeout = '5min'" in upgrade_sql[1]
     upgraded_trigger_sql = upgrade_sql[2]
@@ -63,24 +54,24 @@ def test_0059_force_enables_verified_users_with_reversible_audit(
     assert "NEW.subscription_expiration_email_enabled_at IS NOT NULL" in upgraded_trigger_sql
     assert "IS DISTINCT FROM" in upgraded_trigger_sql
     assert "OLD.subscription_expiration_email_enabled_at" in upgraded_trigger_sql
-    backfill_sql = upgrade_sql[3]
-    assert "users.email IS NOT NULL" in backfill_sql
-    assert "users.is_email_verified IS TRUE" in backfill_sql
-    assert "subscription_expiration_email_enabled IS NOT TRUE" in backfill_sql
-    assert "subscription_expiration_email_enabled = true" in backfill_sql
-    assert "subscription_expiration_email_enabled_at = changed.applied_enabled_at" in backfill_sql
+    assert len(upgrade_sql) == 3
+    assert "UPDATE public.users" not in "\n".join(upgrade_sql)
+    assert "subscription_email_consent_backfill_0059" not in "\n".join(upgrade_sql)
+    create_table.assert_not_called()
 
     downgrade_sql_start = len(upgrade_sql)
     migration.downgrade()
 
     rollback_sql = "\n".join(upgrade_sql[downgrade_sql_start:])
+    assert "to_regclass(" in rollback_sql
     assert "subscription_expiration_email_enabled = false" in rollback_sql
     assert "subscription_expiration_email_enabled_at = NULL" in rollback_sql
     assert "= backfill.applied_enabled_at" in rollback_sql
+    assert "DROP TABLE IF EXISTS public.subscription_email_consent_backfill_0059" in rollback_sql
     assert "NEW.email IS DISTINCT FROM OLD.email" in rollback_sql
     assert "OR NEW.is_email_verified IS NOT TRUE" in rollback_sql
     assert "NEW.subscription_expiration_email_enabled_at IS NOT NULL" not in rollback_sql
-    assert dropped_tables == [("subscription_email_consent_backfill_0059", "public")]
+    drop_table.assert_not_called()
 
 
 def test_0057_creates_supporting_terminal_retention_index(
