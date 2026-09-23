@@ -799,26 +799,34 @@ class ReferralDaoImpl(ReferralDao):
             earlier_transaction,
             include_legacy=True,
         )
-        earlier_success_exists = select(earlier_transaction.id).where(
-            earlier_transaction.user_id == source_transaction.user_id,
-            *paid_nontrial_referral_source_predicate(
-                earlier_transaction,
-                include_refunded=True,
-                include_legacy=True,
-            ),
-            or_(
-                earlier_evidence_at < source_transaction.fulfillment_completed_at,
-                and_(
-                    earlier_evidence_at == source_transaction.fulfillment_completed_at,
-                    earlier_transaction.id < source_transaction.id,
+        earlier_success_exists = (
+            select(earlier_transaction.id)
+            .where(
+                earlier_transaction.user_id == source_transaction.user_id,
+                *paid_nontrial_referral_source_predicate(
+                    earlier_transaction,
+                    include_refunded=True,
+                    include_legacy=True,
                 ),
-            ),
+                or_(
+                    earlier_evidence_at < source_transaction.fulfillment_completed_at,
+                    and_(
+                        earlier_evidence_at == source_transaction.fulfillment_completed_at,
+                        earlier_transaction.id < source_transaction.id,
+                    ),
+                ),
+            )
+            .correlate(source_transaction)
         )
-        active_winner_exists = select(active_winner.id).where(
-            active_winner.origin_referral_id == ReferralReward.origin_referral_id,
-            active_winner.level == ReferralReward.level,
-            active_winner.accrual_strategy == ReferralAccrualStrategy.ON_FIRST_PAYMENT,
-            active_winner.id != ReferralReward.id,
+        active_winner_exists = (
+            select(active_winner.id)
+            .where(
+                active_winner.origin_referral_id == ReferralReward.origin_referral_id,
+                active_winner.level == ReferralReward.level,
+                active_winner.accrual_strategy == ReferralAccrualStrategy.ON_FIRST_PAYMENT,
+                active_winner.id != ReferralReward.id,
+            )
+            .correlate(ReferralReward)
         )
         admin_compensated_earlier_exists = (
             select(ReferralRewardResolution.id)
@@ -851,6 +859,7 @@ class ReferralDaoImpl(ReferralDao):
                     ),
                 ),
             )
+            .correlate(ReferralReward, source_transaction)
         )
 
         earlier_success_for_reward = (

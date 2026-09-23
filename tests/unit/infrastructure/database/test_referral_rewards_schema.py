@@ -530,6 +530,21 @@ async def test_worker_manualizes_ambiguous_extra_days_and_locks_recipient_rows()
     assert "REFUNDED" in str(recipient_compiled.params).upper()
     assert "NOT (EXISTS" in recipient_lock_sql
     assert "ADMIN_COMPENSATED_EARLIER_TRANSACTION" in recipient_lock_sql
+    # These predicates are nested inside the eligible-source EXISTS. Without
+    # explicit multi-level correlation SQLAlchemy adds a second, uncorrelated
+    # referral_rewards table to each inner EXISTS. Once any first-payment winner
+    # exists anywhere, that cartesian subquery blocks every new ON_FIRST_PAYMENT
+    # reward from ever being claimed.
+    assert (
+        "FROM REFERRAL_REWARDS AS ACTIVE_FIRST_PAYMENT_WINNER, REFERRAL_REWARDS"
+        not in recipient_lock_sql
+    )
+    assert (
+        "ADMIN_COMPENSATED_EARLIER_TRANSACTION ON "
+        "ADMIN_COMPENSATED_EARLIER_TRANSACTION.ID = "
+        "REFERRAL_REWARD_RESOLUTIONS.SELECTED_SOURCE_TRANSACTION_ID, REFERRAL_REWARDS"
+        not in recipient_lock_sql
+    )
 
 
 @pytest.mark.asyncio
