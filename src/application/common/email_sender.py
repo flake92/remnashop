@@ -6,4 +6,13 @@ class EmailSender(Protocol):
     @property
     def is_enabled(self) -> bool: ...
 
-    async def send(self, *, to: str, subject: str, body: str) -> None: ...
+    async def send(
+        self,
+        *,
+        to: str,
+        subject: str,
+        body: str,
+        message_id: str | None = None,
+        rate_limit_per_minute: int | None = None,
+        rate_limit_max_wait_seconds: float | None = None,
+    ) -> None: ...

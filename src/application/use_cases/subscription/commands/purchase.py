@@ -108,7 +108,7 @@ class ActivateTrialSubscription(Interactor[ActivateTrialSubscriptionDto, None]):
             username=user.username,
             name=user.name,
             email=user.email,
-            plan_name=(plan.name, {}),
+            plan_name=plan.name,
             plan_type=plan.type,
             plan_traffic_limit=i18n_format_traffic_limit(plan.traffic_limit),
             plan_device_limit=i18n_format_device_limit(plan.device_limit),
@@ -220,6 +220,11 @@ class PurchaseSubscription(Interactor[PurchaseSubscriptionDto, None]):
                 subscription.internal_squads = plan.internal_squads
                 subscription.external_squad = plan.external_squad
                 subscription.grace_until = None
+                # A paid renewal always restores access. Ending a grace period disables the
+                # panel user, and that DISABLED status is synced back onto the subscription —
+                # without this, _build_update_request would keep sending DISABLED and the
+                # customer would pay for nothing.
+                subscription.status = SubscriptionStatus.ACTIVE
 
                 await self.remnawave.update_user(
                     user=user,
@@ -243,11 +248,6 @@ class PurchaseSubscription(Interactor[PurchaseSubscriptionDto, None]):
                         f"No subscription found for change for user '{user.remna_name}'"
                     )
 
-                await self.subscription_dao.update_status(
-                    subscription_id=subscription.id,
-                    status=SubscriptionStatus.DELETED,
-                )
-
                 updated_user = await self.remnawave.update_user(
                     user=user,
                     uuid=subscription.user_remna_id,
@@ -255,11 +255,22 @@ class PurchaseSubscription(Interactor[PurchaseSubscriptionDto, None]):
                     reset_traffic=True,
                 )
 
-                new_sub = self._build_subscription_dto(updated_user, plan)
-                await self.subscription_dao.create(
-                    subscription=new_sub,
-                    user_id=user.id,
-                )
+                # A trial and its paid replacement are the same Remnawave user.
+                # Keep the existing local row and URL as well: replacing the row
+                # made the already-issued trial link appear revoked after payment.
+                paid_subscription = self._build_subscription_dto(updated_user, plan)
+                subscription.status = paid_subscription.status
+                subscription.is_trial = paid_subscription.is_trial
+                subscription.traffic_limit = paid_subscription.traffic_limit
+                subscription.device_limit = paid_subscription.device_limit
+                subscription.traffic_limit_strategy = paid_subscription.traffic_limit_strategy
+                subscription.tag = paid_subscription.tag
+                subscription.internal_squads = paid_subscription.internal_squads
+                subscription.external_squad = paid_subscription.external_squad
+                subscription.expire_at = paid_subscription.expire_at
+                subscription.plan_snapshot = plan
+                subscription.grace_until = None
+                await self.subscription_dao.update(subscription)
 
                 if user.purchase_discount:
                     user.purchase_discount = 0

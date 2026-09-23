@@ -21,15 +21,20 @@ class RefreshSession(Interactor[RefreshSessionDto, UserDto]):
         self.auth_session = auth_session
 
     async def _execute(self, actor: UserDto, data: RefreshSessionDto) -> UserDto:
-        user_id = await self.auth_session.get_and_revoke_refresh_token(data.refresh_token)
-        if user_id is None:
+        token_record = await self.auth_session.get_and_revoke_refresh_token(data.refresh_token)
+        if token_record is None:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid or expired refresh token",
             )
-        user = await self.user_dao.get_by_id(user_id)
+        user = await self.user_dao.get_by_id(token_record.user_id)
         if not user:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
+        if token_record.token_version != user.token_version:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid or expired refresh token",
+            )
         if user.is_blocked:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User is blocked")
         return user

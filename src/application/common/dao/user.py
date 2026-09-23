@@ -29,6 +29,13 @@ class UserDao(Protocol):
 
     async def update(self, user: UserDto) -> Optional[UserDto]: ...
 
+    async def set_subscription_expiration_email_preference(
+        self,
+        user_id: int,
+        *,
+        enabled: bool,
+    ) -> Optional[UserDto]: ...
+
     async def delete(self, user_id: int) -> bool: ...
 
     async def count(self) -> int: ...

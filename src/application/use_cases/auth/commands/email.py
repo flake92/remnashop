@@ -16,6 +16,9 @@ from src.application.use_cases.auth._codes import (
     generate_email_verification_code,
     hash_email_verification_code,
 )
+from src.application.use_cases.auth._email_reminder_preferences import (
+    enable_expiration_reminders_after_email_verification,
+)
 from src.core.config import AppConfig
 from src.core.constants import (
     EMAIL_CODE_RESEND_COOLDOWN_SECONDS,
@@ -45,6 +48,10 @@ class ChangeEmail(Interactor[ChangeEmailDto, UserDto]):
 
         actor.pending_email = data.email
         actor.is_email_verified = False
+        # Consent is tied to a verified delivery address. Re-verification is an
+        # explicit boundary; reminders must be enabled again afterwards.
+        actor.subscription_expiration_email_enabled = False
+        actor.subscription_expiration_email_enabled_at = None
         actor.email_verification_code_hash = None
         actor.email_verification_expires_at = None
 
@@ -112,6 +119,8 @@ class RequestEmailVerification(Interactor[RequestEmailVerificationDto, EmailVeri
                 )
             actor.pending_email = requested_email
             actor.is_email_verified = False
+            actor.subscription_expiration_email_enabled = False
+            actor.subscription_expiration_email_enabled_at = None
         elif requested_email and requested_email == actor.email and actor.is_email_verified:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT, detail="Email is already verified"
@@ -221,6 +230,7 @@ class ConfirmEmailVerification(Interactor[ConfirmEmailVerificationDto, EmailVeri
 
         actor.pending_email = None
         actor.is_email_verified = True
+        enable_expiration_reminders_after_email_verification(actor)
         actor.email_verification_code_hash = None
         actor.email_verification_expires_at = None
 

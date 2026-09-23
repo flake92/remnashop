@@ -15,6 +15,7 @@ from .referral import (
 )
 from .settings import Settings
 from .subscription import Subscription
+from .subscription_email_reminder import SubscriptionEmailReminder
 from .transaction import Transaction
 from .user import User
 from .user_merge_audit import UserMergeAudit
@@ -39,6 +40,7 @@ __all__ = [
     "ReferralRewardResolution",
     "Settings",
     "Subscription",
+    "SubscriptionEmailReminder",
     "Transaction",
     "User",
     "UserMergeAudit",

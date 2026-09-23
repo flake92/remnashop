@@ -7,7 +7,7 @@ from adaptix import Retort
 from adaptix.conversion import ConversionRetort
 from loguru import logger
 from redis.asyncio import Redis
-from sqlalchemy import Numeric, and_, case, delete, func, or_, select, update
+from sqlalchemy import and_, case, delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -27,6 +27,11 @@ from src.core.enums import (
 )
 from src.core.utils.time import datetime_now
 from src.infrastructure.database.models import PaymentWebhookEvent, Transaction, User
+from src.infrastructure.database.referral_reward_source import (
+    exact_legacy_referral_source_fulfillment,
+    paid_nontrial_referral_source_predicate,
+    referral_source_evidence_at,
+)
 
 
 class TransactionDaoImpl(TransactionDao):
@@ -141,18 +146,10 @@ class TransactionDaoImpl(TransactionDao):
         *,
         include_refunded: bool,
     ) -> tuple[Any, ...]:
-        statuses = (
-            (TransactionStatus.COMPLETED, TransactionStatus.REFUNDED)
-            if include_refunded
-            else (TransactionStatus.COMPLETED,)
-        )
-        return (
-            Transaction.status.in_(statuses),
-            Transaction.fulfillment_status == TransactionFulfillmentStatus.SUCCEEDED,
-            Transaction.fulfillment_completed_at.is_not(None),
-            Transaction.is_test.is_(False),
-            Transaction.pricing["final_amount"].astext.cast(Numeric) > 0,
-            Transaction.plan_snapshot["is_trial"].astext == "false",
+        return paid_nontrial_referral_source_predicate(
+            Transaction,
+            include_refunded=include_refunded,
+            include_legacy=False,
         )
 
     async def list_historical_referral_reward_sources(
@@ -206,10 +203,14 @@ class TransactionDaoImpl(TransactionDao):
                 select(Transaction.id)
                 .where(
                     Transaction.user_id == user_id,
-                    *self._successful_paid_nontrial_predicate(include_refunded=True),
+                    *paid_nontrial_referral_source_predicate(
+                        Transaction,
+                        include_refunded=True,
+                        include_legacy=True,
+                    ),
                 )
                 .order_by(
-                    Transaction.fulfillment_completed_at,
+                    referral_source_evidence_at(Transaction, include_legacy=True),
                     Transaction.id,
                 )
                 .limit(1)
@@ -449,7 +450,17 @@ class TransactionDaoImpl(TransactionDao):
             )
             .values(
                 status=TransactionStatus.REFUNDED,
-                fulfillment_last_error="REFUND_DURING_UNPROVEN_FULFILLMENT",
+                # Keep the exact migration-0049 provenance marker immutable.
+                # Status records the refund; overwriting this marker would make
+                # a later ON_FIRST candidate forget an ambiguous earlier paid
+                # source and could permit a duplicate referral reward.
+                fulfillment_last_error=case(
+                    (
+                        exact_legacy_referral_source_fulfillment(Transaction),
+                        Transaction.fulfillment_last_error,
+                    ),
+                    else_="REFUND_DURING_UNPROVEN_FULFILLMENT",
+                ),
             )
         )
         return cast(int, result.rowcount) == 1  # type: ignore[attr-defined]

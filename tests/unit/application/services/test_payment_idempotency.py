@@ -145,9 +145,7 @@ class FakePaymentOperationDao:
             provider_owner_hash=provider_owner_hash,
             recovery_mode=recovery_mode,
             provider_replay_expires_at=(
-                datetime_now() + provider_replay_for
-                if provider_replay_for is not None
-                else None
+                datetime_now() + provider_replay_for if provider_replay_for is not None else None
             ),
             updated_at=datetime_now(),
         )
@@ -217,7 +215,7 @@ async def mark_processing(service: PaymentIdempotencyService, operation_id: int)
         provider_request_snapshot={"amount": {"value": "10", "currency": "RUB"}},
         provider_owner_hash="a" * 64,
         recovery_mode=PaymentOperationRecoveryMode.YOOKASSA_REPLAY,
-            provider_replay_for=timedelta(hours=23),
+        provider_replay_for=timedelta(hours=23),
     )
 
 

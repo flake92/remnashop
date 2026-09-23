@@ -85,7 +85,7 @@ class CreatePromocode(Interactor[CreatePromocodeDto, PromocodeDto]):
             created = await self.promocode_dao.create(promo)
             await self.uow.commit()
 
-        logger.info(f"{actor.log} Created promocode '{data.code}'")
+        logger.info(f"{actor.log} Created promocode id='{created.id}'")
         return created
 
 

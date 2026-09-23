@@ -48,18 +48,16 @@ class SearchUsers(Interactor[SearchUsersDto, list[UserDto]]):
                 user = await self.user_dao.get_by_telegram_id(data.forward_from_id)
                 if user:
                     found_users.append(user)
-                    logger.info(f"Search by forwarded message, found user '{data.forward_from_id}'")
+                    logger.info("Search by forwarded message found a user")
                     return found_users
 
-                logger.warning(
-                    f"Search by forwarded message, user '{data.forward_from_id}' not found"
-                )
+                logger.warning("Search by forwarded message found no user")
 
             if data.forward_sender_name:
                 sender_name = data.forward_sender_name.strip()
                 users = await self.user_dao.get_by_partial_name(sender_name)
                 found_users.extend(users)
-                logger.info(f"Search by forwarded name '{sender_name}', found '{len(users)}' users")
+                logger.info(f"Search by forwarded name found '{len(users)}' users")
 
             return found_users
 
@@ -71,9 +69,9 @@ class SearchUsers(Interactor[SearchUsersDto, list[UserDto]]):
                 user = await self.user_dao.get_by_telegram_id(numeric_id)
                 if user:
                     found_users.append(user)
-                    logger.info(f"Searched by Telegram ID '{numeric_id}', user found")
+                    logger.info("Search by Telegram identity found a user")
                 else:
-                    logger.warning(f"Searched by Telegram ID '{numeric_id}', user not found")
+                    logger.warning("Search by Telegram identity found no user")
 
                 # users.id is a 32-bit serial; Telegram IDs exceed it and would raise
                 # an out-of-range error in the query, so only probe internal IDs in range.
@@ -108,15 +106,13 @@ class SearchUsers(Interactor[SearchUsersDto, list[UserDto]]):
                 user = await self.user_dao.get_by_email(query)
                 if user:
                     found_users.append(user)
-                    logger.info(f"Searched by email '{query}', user found")
+                    logger.info("Search by email identity found a user")
                 else:
-                    logger.warning(f"Searched by email '{query}', user not found")
+                    logger.warning("Search by email identity found no user")
 
             else:
                 found_users = await self.user_dao.get_by_partial_name(query)
-                logger.info(
-                    f"Searched users by partial name '{query}', found '{len(found_users)}' users"
-                )
+                logger.info(f"Search by partial name found '{len(found_users)}' users")
 
         return found_users
 

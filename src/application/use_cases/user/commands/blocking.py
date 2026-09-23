@@ -7,6 +7,11 @@ from src.application.common.dao import SettingsDao, UserDao
 from src.application.common.policy import Permission
 from src.application.common.uow import UnitOfWork
 from src.application.dto import UserDto
+from src.application.use_cases.blacklist.limits import (
+    MAX_BLACKLIST_IDS_PER_SOURCE,
+    MAX_PERSISTED_BLACKLIST_IDS,
+    MAX_TELEGRAM_USER_ID,
+)
 from src.core.exceptions import PermissionDeniedError, UserNotFoundError
 
 
@@ -27,6 +32,10 @@ class BlockUsersByIds(Interactor[list[int], BlockUsersResult]):
 
     async def _execute(self, actor: UserDto, telegram_ids: list[int]) -> BlockUsersResult:
         unique_ids = list(dict.fromkeys(telegram_ids))  # deduplicate, preserve order
+        if len(unique_ids) > MAX_BLACKLIST_IDS_PER_SOURCE:
+            raise ValueError(f"Cannot block more than {MAX_BLACKLIST_IDS_PER_SOURCE} IDs at once")
+        if any(user_id < 1 or user_id > MAX_TELEGRAM_USER_ID for user_id in unique_ids):
+            raise ValueError("Telegram user IDs must be positive signed 64-bit integers")
 
         existing_users = await self.user_dao.get_by_telegram_ids(unique_ids)
         existing_map = {u.telegram_id: u for u in existing_users}
@@ -63,9 +72,14 @@ class BlockUsersByIds(Interactor[list[int], BlockUsersResult]):
                 new_ids = [tid for tid in unknown_ids if tid not in existing_set]
                 already_in_list = len(unknown_ids) - len(new_ids)
                 if new_ids:
-                    settings.blacklist.blocked_ids = list(
+                    combined_blocked_ids = list(
                         dict.fromkeys(settings.blacklist.blocked_ids + new_ids)
                     )
+                    if len(combined_blocked_ids) > MAX_PERSISTED_BLACKLIST_IDS:
+                        raise ValueError(
+                            "Blacklist storage limit exceeded; remove obsolete IDs first"
+                        )
+                    settings.blacklist.blocked_ids = combined_blocked_ids
                     await self.settings_dao.update(settings)
                 blocked_ids = len(new_ids)
 

@@ -46,7 +46,7 @@ class PromocodeDaoImpl(PromocodeDao):
             await self.session.flush()
         except IntegrityError:
             raise ValueError(f"Promocode with code '{promocode.code}' already exists")
-        logger.debug(f"Promocode '{promocode.code}' created with id={db.id}")
+        logger.debug(f"Promocode created with id={db.id}")
         return self._to_dto(db)
 
     async def update(self, promocode: PromocodeDto) -> Optional[PromocodeDto]:

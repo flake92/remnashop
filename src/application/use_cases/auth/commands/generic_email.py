@@ -16,6 +16,9 @@ from src.application.use_cases.auth._codes import (
     generate_email_verification_code,
     hash_email_verification_code,
 )
+from src.application.use_cases.auth._email_reminder_preferences import (
+    enable_expiration_reminders_after_email_verification,
+)
 from src.application.use_cases.auth.commands.register import (
     RegisterEmailUser,
     RegisterEmailUserDto,
@@ -145,6 +148,7 @@ class CompleteGenericEmailAuth(Interactor[CompleteGenericEmailAuthDto, UserDto])
 
         user = await self.user_dao.get_by_email(data.email)
         if user:
+            was_email_verified = user.is_email_verified
             if user.is_blocked:
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User is blocked")
             if user.password_hash and not self.password_hasher.verify(
@@ -158,6 +162,8 @@ class CompleteGenericEmailAuth(Interactor[CompleteGenericEmailAuthDto, UserDto])
                 user.password_hash = self.password_hasher.hash(data.password)
             user.is_email_verified = True
             user.pending_email = None
+            if not was_email_verified:
+                enable_expiration_reminders_after_email_verification(user)
             async with self.uow:
                 updated = await self.user_dao.update(user)
                 if not updated:
@@ -172,6 +178,7 @@ class CompleteGenericEmailAuth(Interactor[CompleteGenericEmailAuthDto, UserDto])
                 RegisterEmailUserDto(email=data.email, password=data.password)
             )
             result.is_email_verified = True
+            enable_expiration_reminders_after_email_verification(result)
             async with self.uow:
                 updated = await self.user_dao.update(result)
                 if not updated:

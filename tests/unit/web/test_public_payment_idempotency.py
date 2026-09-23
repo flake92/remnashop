@@ -14,7 +14,9 @@ from src.application.services.payment_reconciliation import (
     PaymentOperationPublicState,
     PaymentOperationView,
 )
-from src.core.enums import Currency, PaymentGatewayType
+from src.application.use_cases.plan.queries.renewal import GetRenewalPlanContext
+from src.application.use_cases.user.queries.plans import GetAvailablePlans
+from src.core.enums import Currency, PaymentGatewayType, PlanAvailability
 from src.core.utils.time import datetime_now
 from src.web.endpoints.admin.payment_operations import (
     reconcile_payment_operation_admin,
@@ -147,8 +149,14 @@ def build_extend_call(
             gateway_type=PaymentGatewayType.YOOKASSA,
         ),
         "user": SimpleNamespace(id=7, is_email_verified=True),
-        "subscription_dao": SimpleNamespace(
-            get_current=AsyncMock(return_value=SimpleNamespace(plan_snapshot=SimpleNamespace(id=1)))
+        "get_renewal_plan_context": SimpleNamespace(
+            system=AsyncMock(
+                return_value=SimpleNamespace(
+                    current_subscription=SimpleNamespace(plan_snapshot=SimpleNamespace(id=1)),
+                    available_plans=[plan],
+                    renewal_plans=[plan],
+                )
+            )
         ),
         "payment_gateway_dao": SimpleNamespace(get_by_type=AsyncMock(return_value=gateway)),
         "pricing_service": SimpleNamespace(
@@ -158,7 +166,6 @@ def build_extend_call(
                 final_amount=amount,
             )
         ),
-        "get_available_plans": SimpleNamespace(system=AsyncMock(return_value=[plan])),
         "match_plan": SimpleNamespace(system=AsyncMock(return_value=plan)),
         "create_payment": create_payment,
         "process_payment": process_payment,
@@ -202,7 +209,8 @@ async def test_extend_rejects_snapshot_when_plan_id_is_no_longer_available(
         create_payment,
         "request-key-removed-plan-0001",
     )
-    kwargs["subscription_dao"].get_current.return_value.plan_snapshot.id = 2
+    renewal_context = kwargs["get_renewal_plan_context"].system.return_value
+    renewal_context.current_subscription.plan_snapshot.id = 2
     kwargs["match_plan"].system.return_value = None
 
     with pytest.raises(HTTPException) as raised:
@@ -240,7 +248,6 @@ async def test_offers_mark_same_id_modified_plan_as_renewal_with_warning() -> No
 
     response = await handler(
         user=SimpleNamespace(id=7),
-        subscription_dao=SimpleNamespace(get_current=AsyncMock(return_value=current)),
         payment_gateway_dao=SimpleNamespace(get_active=AsyncMock(return_value=[gateway])),
         pricing_service=SimpleNamespace(
             calculate=lambda *args, **kwargs: PriceDetailsDto(
@@ -249,12 +256,105 @@ async def test_offers_mark_same_id_modified_plan_as_renewal_with_warning() -> No
                 final_amount=amount,
             )
         ),
-        get_available_plans=SimpleNamespace(system=AsyncMock(return_value=[plan])),
+        get_renewal_plan_context=SimpleNamespace(
+            system=AsyncMock(
+                return_value=SimpleNamespace(
+                    current_subscription=current,
+                    available_plans=[plan],
+                    renewal_plans=[plan],
+                )
+            )
+        ),
         match_plan=SimpleNamespace(system=AsyncMock(return_value=None)),
     )
 
     assert response.plans[0].recommended_purchase_type == "RENEW"
     assert response.plans[0].renewal_terms_changed is True
+
+
+@pytest.mark.asyncio
+async def test_offers_do_not_expose_grandfathered_or_unrelated_new_plans() -> None:
+    amount = Decimal(100)
+    duration = SimpleNamespace(days=30, get_price=lambda currency: amount)
+
+    def plan(plan_id: int, availability: PlanAvailability) -> SimpleNamespace:
+        return SimpleNamespace(
+            id=plan_id,
+            public_code=f"plan-{plan_id}",
+            name=f"Plan {plan_id}",
+            description=None,
+            traffic_limit=100,
+            device_limit=5,
+            type=SimpleNamespace(value="BOTH"),
+            durations=[duration],
+            availability=availability,
+            is_active=True,
+            allowed_telegram_ids=[],
+            allowed_emails=[],
+        )
+
+    current_new_plan = plan(3, PlanAvailability.NEW)
+    unrelated_new_plan = plan(4, PlanAvailability.NEW)
+    regular_plan = plan(8, PlanAvailability.ALL)
+    user = SimpleNamespace(
+        id=7,
+        telegram_id=7,
+        email=None,
+        log="[USER:7]",
+    )
+    current = SimpleNamespace(
+        user_id=user.id,
+        is_active=True,
+        plan_snapshot=SimpleNamespace(id=current_new_plan.id),
+        current_status=SimpleNamespace(value="ACTIVE"),
+        is_unlimited=False,
+    )
+    user_dao = SimpleNamespace(
+        has_any_subscription=AsyncMock(return_value=True),
+        is_invited_user=AsyncMock(return_value=False),
+    )
+    plan_dao = SimpleNamespace(
+        get_active_plans=AsyncMock(
+            return_value=[current_new_plan, unrelated_new_plan, regular_plan]
+        ),
+        get_by_id=AsyncMock(return_value=current_new_plan),
+    )
+    get_available_plans = GetAvailablePlans(user_dao, plan_dao)  # type: ignore[arg-type]
+    get_renewal_plan_context = GetRenewalPlanContext(  # type: ignore[arg-type]
+        SimpleNamespace(get_current=AsyncMock(return_value=current)),
+        plan_dao,
+        get_available_plans,
+    )
+    match_plan = SimpleNamespace(system=AsyncMock(return_value=current_new_plan))
+    gateway = SimpleNamespace(
+        type=PaymentGatewayType.YOOKASSA,
+        currency=Currency.RUB,
+        settings=SimpleNamespace(is_configured=True),
+    )
+    handler = get_subscription_offers.__dishka_orig_func__  # type: ignore[attr-defined]
+
+    response = await handler(
+        user=user,
+        payment_gateway_dao=SimpleNamespace(get_active=AsyncMock(return_value=[gateway])),
+        pricing_service=SimpleNamespace(
+            calculate=lambda *args, **kwargs: PriceDetailsDto(
+                original_amount=amount,
+                discount_percent=0,
+                final_amount=amount,
+            )
+        ),
+        get_renewal_plan_context=get_renewal_plan_context,
+        match_plan=match_plan,
+    )
+
+    match_request = match_plan.system.await_args.args[0]
+    assert [candidate.id for candidate in match_request.plans] == [
+        regular_plan.id,
+        current_new_plan.id,
+    ]
+    assert [offer.id for offer in response.plans] == [regular_plan.id]
+    assert current_new_plan.id not in [offer.id for offer in response.plans]
+    assert unrelated_new_plan.id not in [offer.id for offer in response.plans]
 
 
 @pytest.mark.asyncio

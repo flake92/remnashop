@@ -1,10 +1,25 @@
 x-build: &build
-  image: ghcr.io/snoups/remnashop:latest
+  image: ghcr.io/${REMNASHOP_IMAGE_REPOSITORY:?Set REMNASHOP_IMAGE_REPOSITORY}@${REMNASHOP_IMAGE_DIGEST:?Set REMNASHOP_IMAGE_DIGEST to the sha256 digest of the release image}
 
   volumes:
       - ./logs:/opt/remnashop/logs
       - ./assets:/opt/remnashop/assets
       - ./backups:/opt/remnashop/backups
+      - remnashop-tmp:/opt/remnashop/tmp
+
+x-runtime: &runtime
+  user: "10001:10001"
+  read_only: true
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,nodev,size=64m
+  environment:
+    TMPDIR: /opt/remnashop/tmp
+    TASKIQ_DEPLOYMENT_ID: ${TASKIQ_DEPLOYMENT_ID:?Set a unique TASKIQ_DEPLOYMENT_ID for this deployed stack}
+    TASKIQ_STREAM_MAX_ENTRIES: ${TASKIQ_STREAM_MAX_ENTRIES:-100000}
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
 
 x-common: &common
   ulimits:
@@ -13,9 +28,6 @@ x-common: &common
       hard: 1048576
 
   restart: unless-stopped
-
-  networks:
-    - remnawave-network
 
 x-logging: &logging
   logging:
@@ -29,63 +41,92 @@ x-env: &env
 
 
 services:
+  remnashop-storage-init:
+    container_name: "remnashop-storage-init"
+    hostname: remnashop-storage-init
+    <<: [*build, *runtime, *logging]
+    user: "0:0"
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETGID
+      - SETUID
+    restart: "no"
+    command: ["/bin/true"]
+    network_mode: "none"
+
   remnashop-migration:
     container_name: "remnashop-migration"
     hostname: remnashop-migration
-    <<: [*build, *logging, *env]
+    <<: [*build, *runtime, *logging, *env]
     restart: "no"
     command: ["./docker-migrate.sh"]
     networks:
-      - remnawave-network
+      - remnashop-data-network
     depends_on:
+      remnashop-storage-init:
+        condition: service_completed_successfully
       remnashop-db:
         condition: service_healthy
 
   remnashop-db:
-    image: postgres:17
+    image: postgres:17@sha256:67f41722b7a8cbdb868a44a4995c846eddfdc2973bccb291ce937dce88ad5675
     container_name: "remnashop-db"
     hostname: remnashop-db
-    <<: [*common, *logging, *env]
+    <<: [*common, *logging]
 
     environment:
-      - POSTGRES_USER=${DATABASE_USER:-remnashop}
-      - POSTGRES_PASSWORD=${DATABASE_PASSWORD}
-      - POSTGRES_DB=${DATABASE_NAME:-remnashop}
-      - TZ=UTC
+      POSTGRES_USER: ${DATABASE_USER:-remnashop}
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD:?Set DATABASE_PASSWORD}
+      POSTGRES_DB: ${DATABASE_NAME:-remnashop}
+      TZ: UTC
 
-    ports:
-      - 127.0.0.1:5001:${DATABASE_PORT:-5432}
+    networks:
+      - remnashop-data-network
 
     volumes:
       - remnashop-db-data:/var/lib/postgresql/data
 
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $${DATABASE_USER:-remnashop} -d $${DATABASE_NAME:-remnashop}"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 3s
       timeout: 10s
       retries: 3
 
 
   remnashop-redis:
-    image: valkey/valkey:9-alpine
+    image: valkey/valkey:9-alpine@sha256:a0dbf4c1d5708782907c10e2c72deff317518518b5288a58416981d9db95d30b
     container_name: "remnashop-redis"
     hostname: remnashop-redis
-    <<: [*common, *logging, *env]
+    <<: [*common, *logging]
 
-    command: >
-      sh -c '
-      ARGS="--save \"\" --appendonly yes --maxmemory 512mb --maxmemory-policy volatile-lru --loglevel warning";
-      if [ -n "$${REDIS_PASSWORD}" ]; then
-        exec valkey-server $${ARGS} --requirepass "$${REDIS_PASSWORD}";
-      else
-        exec valkey-server $${ARGS};
-      fi'
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD}
+
+    command:
+      - valkey-server
+      - --save
+      - ""
+      - --appendonly
+      - "yes"
+      - --maxmemory
+      - 512mb
+      - --maxmemory-policy
+      - noeviction
+      - --loglevel
+      - warning
+      - --requirepass
+      - ${REDIS_PASSWORD:?Set REDIS_PASSWORD}
+
+    networks:
+      - remnashop-data-network
 
     volumes:
       - remnashop-redis-data:/data
 
     healthcheck:
-      test: ["CMD-SHELL", "valkey-cli $${REDIS_PASSWORD:+-a \"$REDIS_PASSWORD\"} ping | grep PONG"]
+      test: ["CMD-SHELL", "valkey-cli --no-auth-warning -a \"$${REDIS_PASSWORD}\" ping | grep -qx PONG"]
       interval: 3s
       timeout: 10s
       retries: 3
@@ -94,7 +135,20 @@ services:
   remnashop:
     container_name: "remnashop"
     hostname: remnashop
-    <<: [*build, *common, *logging, *env]
+    <<: [*build, *runtime, *common, *logging, *env]
+    networks:
+      - remnawave-network
+      - remnashop-data-network
+    init: true
+    stop_signal: SIGTERM
+    stop_grace_period: 2m
+
+    healthcheck:
+      test: ["CMD", "python", "-m", "src.infrastructure.healthcheck", "web"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 1m
 
     ports:
       - 127.0.0.1:5000:${APP_PORT:-5000}
@@ -111,11 +165,26 @@ services:
   remnashop-taskiq-worker:
     container_name: "remnashop-taskiq-worker"
     hostname: remnashop-taskiq-worker
-    <<: [*build, *common, *logging, *env]
+    <<: [*build, *runtime, *common, *logging, *env]
+    networks:
+      - remnawave-network
+      - remnashop-data-network
+    init: true
+    stop_signal: SIGTERM
+    # Acknowledgement happens only after execution. Give long-running imports,
+    # broadcasts and backups time to finish before Docker sends SIGKILL.
+    stop_grace_period: 10m
+
+    healthcheck:
+      test: ["CMD", "python", "-m", "src.infrastructure.healthcheck", "taskiq"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 3m
 
     command: >
-        taskiq worker src.infrastructure.taskiq.worker:worker
-        --workers 1 --ack-type when_received --tasks-pattern src/infrastructure/taskiq/tasks/*.py -fsd
+      taskiq worker src.infrastructure.taskiq.worker:worker
+      --workers 1 --ack-type when_executed --tasks-pattern src/infrastructure/taskiq/tasks/*.py -fsd
 
     depends_on:
         remnashop-migration:
@@ -129,11 +198,25 @@ services:
   remnashop-taskiq-scheduler:
     container_name: "remnashop-taskiq-scheduler"
     hostname: remnashop-taskiq-scheduler
-    <<: [*build, *common, *logging, *env]
+    <<: [*build, *runtime, *common, *logging, *env]
+    networks:
+      - remnashop-data-network
+    init: true
+    # Taskiq's scheduler CLI has no TERM shutdown hook. asyncio.run converts
+    # INT into cancellation, then Taskiq closes its broker and schedule sources.
+    stop_signal: SIGINT
+    stop_grace_period: 30s
+
+    healthcheck:
+      test: ["CMD", "python", "-m", "src.infrastructure.healthcheck", "taskiq"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 3m
 
     command: >
-        taskiq scheduler src.infrastructure.taskiq.scheduler:scheduler
-        --tasks-pattern src/infrastructure/taskiq/tasks/*.py -fsd
+      taskiq scheduler src.infrastructure.taskiq.scheduler:scheduler
+      --tasks-pattern src/infrastructure/taskiq/tasks/*.py -fsd
 
     depends_on:
         remnashop-migration:
@@ -150,6 +233,11 @@ networks:
     driver: bridge
     external: true
 
+  remnashop-data-network:
+    name: remnashop-data-network
+    driver: bridge
+    internal: true
+
 volumes:
   remnashop-db-data:
     name: remnashop-db-data
@@ -158,5 +246,10 @@ volumes:
 
   remnashop-redis-data:
     name: remnashop-redis-data
+    driver: local
+    external: false
+
+  remnashop-tmp:
+    name: remnashop-tmp
     driver: local
     external: false

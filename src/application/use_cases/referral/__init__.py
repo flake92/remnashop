@@ -7,6 +7,7 @@ from .commands.backfill import ManageHistoricalReferralRewards
 from .commands.rewards import (
     AssignReferralRewards,
     GiveReferrerReward,
+    RecoverLegacyReferralReward,
     ResolveManualReferralReward,
     RetryPendingReferralRewards,
 )
@@ -22,5 +23,6 @@ REFERRAL_USE_CASES: Final[tuple[type[Interactor], ...]] = (
     AssignReferralRewards,
     RetryPendingReferralRewards,
     ResolveManualReferralReward,
+    RecoverLegacyReferralReward,
     ManageHistoricalReferralRewards,
 )

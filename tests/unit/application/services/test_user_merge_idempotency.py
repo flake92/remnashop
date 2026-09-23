@@ -72,15 +72,17 @@ async def test_explicit_merge_resolutions_reach_dry_run_plan() -> None:
     )
     use_case = MergeUsers(uow, dao)
 
-    await use_case.system(MergeUsersDto(
-        source_user_id=11,
-        target_user_id=22,
-        reason="confirmed Clean Pay merge",
-        dry_run=True,
-        email_resolution=EmailConflictResolution.KEEP_TARGET,
-        telegram_resolution=TelegramConflictResolution.KEEP_SOURCE,
-        payment_resolution=PaymentConflictResolution.REKEY_SOURCE,
-    ))
+    await use_case.system(
+        MergeUsersDto(
+            source_user_id=11,
+            target_user_id=22,
+            reason="confirmed Clean Pay merge",
+            dry_run=True,
+            email_resolution=EmailConflictResolution.KEEP_TARGET,
+            telegram_resolution=TelegramConflictResolution.KEEP_SOURCE,
+            payment_resolution=PaymentConflictResolution.REKEY_SOURCE,
+        )
+    )
 
     dao.plan.assert_awaited_once_with(
         11,

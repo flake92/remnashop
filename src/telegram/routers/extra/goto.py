@@ -188,7 +188,7 @@ async def on_goto_promocode(
         current = await subscription_dao.get_current(user.id)
         will_replace = current is not None
 
-    logger.info(f"{user.log} Deeplink promocode '{code}' validated, redirecting")
+    logger.info(f"{user.log} Deeplink promocode validated, redirecting")
 
     await dialog_manager.bg(
         user_id=user.telegram_id,

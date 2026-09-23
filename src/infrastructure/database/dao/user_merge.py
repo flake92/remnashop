@@ -17,6 +17,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import ARRAY, array
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql import Select
 
 from src.application.common.dao.payment_operation import PaymentOperationStatus
 from src.application.common.dao.user_merge import (
@@ -44,11 +45,33 @@ from src.infrastructure.database.models import (
     UserMergeAudit,
     UserOAuthProvider,
 )
+from src.infrastructure.database.referral_graph import (
+    acquire_referral_graph_lock,
+    referral_path_statement,
+)
 
 
 class UserMergeDaoImpl(UserMergeDao):
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
+
+    @staticmethod
+    def _resolve_merged_email_identity(
+        *,
+        source_email: str | None,
+        source_verified: bool,
+        target_email: str | None,
+        target_verified: bool,
+    ) -> tuple[str | None, bool]:
+        if target_email is not None:
+            # Verification is evidence about a concrete address, not an
+            # account-wide flag. Source evidence applies only when it names the
+            # exact same selected address; a different KEEP_TARGET address keeps
+            # only the target's own verification evidence.
+            return target_email, bool(
+                target_verified or (source_email == target_email and source_verified)
+            )
+        return source_email, bool(source_email is not None and source_verified)
 
     async def plan(
         self,
@@ -63,6 +86,7 @@ class UserMergeDaoImpl(UserMergeDao):
         existing_merge = await self._existing_merge_plan(source, target)
         if existing_merge is not None:
             return existing_merge
+        self._assert_canonical_merge_target(target)
         await self._lock_nonterminal_referral_rewards(source.id, target.id)
         await self._normalize_stale_payment_work(source.id, target.id)
         moved = await self._collect_moved_counts(source.id, target.id)
@@ -102,6 +126,7 @@ class UserMergeDaoImpl(UserMergeDao):
         existing_merge = await self._existing_merge_plan(source, target)
         if existing_merge is not None:
             return existing_merge
+        self._assert_canonical_merge_target(target)
         await self._lock_nonterminal_referral_rewards(source.id, target.id)
         await self._normalize_stale_payment_work(source.id, target.id)
         await self._assert_no_active_payment_work(source.id, target.id)
@@ -185,6 +210,7 @@ class UserMergeDaoImpl(UserMergeDao):
         )
 
     async def _lock_users(self, source_user_id: int, target_user_id: int) -> tuple[User, User]:
+        await acquire_referral_graph_lock(self.session)
         ordered_ids = sorted([source_user_id, target_user_id])
         stmt = select(User).where(User.id.in_(ordered_ids)).order_by(User.id).with_for_update()
         users = list((await self.session.scalars(stmt)).all())
@@ -196,6 +222,14 @@ class UserMergeDaoImpl(UserMergeDao):
         if target is None:
             raise UserMergeNotFoundError(f"Target user '{target_user_id}' not found")
         return source, target
+
+    @staticmethod
+    def _assert_canonical_merge_target(target: User) -> None:
+        if target.merged_into_user_id is not None:
+            raise UserMergeTargetConflictError(
+                f"Target user '{target.id}' is already merged into user "
+                f"'{target.merged_into_user_id}'; merge into the canonical target instead"
+            )
 
     def _validate(
         self,
@@ -381,32 +415,51 @@ class UserMergeDaoImpl(UserMergeDao):
         source_user_id: int,
         target_user_id: int,
     ) -> int:
-        source_attribution_id = await self.session.scalar(
-            select(Referral.id).where(Referral.referred_id == source_user_id).limit(1)
+        source_referrer_id = await self.session.scalar(
+            select(Referral.referrer_id).where(Referral.referred_id == source_user_id).limit(1)
         )
-        target_attribution_id = await self.session.scalar(
-            select(Referral.id).where(Referral.referred_id == target_user_id).limit(1)
+        target_referrer_id = await self.session.scalar(
+            select(Referral.referrer_id).where(Referral.referred_id == target_user_id).limit(1)
         )
-        conflicts: set[int] = set()
-        if source_attribution_id is not None and target_attribution_id is not None:
-            conflicts.add(source_attribution_id)
+        conflicts = int(
+            source_referrer_id is not None
+            and target_referrer_id is not None
+            and source_referrer_id != target_referrer_id
+        )
+        if await self._referral_accounts_connected(source_user_id, target_user_id):
+            conflicts += 1
+        return conflicts
 
-        self_attribution_ids = await self.session.scalars(
-            select(Referral.id).where(
-                or_(
-                    and_(
-                        Referral.referrer_id == source_user_id,
-                        Referral.referred_id == target_user_id,
-                    ),
-                    and_(
-                        Referral.referrer_id == target_user_id,
-                        Referral.referred_id == source_user_id,
-                    ),
-                )
+    @staticmethod
+    def _referral_path_statement(
+        ancestor_user_id: int,
+        descendant_user_id: int,
+    ) -> Select[Any]:
+        return referral_path_statement(ancestor_user_id, descendant_user_id)
+
+    async def _referral_path_exists(
+        self,
+        ancestor_user_id: int,
+        descendant_user_id: int,
+    ) -> bool:
+        return bool(
+            await self.session.scalar(
+                self._referral_path_statement(ancestor_user_id, descendant_user_id)
             )
         )
-        conflicts.update(self_attribution_ids.all())
-        return len(conflicts)
+
+    async def _referral_accounts_connected(
+        self,
+        source_user_id: int,
+        target_user_id: int,
+    ) -> bool:
+        return await self._referral_path_exists(
+            source_user_id,
+            target_user_id,
+        ) or await self._referral_path_exists(
+            target_user_id,
+            source_user_id,
+        )
 
     async def _lock_nonterminal_referral_rewards(
         self,
@@ -631,6 +684,15 @@ class UserMergeDaoImpl(UserMergeDao):
     ) -> None:
         source_email = source.email
         source_email_verified = source.is_email_verified
+        source_reminders_enabled = source.subscription_expiration_email_enabled
+        source_reminders_enabled_at = source.subscription_expiration_email_enabled_at
+        target_had_verified_email = bool(target.email and target.is_email_verified)
+        merged_email, merged_email_verified = self._resolve_merged_email_identity(
+            source_email=source_email,
+            source_verified=source_email_verified,
+            target_email=target.email,
+            target_verified=target.is_email_verified,
+        )
         source_password_hash = source.password_hash
         source_telegram_id = source.telegram_id
         source_username = source.username
@@ -654,6 +716,11 @@ class UserMergeDaoImpl(UserMergeDao):
         source.password_reset_expires_at = None
         source.password_hash = None
         source.is_email_verified = False
+        # The retired source must never retain a deliverable preference. Its
+        # captured choice is transferred below only when its verified address
+        # becomes the target's first verified identity.
+        source.subscription_expiration_email_enabled = False
+        source.subscription_expiration_email_enabled_at = None
         source.telegram_id = None
         source.personal_discount = 0
         source.purchase_discount = 0
@@ -678,9 +745,23 @@ class UserMergeDaoImpl(UserMergeDao):
         source.merged_into_user_id = target.id
         source.merged_at = datetime_now().astimezone(timezone.utc)
 
-        target.email = target.email or source_email
+        target.email = merged_email
         target.password_hash = target.password_hash or source_password_hash
-        target.is_email_verified = target.is_email_verified or source_email_verified
+        target.is_email_verified = merged_email_verified
+        if merged_email_verified and not target_had_verified_email:
+            # A verified identity selected from source carries the user's
+            # current preference with it. This enables the product default for
+            # migrated/default-on source accounts without erasing a later
+            # explicit source opt-out. An already verified target keeps its own
+            # choice regardless of the source account.
+            source_identity_selected = bool(
+                source_email_verified and source_email is not None and source_email == merged_email
+            )
+            if source_identity_selected:
+                target.subscription_expiration_email_enabled = source_reminders_enabled
+                target.subscription_expiration_email_enabled_at = (
+                    source_reminders_enabled_at if source_reminders_enabled else None
+                )
         target.telegram_id = (
             source_telegram_id
             if telegram_resolution is TelegramConflictResolution.KEEP_SOURCE
@@ -750,43 +831,29 @@ class UserMergeDaoImpl(UserMergeDao):
     async def _move_referrals(
         self, source_user_id: int, target_user_id: int, moved: dict[str, int]
     ) -> None:
-        merge_edge = await self.session.scalar(
-            select(Referral.id)
-            .where(
-                or_(
-                    and_(
-                        Referral.referrer_id == source_user_id,
-                        Referral.referred_id == target_user_id,
-                    ),
-                    and_(
-                        Referral.referrer_id == target_user_id,
-                        Referral.referred_id == source_user_id,
-                    ),
-                )
-            )
-            .limit(1)
-        )
-        if merge_edge is not None:
+        if await self._referral_accounts_connected(source_user_id, target_user_id):
             raise UserMergeReferralAttributionConflictError(
-                "Merge would turn a source/target referral edge into self-referral"
+                "Source and target are connected in the referral graph; "
+                "merge would create a referral cycle"
             )
 
-        target_is_referred = bool(
-            await self.session.scalar(
-                select(Referral.id).where(Referral.referred_id == target_user_id).limit(1)
-            )
+        source_referrer_id = await self.session.scalar(
+            select(Referral.referrer_id).where(Referral.referred_id == source_user_id).limit(1)
         )
-        if target_is_referred:
-            source_is_referred = bool(
-                await self.session.scalar(
-                    select(Referral.id).where(Referral.referred_id == source_user_id).limit(1)
-                )
+        target_referrer_id = await self.session.scalar(
+            select(Referral.referrer_id).where(Referral.referred_id == target_user_id).limit(1)
+        )
+        if (
+            source_referrer_id is not None
+            and target_referrer_id is not None
+            and source_referrer_id != target_referrer_id
+        ):
+            raise UserMergeReferralAttributionConflictError(
+                "Source and target have different referral attribution; "
+                "resolve it explicitly before retrying"
             )
-            if source_is_referred:
-                raise UserMergeReferralAttributionConflictError(
-                    "Both source and target have referral attribution; merge rejected"
-                )
-        else:
+
+        if target_referrer_id is None:
             await self.session.execute(
                 update(Referral)
                 .where(Referral.referred_id == source_user_id)

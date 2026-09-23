@@ -90,6 +90,12 @@ class RemnaWebhookService:
             await self._process_sync(event, remna_user)
             return
 
+        if event == RemnaUserEvent.TRAFFIC_RESET:
+            # Remnashop does not persist consumed traffic.  Remnawave remains the
+            # source of truth, so this event intentionally has no local mutation.
+            logger.debug(f"Traffic reset acknowledged for RemnaUser '{remna_user.telegram_id}'")
+            return
+
         user = await self.user_dao.get_by_remna_uuid(remna_user.uuid)
         if not user:
             logger.warning(f"Local user not found for remna_uuid '{remna_user.uuid}'")
@@ -184,6 +190,19 @@ class RemnaWebhookService:
 
     async def handle_node_event(self, event: str, node: NodeDto) -> None:
         logger.info(f"Received node event '{event}' for node '{node.name}'")
+
+        if event in {
+            RemnaNodeEvent.CREATED,
+            RemnaNodeEvent.MODIFIED,
+            RemnaNodeEvent.DISABLED,
+            RemnaNodeEvent.ENABLED,
+            RemnaNodeEvent.DELETED,
+        }:
+            # These are valid Remnawave lifecycle notifications, but Remnashop
+            # has no user-facing action for them. Treating them as unhandled
+            # warnings makes normal panel administration look like an incident.
+            logger.debug(f"Ignored informational node event '{event}' for node '{node.name}'")
+            return
 
         if event not in {
             RemnaNodeEvent.CONNECTION_LOST,

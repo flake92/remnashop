@@ -12,6 +12,7 @@ from src.application.common.dao import (
     ReferralDao,
     SettingsDao,
     SubscriptionDao,
+    SubscriptionEmailReminderDao,
     TransactionDao,
     UserDao,
     UserMergeDao,
@@ -29,6 +30,7 @@ from src.infrastructure.database.dao import (
     ReferralDaoImpl,
     SettingsDaoImpl,
     SubscriptionDaoImpl,
+    SubscriptionEmailReminderDaoImpl,
     TransactionDaoImpl,
     UserDaoImpl,
     UserMergeDaoImpl,
@@ -52,6 +54,10 @@ class DaoProvider(Provider):
     referral = provide(source=ReferralDaoImpl, provides=ReferralDao)
     settings = provide(source=SettingsDaoImpl, provides=SettingsDao)
     subscription = provide(source=SubscriptionDaoImpl, provides=SubscriptionDao)
+    subscription_email_reminder = provide(
+        source=SubscriptionEmailReminderDaoImpl,
+        provides=SubscriptionEmailReminderDao,
+    )
     transaction = provide(source=TransactionDaoImpl, provides=TransactionDao)
     user = provide(source=UserDaoImpl, provides=UserDao)
     user_merge = provide(source=UserMergeDaoImpl, provides=UserMergeDao)

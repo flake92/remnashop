@@ -140,8 +140,7 @@ class FakeTransactionDao:
         transaction = await self.get_by_payment_id(payment_id)
         if (
             transaction is None
-            or transaction.status
-            not in {TransactionStatus.COMPLETED, TransactionStatus.REFUNDED}
+            or transaction.status not in {TransactionStatus.COMPLETED, TransactionStatus.REFUNDED}
             or transaction.fulfillment_status
             not in {
                 TransactionFulfillmentStatus.PROCESSING,
@@ -162,8 +161,7 @@ class FakeTransactionDao:
         transaction = await self.get_by_payment_id(payment_id)
         if (
             transaction is None
-            or transaction.status
-            not in {TransactionStatus.COMPLETED, TransactionStatus.REFUNDED}
+            or transaction.status not in {TransactionStatus.COMPLETED, TransactionStatus.REFUNDED}
             or transaction.fulfillment_status != TransactionFulfillmentStatus.PROCESSING
             or transaction.fulfillment_lease_expires_at is None
             or transaction.fulfillment_lease_expires_at > datetime_now()
@@ -191,8 +189,7 @@ class FakeTransactionDao:
     ) -> list[TransactionDto]:
         if (
             self.transaction
-            and self.transaction.fulfillment_status
-            == TransactionFulfillmentStatus.MANUAL_REQUIRED
+            and self.transaction.fulfillment_status == TransactionFulfillmentStatus.MANUAL_REQUIRED
             and self.transaction.fulfillment_alerted_at is None
         ):
             self.fulfillment_alert_token_hash = token_hash

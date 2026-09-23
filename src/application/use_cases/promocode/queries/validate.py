@@ -51,26 +51,26 @@ class ValidatePromocode(Interactor[ValidatePromocodeDto, PromocodeDto]):
         promo = await self.promocode_dao.get_by_code(code)
 
         if not promo or not promo.is_active:
-            logger.info(f"{actor.log} Promocode '{code}' not found or inactive")
+            logger.info(f"{actor.log} Promocode not found or inactive")
             raise PromocodeNotFoundError(f"Promocode '{code}' not found")
 
         if promo.id is None:
             raise RuntimeError("A persisted promocode must have an id")
 
         if promo.expires_at is not None and datetime_now() > promo.expires_at:
-            logger.info(f"{actor.log} Promocode '{code}' expired")
+            logger.info(f"{actor.log} Promocode expired")
             raise PromocodeExpiredError("Promocode has expired")
 
         if promo.max_activations is not None:
             count = await self.promocode_dao.get_activations_count(promo.id)
             if count >= promo.max_activations:
-                logger.info(f"{actor.log} Promocode '{code}' max activations reached")
+                logger.info(f"{actor.log} Promocode max activations reached")
                 raise PromocodeNotAvailableError("Promocode activation limit reached")
 
         if not promo.is_reusable:
             existing = await self.promocode_dao.get_activation_by_user(promo.id, user.id)
             if existing:
-                logger.info(f"{actor.log} Promocode '{code}' already activated by user")
+                logger.info(f"{actor.log} Promocode already activated by user")
                 raise PromocodeAlreadyActivatedError("Promocode already activated")
 
         if promo.reward_type in SUBSCRIPTION_REQUIRED_REWARDS:
@@ -78,7 +78,7 @@ class ValidatePromocode(Interactor[ValidatePromocodeDto, PromocodeDto]):
 
         await self._check_availability(actor, user, promo)
 
-        logger.info(f"{actor.log} Promocode '{code}' is valid for user")
+        logger.info(f"{actor.log} Promocode is valid for user")
         return promo
 
     async def _check_subscription_requirements(
@@ -88,15 +88,15 @@ class ValidatePromocode(Interactor[ValidatePromocodeDto, PromocodeDto]):
         if current is None or not current.is_active:
             # An expired/disabled subscription has expire_at in the past; extending it
             # would push a past date to the panel, which rejects it. Require an active sub.
-            logger.info(f"{actor.log} Promocode '{promo.code}' requires an active subscription")
+            logger.info(f"{actor.log} Promocode requires an active subscription")
             raise PromocodeNotAvailableError("Active subscription required for this promocode")
         if promo.reward_type == PromocodeRewardType.DURATION and current.is_trial:
             # A DURATION promo would extend the free trial's expiry, effectively
             # prolonging the trial. Block it — trials are not eligible.
-            logger.info(f"{actor.log} Promocode '{promo.code}' cannot extend a trial subscription")
+            logger.info(f"{actor.log} Promocode cannot extend a trial subscription")
             raise PromocodeNotAvailableError("Duration promocode not allowed on trial")
         if self._is_resource_unlimited(promo.reward_type, current):
-            logger.info(f"{actor.log} Promocode '{promo.code}' resource already unlimited")
+            logger.info(f"{actor.log} Promocode resource already unlimited")
             raise PromocodeNotAvailableError("Resource is already unlimited")
 
     @staticmethod

@@ -8,6 +8,7 @@ from .promocode import PromocodeDaoImpl
 from .referral import ReferralDaoImpl
 from .settings import SettingsDaoImpl
 from .subscription import SubscriptionDaoImpl
+from .subscription_email_reminder import SubscriptionEmailReminderDaoImpl
 from .transaction import TransactionDaoImpl
 from .user import UserDaoImpl
 from .user_merge import UserMergeDaoImpl
@@ -25,6 +26,7 @@ __all__ = [
     "ReferralDaoImpl",
     "SettingsDaoImpl",
     "SubscriptionDaoImpl",
+    "SubscriptionEmailReminderDaoImpl",
     "TransactionDaoImpl",
     "UserDaoImpl",
     "UserMergeDaoImpl",

@@ -1,6 +1,6 @@
 import hashlib
 import secrets
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 
 from loguru import logger
@@ -13,13 +13,23 @@ from src.application.common import (
 )
 from src.application.common.dao import ReferralDao, SettingsDao, SubscriptionDao, UserDao
 from src.application.common.uow import UnitOfWork
-from src.application.dto import ReferralRewardDto, TransactionDto, UserDto
+from src.application.dto import (
+    LegacyReferralRewardRecoveryDto,
+    ReferralRewardDto,
+    TransactionDto,
+    UserDto,
+)
 from src.application.events import ReferralRewardFailedEvent, ReferralRewardReceivedEvent
+from src.application.legacy_referral_recovery import (
+    LegacyReferralRecoveryAuthorizer,
+)
 from src.application.use_cases.referral.queries.calculations import (
     CalculateReferralReward,
     CalculateReferralRewardDto,
 )
 from src.core.enums import (
+    LegacyReferralRewardRecoveryAction,
+    LegacyReferralRewardSourceValidation,
     ReferralAccrualStrategy,
     ReferralLevel,
     ReferralRewardState,
@@ -64,7 +74,7 @@ class GiveReferrerReward(Interactor[GiveReferrerRewardDto, None]):
         self.remnawave = remnawave
         self.subscription_mutation_lock = subscription_mutation_lock
 
-    async def _execute(
+    async def _execute(  # noqa: C901
         self,
         actor: UserDto,
         data: GiveReferrerRewardDto,
@@ -129,11 +139,7 @@ class GiveReferrerReward(Interactor[GiveReferrerRewardDto, None]):
         elif reward.type == ReferralRewardType.EXTRA_DAYS:
             subscription = await self.subscription_dao.get_current(user.id)
 
-            if (
-                not subscription
-                or subscription.is_trial
-                or subscription.current_status != SubscriptionStatus.ACTIVE
-            ):
+            if not self._is_safe_extra_days_subscription(subscription):
                 async with self.uow:
                     await self.referral_dao.defer_reward(
                         reward.id,
@@ -143,21 +149,31 @@ class GiveReferrerReward(Interactor[GiveReferrerRewardDto, None]):
                             "RECIPIENT_SUBSCRIPTION_TRIAL"
                             if subscription and subscription.is_trial
                             else (
-                                "RECIPIENT_SUBSCRIPTION_INACTIVE"
-                                if subscription
-                                else "RECIPIENT_SUBSCRIPTION_MISSING"
+                                "RECIPIENT_SUBSCRIPTION_CHANNEL_DISABLED"
+                                if subscription and subscription.disabled_by_channel_leave
+                                else (
+                                    "RECIPIENT_SUBSCRIPTION_UNSAFE"
+                                    if subscription
+                                    else "RECIPIENT_SUBSCRIPTION_MISSING"
+                                )
                             )
                         ),
                     )
                     await self.uow.commit()
-                logger.warning(
+                logger.info(
                     f"{actor.log} Paid subscription not found for '{user.remna_name}'; "
                     f"reward '{reward.id}' remains retryable"
                 )
                 return
 
-            target_expire_at = subscription.expire_at + timedelta(days=reward.amount)
-            if target_expire_at < datetime_now():
+            assert subscription is not None
+            baseline_expire_at = subscription.expire_at
+            baseline_status = subscription.status
+            grant_started_at = datetime_now()
+            target_expire_at = max(baseline_expire_at, grant_started_at) + timedelta(
+                days=reward.amount
+            )
+            if reward.amount <= 0 or target_expire_at <= grant_started_at:
                 async with self.uow:
                     await self.referral_dao.mark_reward_manual_required(
                         reward.id,
@@ -176,7 +192,7 @@ class GiveReferrerReward(Interactor[GiveReferrerRewardDto, None]):
                     reward.id,
                     token_hash=data.token_hash,
                     subscription_id=subscription.id,
-                    baseline_expire_at=subscription.expire_at,
+                    baseline_expire_at=baseline_expire_at,
                     target_expire_at=target_expire_at,
                 )
                 await self.uow.commit()
@@ -197,8 +213,11 @@ class GiveReferrerReward(Interactor[GiveReferrerRewardDto, None]):
                         current_subscription is None
                         or current_subscription.id != subscription.id
                         or current_subscription.is_trial
-                        or current_subscription.current_status != SubscriptionStatus.ACTIVE
-                        or current_subscription.expire_at != subscription.expire_at
+                        or current_subscription.disabled_by_channel_leave
+                        or current_subscription.status
+                        not in (SubscriptionStatus.ACTIVE, SubscriptionStatus.EXPIRED)
+                        or current_subscription.status != baseline_status
+                        or current_subscription.expire_at != baseline_expire_at
                     ):
                         await self.referral_dao.mark_reward_manual_required(
                             reward.id,
@@ -212,11 +231,42 @@ class GiveReferrerReward(Interactor[GiveReferrerRewardDto, None]):
                         )
                         return
 
+                    remote_baseline = await self.remnawave.get_user_by_uuid(
+                        current_subscription.user_remna_id
+                    )
+                    if not self._matches_extra_days_remote_baseline(
+                        expected_uuid=current_subscription.user_remna_id,
+                        expected_expire_at=baseline_expire_at,
+                        observed=remote_baseline,
+                    ):
+                        await self.referral_dao.mark_reward_manual_required(
+                            reward.id,
+                            token_hash=data.token_hash,
+                            error_code="REMOTE_BASELINE_DRIFT",
+                        )
+                        await self.uow.commit()
+                        logger.critical(
+                            f"EXTRA_DAYS reward '{reward.id}' remote baseline changed; "
+                            "manual review required"
+                        )
+                        return
+
+                    # Reactivation is part of the same local transaction as reward
+                    # completion. Persist ACTIVE before constructing the Remnawave
+                    # update, but keep it uncommitted until exact read-after-write.
+                    current_subscription.status = SubscriptionStatus.ACTIVE
                     current_subscription.expire_at = target_expire_at
-                    update_response = await self.remnawave.update_user(
-                        user=user,
+                    updated = await self.subscription_dao.update(current_subscription)
+                    if (
+                        updated is None
+                        or not self._is_active_remote_status(updated.status)
+                        or not self._same_expiry(updated.expire_at, target_expire_at)
+                    ):
+                        raise RuntimeError("Subscription reactivation was not persisted")
+                    update_response = await self.remnawave.reactivate_referral_expiry(
+                        user_id=user.id,
                         uuid=current_subscription.user_remna_id,
-                        subscription=current_subscription,
+                        expire_at=target_expire_at,
                     )
                     observed = await self.remnawave.get_user_by_uuid(
                         current_subscription.user_remna_id
@@ -227,9 +277,6 @@ class GiveReferrerReward(Interactor[GiveReferrerRewardDto, None]):
                         update_response=update_response,
                         observed=observed,
                     )
-                    updated = await self.subscription_dao.update(current_subscription)
-                    if updated is None:
-                        raise RuntimeError("Subscription expiry was not persisted")
                     issued = await self.referral_dao.finish_extra_days_reward(
                         reward.id,
                         token_hash=data.token_hash,
@@ -263,13 +310,19 @@ class GiveReferrerReward(Interactor[GiveReferrerRewardDto, None]):
                 f"Failed to apply reward: unknown type '{reward.type}' for user '{user.remna_name}'"
             )
 
-        event_reward = ReferralRewardReceivedEvent(
-            user=user,
-            name=data.referred_name,
-            value=reward.amount,
-            reward_type=reward.type,
-        )
-        await self.event_publisher.publish(event_reward)
+        if reward.operator_recovery_manifest_sha256 is None:
+            event_reward = ReferralRewardReceivedEvent(
+                user=user,
+                name=data.referred_name,
+                value=reward.amount,
+                reward_type=reward.type,
+            )
+            await self.event_publisher.publish(event_reward)
+        else:
+            logger.info(
+                f"Operator-directed reward '{reward.id}' completed without a "
+                "per-row customer notification"
+            )
         logger.info(f"{actor.log} Finished applying reward to user '{user.id}'")
 
     async def _lock_source_or_cancel(self, data: GiveReferrerRewardDto) -> bool:
@@ -300,20 +353,25 @@ class GiveReferrerReward(Interactor[GiveReferrerRewardDto, None]):
     ) -> None:
         response_uuid = getattr(update_response, "uuid", None)
         response_expire_at = getattr(update_response, "expire_at", None)
+        response_status = getattr(update_response, "status", None)
         observed_uuid = getattr(observed, "uuid", None)
         observed_expire_at = getattr(observed, "expire_at", None)
+        observed_status = getattr(observed, "status", None)
         if (
             str(response_uuid) != str(expected_uuid)
             or not cls._same_expiry(response_expire_at, expected_expire_at)
+            or not cls._is_active_remote_status(response_status)
             or str(observed_uuid) != str(expected_uuid)
             or not cls._same_expiry(observed_expire_at, expected_expire_at)
+            or not cls._is_active_remote_status(observed_status)
         ):
             raise RuntimeError(
                 "Remnawave EXTRA_DAYS target mismatch "
                 f"(expected_uuid={expected_uuid}, response_uuid={response_uuid}, "
                 f"observed_uuid={observed_uuid}, expected_expire_at={expected_expire_at}, "
                 f"response_expire_at={response_expire_at}, "
-                f"observed_expire_at={observed_expire_at})"
+                f"observed_expire_at={observed_expire_at}, "
+                f"response_status={response_status}, observed_status={observed_status})"
             )
 
     @staticmethod
@@ -328,19 +386,49 @@ class GiveReferrerReward(Interactor[GiveReferrerRewardDto, None]):
             expected_value = expected_value.replace(tzinfo=timezone.utc)
         return abs((observed_value - expected_value).total_seconds()) <= 1
 
+    @classmethod
+    def _matches_extra_days_remote_baseline(
+        cls,
+        *,
+        expected_uuid: object,
+        expected_expire_at: datetime,
+        observed: object,
+    ) -> bool:
+        observed_status = getattr(observed, "status", None)
+        status_value = getattr(observed_status, "value", observed_status)
+        return bool(
+            str(getattr(observed, "uuid", None)) == str(expected_uuid)
+            and cls._same_expiry(
+                getattr(observed, "expire_at", None),
+                expected_expire_at,
+            )
+            and isinstance(status_value, str)
+            and status_value.upper()
+            in (SubscriptionStatus.ACTIVE.value, SubscriptionStatus.EXPIRED.value)
+        )
+
     @staticmethod
-    def _same_or_after_expiry(observed: object, expected: datetime) -> bool:
-        if not isinstance(observed, datetime):
-            return False
-        observed_value = observed
-        expected_value = expected
-        if observed_value.tzinfo is None:
-            observed_value = observed_value.replace(tzinfo=timezone.utc)
-        if expected_value.tzinfo is None:
-            expected_value = expected_value.replace(tzinfo=timezone.utc)
-        return observed_value >= expected_value - timedelta(seconds=1)
+    def _is_safe_extra_days_subscription(subscription: object) -> bool:
+        return bool(
+            subscription is not None
+            and not getattr(subscription, "is_trial", True)
+            and not getattr(subscription, "disabled_by_channel_leave", True)
+            and getattr(subscription, "status", None)
+            in (SubscriptionStatus.ACTIVE, SubscriptionStatus.EXPIRED)
+        )
+
+    @staticmethod
+    def _is_active_remote_status(status: object) -> bool:
+        value = getattr(status, "value", status)
+        return isinstance(value, str) and value.upper() == SubscriptionStatus.ACTIVE.value
 
     async def _publish_failed(self, user: UserDto, data: GiveReferrerRewardDto) -> None:
+        if data.reward.operator_recovery_manifest_sha256 is not None:
+            logger.warning(
+                f"Operator-directed reward '{data.reward.id}' failed without a "
+                "per-row customer notification"
+            )
+            return
         await self.event_publisher.publish(
             ReferralRewardFailedEvent(
                 user=user,
@@ -475,7 +563,7 @@ class AssignReferralRewards(Interactor[AssignReferralRewardsDto, None]):
                     )
                     continue
 
-                await self.referral_dao.create_reward(
+                created = await self.referral_dao.create_reward(
                     reward=ReferralRewardDto(
                         user_id=referrer.id,
                         type=reward_type,
@@ -497,6 +585,14 @@ class AssignReferralRewards(Interactor[AssignReferralRewardsDto, None]):
                     ),
                     referral_id=referral_ids[level],
                 )
+
+                if created is None:
+                    logger.info(
+                        f"Skipped duplicate reward intent for source "
+                        f"'{data.transaction.id}' level '{level.name}': provenance "
+                        "is already consumed"
+                    )
+                    continue
 
                 logger.info(
                     f"Persisted '{reward_type}' reward intent '{reward_amount}' for referrer "
@@ -563,9 +659,21 @@ class RetryPendingReferralRewards(Interactor[None, int]):
                     )
                 )
             except Exception:
-                # A per-row state fence remains durable. Continue the batch so one bad
-                # notification or recipient cannot starve unrelated rewards.
                 logger.exception(f"Referral reward worker failed on reward '{reward.id}'")
+                # Failures before the grant use case starts (for example, resolving
+                # the display name) used to strand a safe claim in PROCESSING until
+                # its lease expired. Reset the session and release only claims that
+                # have no persisted external target; issued or ambiguous rows remain
+                # protected by their state/target fences.
+                await self.uow.rollback()
+                async with self.uow:
+                    await self.referral_dao.defer_reward(
+                        reward.id,
+                        token_hash=token_hash,
+                        retry_after=GiveReferrerReward._retry_after(reward.attempt_count),
+                        error_code="REWARD_WORKER_UNEXPECTED_FAILURE",
+                    )
+                    await self.uow.commit()
 
         async with self.uow:
             manual = await self.referral_dao.claim_manual_required_rewards_for_alert(limit=20)
@@ -592,6 +700,7 @@ class ResolveManualReferralRewardDto:
     reason: str
     resolved_by: str = "ADMIN_API"
     allow_drift: bool = False
+    ack_admin_compensated_refund: bool = False
 
 
 @dataclass(frozen=True)
@@ -629,6 +738,10 @@ class ResolveManualReferralReward(Interactor[ResolveManualReferralRewardDto, Non
     ) -> None:
         if not data.operator_reference.strip() or not data.reason.strip():
             raise ValueError("Operator reference and reason are required")
+        if data.ack_admin_compensated_refund and (data.confirm_issued or data.allow_drift):
+            raise ValueError(
+                "ADMIN compensation refund acknowledgment is a distinct no-drift action"
+            )
 
         reward = await self.referral_dao.get_reward_by_id(data.reward_id)
         if reward is None:
@@ -642,6 +755,7 @@ class ResolveManualReferralReward(Interactor[ResolveManualReferralRewardDto, Non
             resolved_by=data.resolved_by,
             reason=data.reason,
             allow_drift=data.allow_drift,
+            ack_admin_compensated_refund=data.ack_admin_compensated_refund,
         )
         if existing_match is True:
             logger.info(f"Manual referral reward resolution '{data.reward_id}' replayed")
@@ -667,7 +781,10 @@ class ResolveManualReferralReward(Interactor[ResolveManualReferralRewardDto, Non
 
         async with self.subscription_mutation_lock.hold(reward.user_id):
             async with self.uow:
-                reward = await self.referral_dao.get_reward_by_id(data.reward_id)
+                reward = await self.referral_dao.get_reward_by_id(
+                    data.reward_id,
+                    for_update=True,
+                )
                 if reward is None:
                     raise ValueError(f"Referral reward '{data.reward_id}' was not found")
                 if reward.manual_incident_version != data.expected_version:
@@ -688,7 +805,20 @@ class ResolveManualReferralReward(Interactor[ResolveManualReferralRewardDto, Non
                     )
 
                 source_status: TransactionStatus | None = None
-                if reward.source_transaction_id is not None:
+                if data.ack_admin_compensated_refund:
+                    if not self._is_admin_compensated_refund_incident(reward):
+                        raise ValueError(
+                            "Reward is not an exact ADMIN-compensated later-refund incident"
+                        )
+                    source_status = await self.referral_dao.lock_manual_reward_source_status(
+                        data.reward_id
+                    )
+                    if source_status != TransactionStatus.REFUNDED:
+                        raise ValueError("ADMIN-compensated source is not currently refunded")
+                elif (
+                    reward.source_transaction_id is not None
+                    or reward.operator_recovery_manifest_sha256 is not None
+                ):
                     source_status = await self.referral_dao.lock_manual_reward_source_status(
                         data.reward_id
                     )
@@ -704,12 +834,22 @@ class ResolveManualReferralReward(Interactor[ResolveManualReferralRewardDto, Non
                         )
 
                 evidence = ManualReferralRewardEvidence()
-                if reward.type == ReferralRewardType.EXTRA_DAYS:
-                    evidence = await self._reconcile_extra_days(
-                        reward,
-                        data.confirm_issued,
-                        data.allow_drift,
-                    )
+                if (
+                    reward.type == ReferralRewardType.EXTRA_DAYS
+                    and not data.ack_admin_compensated_refund
+                ):
+                    if self._is_unapplied_admin_earlier_payment_incident(reward):
+                        if data.confirm_issued or data.allow_drift:
+                            raise ValueError(
+                                "An unapplied ADMIN-earlier reward can only be canceled "
+                                "without a drift override"
+                            )
+                    else:
+                        evidence = await self._reconcile_extra_days(
+                            reward,
+                            data.confirm_issued,
+                            data.allow_drift,
+                        )
 
                 resolved = await self.referral_dao.resolve_manual_reward(
                     data.reward_id,
@@ -723,6 +863,7 @@ class ResolveManualReferralReward(Interactor[ResolveManualReferralRewardDto, Non
                     observed_remote_uuid=evidence.observed_remote_uuid,
                     observed_expire_at=evidence.observed_expire_at,
                     source_status=source_status,
+                    ack_admin_compensated_refund=data.ack_admin_compensated_refund,
                 )
                 if not resolved:
                     raise ValueError(
@@ -730,9 +871,56 @@ class ResolveManualReferralReward(Interactor[ResolveManualReferralRewardDto, Non
                         "with different evidence or is not awaiting manual review"
                     )
                 await self.uow.commit()
+        decision = (
+            "admin-refund-acknowledged"
+            if data.ack_admin_compensated_refund
+            else ("issued" if data.confirm_issued else "canceled")
+        )
         logger.warning(
-            f"{actor.log} Resolved manual referral reward '{data.reward_id}' "
-            f"as {'issued' if data.confirm_issued else 'canceled'}"
+            f"{actor.log} Resolved manual referral reward '{data.reward_id}' as {decision}"
+        )
+
+    @staticmethod
+    def _is_admin_compensated_refund_incident(reward: ReferralRewardDto) -> bool:
+        return bool(
+            reward.type == ReferralRewardType.EXTRA_DAYS
+            and reward.state == ReferralRewardState.MANUAL_REQUIRED
+            and reward.is_issued
+            and reward.source_transaction_id is None
+            and reward.origin_referral_id is None
+            and reward.level is None
+            and reward.target_subscription_id is None
+            and reward.baseline_expire_at is None
+            and reward.target_expire_at is None
+            and reward.manual_cause == "SOURCE_REFUNDED_AFTER_REWARD_ISSUANCE"
+            and reward.refund_detected_at is not None
+        )
+
+    @staticmethod
+    def _is_unapplied_admin_earlier_payment_incident(reward: ReferralRewardDto) -> bool:
+        """Recognize the exact never-applied row fenced by an ADMIN earlier source."""
+
+        return bool(
+            reward.type == ReferralRewardType.EXTRA_DAYS
+            and reward.state == ReferralRewardState.MANUAL_REQUIRED
+            and not reward.is_issued
+            and reward.issued_at is None
+            and reward.source_transaction_id is not None
+            and reward.origin_referral_id is not None
+            and reward.level is not None
+            and reward.accrual_strategy_snapshot == ReferralAccrualStrategy.ON_FIRST_PAYMENT
+            and reward.accrual_strategy is None
+            and reward.reward_strategy is not None
+            and reward.config_value is not None
+            and reward.target_subscription_id is None
+            and reward.baseline_expire_at is None
+            and reward.target_expire_at is None
+            and reward.processing_token_hash is None
+            and reward.processing_lease_expires_at is None
+            and reward.next_attempt_at is None
+            and reward.manual_cause == "ADMIN_COMPENSATED_EARLIER_PAYMENT"
+            and reward.last_error == "ADMIN_COMPENSATED_EARLIER_PAYMENT"
+            and reward.refund_detected_at is None
         )
 
     async def _reconcile_extra_days(
@@ -776,16 +964,9 @@ class ResolveManualReferralReward(Interactor[ResolveManualReferralRewardDto, Non
         )
         expiry_matches = bool(
             observed is not None
-            and (
-                GiveReferrerReward._same_or_after_expiry(
-                    observed.expire_at,
-                    expected_expire_at,
-                )
-                if confirm_issued
-                else GiveReferrerReward._same_expiry(
-                    observed.expire_at,
-                    expected_expire_at,
-                )
+            and GiveReferrerReward._same_expiry(
+                observed.expire_at,
+                expected_expire_at,
             )
         )
         if (
@@ -800,9 +981,9 @@ class ResolveManualReferralReward(Interactor[ResolveManualReferralRewardDto, Non
 
         # Remote truth is verified under the mutation fence. Synchronize local state
         # in the same transaction as the append-only operator decision.
-        # CONFIRM accepts a later legitimate renewal/promo: expiry >= target proves
-        # the target is contained in current panel state. CANCEL remains exact and
-        # fail-closed because later drift cannot prove the reward was never applied.
+        # Both decisions require the exact durable expiry unless the operator supplies
+        # an explicit audited drift override. A later renewal or promo is not causal
+        # proof that this reward reached Remnawave.
         if (
             remote_maps_to_current
             and subscription is not None
@@ -813,3 +994,131 @@ class ResolveManualReferralReward(Interactor[ResolveManualReferralRewardDto, Non
             if await self.subscription_dao.update(subscription) is None:
                 raise RuntimeError("Observed EXTRA_DAYS expiry was not persisted locally")
         return evidence
+
+
+class RecoverLegacyReferralReward(Interactor[LegacyReferralRewardRecoveryDto, None]):
+    """Record proven legacy evidence and transition the existing row only."""
+
+    required_permission = None
+
+    def __init__(
+        self,
+        uow: UnitOfWork,
+        referral_dao: ReferralDao,
+        recovery_authorizer: LegacyReferralRecoveryAuthorizer,
+    ) -> None:
+        self.uow = uow
+        self.referral_dao = referral_dao
+        self.recovery_authorizer = recovery_authorizer
+
+    async def _execute(  # noqa: C901
+        self,
+        actor: UserDto,
+        data: LegacyReferralRewardRecoveryDto,
+    ) -> None:
+        if data.reward_id <= 0 or data.expected_version < 0:
+            raise ValueError("A positive reward id and non-negative version are required")
+        if (
+            data.source_transaction_id is None
+            or data.source_transaction_id <= 0
+            or data.origin_referral_id is None
+            or data.origin_referral_id <= 0
+            or data.level is None
+        ):
+            raise ValueError("Positive source transaction and origin referral ids are required")
+        if isinstance(data.expected_reward_amount, bool) or data.expected_reward_amount <= 0:
+            raise ValueError("A positive expected legacy reward amount is required")
+        snapshot = (
+            data.accrual_strategy_snapshot,
+            data.reward_strategy,
+            data.config_value,
+        )
+        expected_row = (
+            data.expected_user_id,
+            data.expected_referral_id,
+            data.expected_created_at,
+        )
+        merge_audit_ids = data.expected_participant_merge_audit_ids
+        if (
+            not isinstance(merge_audit_ids, tuple)
+            or any(
+                isinstance(audit_id, bool) or not isinstance(audit_id, int) or audit_id <= 0
+                for audit_id in merge_audit_ids
+            )
+            or merge_audit_ids != tuple(sorted(set(merge_audit_ids)))
+        ):
+            raise ValueError(
+                "expected_participant_merge_audit_ids must be a positive, sorted, unique tuple"
+            )
+        if data.action == LegacyReferralRewardRecoveryAction.RETRY_PROVEN_MISSING:
+            if any(value is None for value in snapshot):
+                raise ValueError(
+                    "RETRY_PROVEN_MISSING requires the exact historical policy snapshot"
+                )
+            if (
+                data.config_value is None
+                or isinstance(data.config_value, bool)
+                or data.config_value <= 0
+            ):
+                raise ValueError("Historical reward config must be a positive integer")
+            if (
+                any(value is not None for value in expected_row)
+                or data.source_validation is not None
+                or merge_audit_ids
+            ):
+                raise ValueError("Source-backed recovery must not include operator row hints")
+        elif data.action == LegacyReferralRewardRecoveryAction.CONFIRM_ADMIN_COMPENSATED:
+            if (
+                any(value is not None for value in (*snapshot, *expected_row))
+                or data.source_validation is not None
+                or merge_audit_ids
+            ):
+                raise ValueError(
+                    "CONFIRM_ADMIN_COMPENSATED must not invent a historical policy snapshot"
+                )
+        elif data.action == LegacyReferralRewardRecoveryAction.RETRY_OPERATOR_DIRECTED:
+            if (
+                any(value is not None for value in snapshot)
+                or any(value is None for value in expected_row)
+                or data.source_validation
+                not in (
+                    LegacyReferralRewardSourceValidation.LOCAL_COMPLETED,
+                    LegacyReferralRewardSourceValidation.PROVIDER_SUCCEEDED,
+                )
+            ):
+                raise ValueError(
+                    "RETRY_OPERATOR_DIRECTED requires exact row hints and no policy snapshot"
+                )
+            if data.expected_created_at is None or data.expected_created_at.tzinfo is None:
+                raise ValueError("Operator-directed expected_created_at must include a timezone")
+        else:
+            raise ValueError(f"Unsupported legacy recovery action '{data.action}'")
+        if (
+            not data.operator_reference
+            or data.operator_reference != data.operator_reference.strip()
+            or len(data.operator_reference) > 256
+            or not data.reason
+            or data.reason != data.reason.strip()
+            or len(data.reason) > 1024
+        ):
+            raise ValueError("Canonical operator reference and reason are required")
+        if (
+            len(data.evidence_sha256) != 64
+            or data.evidence_sha256 != data.evidence_sha256.lower()
+            or any(character not in "0123456789abcdef" for character in data.evidence_sha256)
+        ):
+            raise ValueError("evidence_sha256 must be a lowercase SHA-256 digest")
+        manifest_digest = self.recovery_authorizer.authorize(data)
+        authorized_data = replace(
+            data,
+            authorization_manifest_sha256=manifest_digest,
+        )
+
+        async with self.uow:
+            transitioned = await self.referral_dao.recover_legacy_extra_days_reward(authorized_data)
+            await self.uow.commit()
+        logger.warning(
+            f"{actor.log} Legacy referral reward '{data.reward_id}' recovery "
+            f"'{data.action.value}' {'applied' if transitioned else 'replayed'} "
+            f"({data.operator_reference})"
+        )

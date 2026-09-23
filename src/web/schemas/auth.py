@@ -127,6 +127,17 @@ class MeResponse(BaseModel):
     language: str
 
 
+class NotificationPreferencesResponse(BaseModel):
+    subscription_expiration_email_enabled: bool
+    email_eligible: bool
+    sender_email: Optional[str]
+    days_before: list[int]
+
+
+class UpdateNotificationPreferencesRequest(BaseModel):
+    subscription_expiration_email_enabled: bool = Field(strict=True)
+
+
 class ChangePasswordResponse(BaseModel):
     success: bool
 

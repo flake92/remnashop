@@ -146,11 +146,11 @@ async def on_promo_confirm(
         except ValueError:
             await notifier.notify_user(user, i18n_key="ntf-promocode.code-exists")
             return
-        logger.info(f"{user.log} Created promocode '{promo.code}'")
+        logger.info(f"{user.log} Created promocode")
         await notifier.notify_user(user, i18n_key="ntf-promocode.created")
     else:
         await update_promocode(user, promo)
-        logger.info(f"{user.log} Updated promocode '{promo.code}'")
+        logger.info(f"{user.log} Updated promocode id='{promo.id}'")
         await notifier.notify_user(user, i18n_key="ntf-promocode.updated")
 
     await dialog_manager.start(state=DashboardPromocodes.MAIN, mode=StartMode.RESET_STACK)

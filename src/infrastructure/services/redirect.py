@@ -29,7 +29,7 @@ class RedirectImpl(Redirect):
             mode=StartMode.RESET_STACK,
             show_mode=ShowMode.DELETE_AND_SEND,
         )
-        logger.info(f"User '{telegram_id}' redirected to main menu")
+        logger.info("User redirected to main menu")
 
     async def to_user_editor(self, telegram_id: int, target_user_id: int) -> None:
         bg_manager = self.bg_manager_factory.bg(
@@ -44,7 +44,7 @@ class RedirectImpl(Redirect):
             mode=StartMode.RESET_STACK,
             show_mode=ShowMode.DELETE_AND_SEND,
         )
-        logger.info(f"User '{telegram_id}' redirected to user editor")
+        logger.info("User redirected to user editor")
 
     async def to_success_trial(self, telegram_id: int) -> None:
         bg_manager = self.bg_manager_factory.bg(
@@ -58,7 +58,7 @@ class RedirectImpl(Redirect):
             mode=StartMode.RESET_STACK,
             show_mode=ShowMode.DELETE_AND_SEND,
         )
-        logger.info(f"User '{telegram_id}' redirected to success trial")
+        logger.info("User redirected to success trial")
 
     async def to_success_payment(self, telegram_id: int, purchase_type: PurchaseType) -> None:
         bg_manager = self.bg_manager_factory.bg(
@@ -73,7 +73,7 @@ class RedirectImpl(Redirect):
             mode=StartMode.RESET_STACK,
             show_mode=ShowMode.DELETE_AND_SEND,
         )
-        logger.info(f"User '{telegram_id}' redirected to success payment")
+        logger.info("User redirected to success payment")
 
     async def to_failed_payment(self, telegram_id: int) -> None:
         bg_manager = self.bg_manager_factory.bg(
@@ -87,4 +87,4 @@ class RedirectImpl(Redirect):
             mode=StartMode.RESET_STACK,
             show_mode=ShowMode.DELETE_AND_SEND,
         )
-        logger.info(f"User '{telegram_id}' redirected to failed payment")
+        logger.info("User redirected to failed payment")

@@ -1,7 +1,9 @@
 from .bot import BotService as BotServiceImpl
+from .broadcast_execution_lock import PostgresBroadcastExecutionLock
 from .command import CommandService
 from .cryptography import CryptographerImpl
 from .dispatcher import BroadcastDispatcherImpl, PaymentNotificationDispatcherImpl
+from .email_delivery_lock import RedisEmailDeliveryRunLock
 from .email_sender import SmtpEmailSender
 from .event_bus import EventBusImpl
 from .file_downloader import AiogramFileDownloader
@@ -21,10 +23,12 @@ __all__ = [
     "AiogramFileDownloader",
     "AiohttpClient",
     "BotServiceImpl",
+    "PostgresBroadcastExecutionLock",
     "BroadcastDispatcherImpl",
     "CommandService",
     "CryptographerImpl",
     "SmtpEmailSender",
+    "RedisEmailDeliveryRunLock",
     "EventBusImpl",
     "HealthService",
     "NotificationService",

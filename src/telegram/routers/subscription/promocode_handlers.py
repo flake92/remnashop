@@ -73,7 +73,7 @@ async def on_promocode_input(
         current = await subscription_dao.get_current(user.id)
         will_replace = current is not None
 
-    logger.info(f"{user.log} Promocode '{code}' validated, pending confirmation")
+    logger.info(f"{user.log} Promocode validated, pending confirmation")
 
     dialog_manager.dialog_data[PENDING_PROMO_KEY] = promo.code
     dialog_manager.dialog_data[PENDING_PROMO_DTO_KEY] = {
@@ -104,7 +104,7 @@ async def on_promocode_confirm(
         return
 
     try:
-        promo = await activate_promocode(user, ActivatePromocodeDto(code=code, user=user))
+        await activate_promocode(user, ActivatePromocodeDto(code=code, user=user))
     except PromocodeAlreadyActivatedError:
         await notifier.notify_user(user, i18n_key="ntf-promocode.already-activated")
         return
@@ -118,7 +118,7 @@ async def on_promocode_confirm(
         await notifier.notify_user(user, i18n_key="ntf-promocode.not-available")
         return
     except Exception as exc:
-        logger.exception(f"{user.log} Promocode '{code}' activation failed unexpectedly")
+        logger.exception(f"{user.log} Promocode activation failed unexpectedly")
         await notifier.notify_user(user, i18n_key="ntf-promocode.activation-failed")
         await event_publisher.publish(
             ErrorEvent(
@@ -131,7 +131,7 @@ async def on_promocode_confirm(
         )
         return
 
-    logger.info(f"{user.log} Activated promocode '{promo.code}'")
+    logger.info(f"{user.log} Activated promocode")
     await notifier.notify_user(user, i18n_key="ntf-promocode.activated")
     await dialog_manager.start(MainMenu.MAIN, mode=StartMode.RESET_STACK)
 

@@ -2,6 +2,7 @@ from datetime import datetime, timedelta
 from typing import Any, Optional, Protocol, runtime_checkable
 
 from src.application.dto import (
+    LegacyReferralRewardRecoveryDto,
     ReferralDto,
     ReferralRewardBackfillAuditDto,
     ReferralRewardDto,
@@ -13,6 +14,14 @@ from src.core.enums import TransactionStatus
 
 @runtime_checkable
 class ReferralDao(Protocol):
+    async def lock_referral_graph(self) -> None: ...
+
+    async def has_referral_path(
+        self,
+        ancestor_user_id: int,
+        descendant_user_id: int,
+    ) -> bool: ...
+
     async def create_referral(self, referral: ReferralDto) -> ReferralDto: ...
 
     async def get_by_referred_id(self, referred_id: int) -> Optional[ReferralDto]: ...
@@ -65,7 +74,12 @@ class ReferralDao(Protocol):
 
     async def mark_backfill_preview_applied(self, preview_id: int) -> bool: ...
 
-    async def get_reward_by_id(self, reward_id: int) -> Optional[ReferralRewardDto]: ...
+    async def get_reward_by_id(
+        self,
+        reward_id: int,
+        *,
+        for_update: bool = False,
+    ) -> Optional[ReferralRewardDto]: ...
 
     async def lock_manual_reward_source_status(
         self,
@@ -144,6 +158,7 @@ class ReferralDao(Protocol):
         self,
         *,
         limit: int = 100,
+        offset: int = 0,
     ) -> list[ReferralRewardDto]: ...
 
     async def claim_manual_required_rewards_for_alert(
@@ -168,6 +183,7 @@ class ReferralDao(Protocol):
         observed_remote_uuid: Optional[str] = None,
         observed_expire_at: Optional[datetime] = None,
         source_status: Optional[TransactionStatus] = None,
+        ack_admin_compensated_refund: bool = False,
     ) -> bool: ...
 
     async def manual_resolution_match(
@@ -180,7 +196,13 @@ class ReferralDao(Protocol):
         resolved_by: str,
         reason: str,
         allow_drift: bool = False,
+        ack_admin_compensated_refund: bool = False,
     ) -> Optional[bool]: ...
+
+    async def recover_legacy_extra_days_reward(
+        self,
+        recovery: LegacyReferralRewardRecoveryDto,
+    ) -> bool: ...
 
     async def get_referral_chain(
         self,

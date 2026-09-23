@@ -243,10 +243,6 @@ class GraceSettingsDto(TrackableMixin):
     duration_days: int = 0
 
     @property
-    def has_traffic_limit(self) -> bool:
-        return self.traffic_mb > 0
-
-    @property
     def is_indefinite(self) -> bool:
         return self.duration_days == 0
 

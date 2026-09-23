@@ -1,3 +1,6 @@
+from types import SimpleNamespace
+from uuid import UUID
+
 import pytest
 from sqlalchemy.dialects import postgresql
 
@@ -13,8 +16,13 @@ class _Scalars:
 
 class _TransactionSession:
     def __init__(self) -> None:
+        self.executed_statements: list[object] = []
         self.scalar_statements: list[object] = []
         self.scalars_statements: list[object] = []
+
+    async def execute(self, statement: object) -> SimpleNamespace:
+        self.executed_statements.append(statement)
+        return SimpleNamespace(rowcount=1)
 
     async def scalar(self, statement: object) -> None:
         self.scalar_statements.append(statement)
@@ -95,9 +103,39 @@ async def test_first_paid_history_excludes_trial_but_includes_refunded_first_pur
     assert "final_amount" in values
     assert "is_trial" in values
     assert "false" in values
+    assert TransactionFulfillmentStatus.SUCCEEDED in values
+    assert TransactionFulfillmentStatus.MANUAL_REQUIRED in values
+    assert "LEGACY_COMPLETED_WITHOUT_PROOF" in values
+    assert "FULFILLMENT_STARTED_AT IS NOT NULL" in sql
+    assert "FULFILLMENT_TOKEN_HASH IS NULL" in sql
+    assert "FULFILLMENT_LEASE_EXPIRES_AT IS NULL" in sql
     where_sql = sql.split(" WHERE ", 1)[1].split(" ORDER BY", 1)[0]
     assert "PURCHASE_TYPE" not in where_sql
-    assert "ORDER BY TRANSACTIONS.FULFILLMENT_COMPLETED_AT, TRANSACTIONS.ID" in sql
+    assert "ORDER BY CASE" in sql
+    assert "TRANSACTIONS.FULFILLMENT_STARTED_AT" in sql
+    assert "TRANSACTIONS.UPDATED_AT" not in sql
+
+
+@pytest.mark.asyncio
+async def test_refund_preserves_exact_0049_legacy_provenance_marker() -> None:
+    session = _TransactionSession()
+    dao = TransactionDaoImpl.__new__(TransactionDaoImpl)
+    dao.session = session  # type: ignore[assignment]
+
+    assert await dao.mark_refund_manual_required(UUID(int=42))
+
+    sql, params = _compiled(session.executed_statements[0])
+    values = _flat_values(params)
+    assert "UPDATE TRANSACTIONS" in sql
+    assert "CASE WHEN" in sql
+    assert "FULFILLMENT_STATUS" in sql
+    assert TransactionFulfillmentStatus.MANUAL_REQUIRED in values
+    assert "LEGACY_COMPLETED_WITHOUT_PROOF" in values
+    assert "REFUND_DURING_UNPROVEN_FULFILLMENT" in values
+    assert "FULFILLMENT_STARTED_AT IS NOT NULL" in sql
+    assert "FULFILLMENT_TOKEN_HASH IS NULL" in sql
+    assert "FULFILLMENT_LEASE_EXPIRES_AT IS NULL" in sql
+    assert TransactionStatus.REFUNDED in values
 
 
 @pytest.mark.asyncio

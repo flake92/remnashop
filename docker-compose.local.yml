@@ -32,7 +32,7 @@ x-env: &env
 
 services:
   remnashop-db:
-    image: postgres:17
+    image: postgres:17@sha256:67f41722b7a8cbdb868a44a4995c846eddfdc2973bccb291ce937dce88ad5675
     container_name: "remnashop-db"
     hostname: remnashop-db
     <<: [*common, *logging, *env]
@@ -57,7 +57,7 @@ services:
     
 
   remnashop-redis:
-    image: valkey/valkey:9-alpine
+    image: valkey/valkey:9-alpine@sha256:a0dbf4c1d5708782907c10e2c72deff317518518b5288a58416981d9db95d30b
     container_name: "remnashop-redis"
     hostname: remnashop-redis
     <<: [*common, *logging, *env]
@@ -85,6 +85,9 @@ services:
     container_name: "remnashop-local"
     hostname: remnashop
     <<: [*build, *common, *logging, *env]
+    init: true
+    stop_signal: SIGTERM
+    stop_grace_period: 2m
 
     ports:
       - 127.0.0.1:5000:${APP_PORT:-5000}
@@ -100,9 +103,14 @@ services:
     container_name: "remnashop-taskiq-worker"
     hostname: remnashop-taskiq-worker
     <<: [*build, *common, *logging, *env]
+    init: true
+    stop_signal: SIGTERM
+    # Acknowledgement happens only after execution. Give long-running imports,
+    # broadcasts and backups time to finish before Docker sends SIGKILL.
+    stop_grace_period: 10m
 
     command: taskiq worker src.infrastructure.taskiq.worker:worker
-      --workers 1 --ack-type when_received --tasks-pattern src/infrastructure/taskiq/tasks/*.py -fsd
+      --workers 1 --ack-type when_executed --tasks-pattern src/infrastructure/taskiq/tasks/*.py -fsd
 
     depends_on:
         remnashop-redis:
@@ -114,6 +122,11 @@ services:
     container_name: "remnashop-taskiq-scheduler"
     hostname: remnashop-taskiq-scheduler
     <<: [*build, *common, *logging, *env]
+    init: true
+    # Taskiq's scheduler CLI has no TERM shutdown hook. asyncio.run converts
+    # INT into cancellation, then Taskiq closes its broker and schedule sources.
+    stop_signal: SIGINT
+    stop_grace_period: 30s
 
     command: taskiq scheduler src.infrastructure.taskiq.scheduler:scheduler
       --tasks-pattern src/infrastructure/taskiq/tasks/*.py -fsd

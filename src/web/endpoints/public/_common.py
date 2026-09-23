@@ -100,6 +100,7 @@ async def issue_session(
     await auth_session.store_refresh_token(
         token=refresh_token,
         user_id=user.id,
+        token_version=user.token_version,
         ttl=AUTH_REFRESH_TOKEN_TTL_SECONDS,
     )
     return (

@@ -660,6 +660,10 @@ async def on_grant_failed_subscription(
         await notifier.notify_user(user, i18n_key="ntf-user.transaction-grant-failed")
     except TransactionNotRetryableError:
         await notifier.notify_user(user, i18n_key="ntf-user.transaction-grant-stale")
+    except ValueError:
+        # Transaction vanished between opening the window and the click.
+        logger.warning(f"{user.log} Transaction '{payment_id}' not found for grant")
+        await notifier.notify_user(user, i18n_key="ntf-user.transaction-grant-stale")
 
 
 async def on_go_to_user(

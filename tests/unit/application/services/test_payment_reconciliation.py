@@ -106,8 +106,7 @@ class FakeOperationDao:
         if (
             operation_id != self.record.id
             or self.record.status != PaymentOperationStatus.UNKNOWN
-            or self.record.recovery_mode
-            != PaymentOperationRecoveryMode.YOOKASSA_REPLAY
+            or self.record.recovery_mode != PaymentOperationRecoveryMode.YOOKASSA_REPLAY
             or self.record.provider_result_snapshot is not None
             or self.record.provider_replay_expires_at is None
             or self.record.provider_replay_expires_at > datetime_now()
@@ -308,9 +307,7 @@ class FakeOperationDao:
                 self.record,
                 reconcile_alert_token_hash=token_hash,
                 reconcile_alert_lease_expires_at=datetime_now() + lease_for,
-                reconcile_alert_attempt_count=(
-                    self.record.reconcile_alert_attempt_count + 1
-                ),
+                reconcile_alert_attempt_count=(self.record.reconcile_alert_attempt_count + 1),
             )
             return [self.record]
         return []
@@ -343,10 +340,7 @@ class FakeOperationDao:
         token_hash: str,
         retry_after: timedelta,
     ) -> bool:
-        if (
-            operation_id != self.record.id
-            or self.record.reconcile_alert_token_hash != token_hash
-        ):
+        if operation_id != self.record.id or self.record.reconcile_alert_token_hash != token_hash:
             return False
         self.record = replace(
             self.record,
@@ -900,9 +894,7 @@ async def test_reconciliation_attempt_budget_is_terminal_before_new_claim() -> N
     )
 
     assert view.state == PaymentOperationPublicState.MANUAL_REQUIRED
-    assert operation_dao.record.reconcile_last_error == (
-        "RECONCILIATION_RETRIES_EXHAUSTED"
-    )
+    assert operation_dao.record.reconcile_last_error == ("RECONCILIATION_RETRIES_EXHAUSTED")
     assert operation_dao.record.reconcile_attempt_count == MAX_RECONCILIATION_ATTEMPTS
     assert gateway.create_calls == 0
     assert gateway.verify_calls == 0

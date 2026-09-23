@@ -34,7 +34,7 @@ class AdLinkDaoImpl(AdLinkDao):
         db_link = AdLink(**data)
         self.session.add(db_link)
         await self.session.flush()
-        logger.debug(f"AdLink '{link.name}' created with code '{link.code}'")
+        logger.debug(f"AdLink created with id={db_link.id}")
         return self._to_dto(db_link)
 
     async def get_by_id(self, link_id: int) -> Optional[AdLinkDto]:
@@ -45,7 +45,7 @@ class AdLinkDaoImpl(AdLinkDao):
         stmt = select(AdLink).where(AdLink.code == code)
         db_link = await self.session.scalar(stmt)
         if db_link:
-            logger.debug(f"AdLink with code '{code}' found")
+            logger.debug("AdLink lookup by code found a record")
         return self._to_dto(db_link) if db_link else None
 
     async def get_all(self) -> list[AdLinkDto]:

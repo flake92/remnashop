@@ -65,6 +65,8 @@ class GraceActivatedEvent(UserEvent):
 
     is_trial: bool
     traffic_mb: int
+    is_indefinite: bool
+    grace_until: Any
 
     @property
     def event_key(self) -> str:

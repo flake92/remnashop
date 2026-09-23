@@ -148,6 +148,8 @@ async def test_existing_password_is_verified_only_after_single_use_email_proof(
     )
 
     assert result.is_email_verified is True
+    assert result.subscription_expiration_email_enabled is True
+    assert result.subscription_expiration_email_enabled_at is not None
     hasher.verify.assert_called_once_with("password-1", "existing-hash")
     hasher.hash.assert_not_called()
     register.system.assert_not_awaited()
@@ -168,6 +170,8 @@ async def test_passwordless_legacy_user_gets_first_password_after_email_proof(
 
     assert result.password_hash == "new-password-hash"
     assert result.is_email_verified is True
+    assert result.subscription_expiration_email_enabled is True
+    assert result.subscription_expiration_email_enabled_at is not None
     hasher.verify.assert_not_called()
     hasher.hash.assert_called_once_with("password-1")
 
@@ -183,9 +187,33 @@ async def test_unknown_email_registers_only_after_email_proof(config: SimpleName
     )
 
     assert result.is_email_verified is True
+    assert result.subscription_expiration_email_enabled is True
+    assert result.subscription_expiration_email_enabled_at is not None
     register.system.assert_awaited_once()
     user_dao.update.assert_awaited_once_with(registered)
     assert uow.commits == 1
+
+
+@pytest.mark.asyncio
+async def test_existing_verified_user_keeps_an_explicit_opt_out(
+    config: SimpleNamespace,
+) -> None:
+    user = UserDto(
+        id=4,
+        email=EMAIL,
+        name="Existing User",
+        password_hash="existing-hash",
+        is_email_verified=True,
+        subscription_expiration_email_enabled=False,
+    )
+    interactor, _, _, _, _ = make_complete(config, user=user)
+
+    result = await interactor.system(
+        CompleteGenericEmailAuthDto(email=EMAIL, code="123456", password="password-1")
+    )
+
+    assert result.subscription_expiration_email_enabled is False
+    assert result.subscription_expiration_email_enabled_at is None
 
 
 def test_email_auth_identity_is_normalized_and_private() -> None:

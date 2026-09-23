@@ -29,7 +29,9 @@ class TrackableMixin:
             old_value = getattr(self, name, None)
             if old_value != value:
                 self._changed_data[name] = value
-                logger.debug(f"Attribute '{name}' changed from '{old_value}' to '{value}'")
+                # DTOs contain e-mail addresses, password hashes and one-time
+                # codes. Keep mutation telemetry without copying values into logs.
+                logger.debug(f"Attribute '{name}' changed")
 
         super().__setattr__(name, value)
 

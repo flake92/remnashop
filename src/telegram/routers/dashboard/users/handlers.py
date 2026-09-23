@@ -27,7 +27,7 @@ from src.application.use_cases.user.commands.blocking import (
 )
 from src.application.use_cases.user.queries.search import SearchUsers, SearchUsersDto
 from src.core.constants import USER_KEY
-from src.core.utils.validators import is_valid_url
+from src.core.utils.validators import is_valid_public_https_url
 from src.telegram.states import DashboardUsers
 from src.telegram.utils import is_double_click
 
@@ -145,7 +145,7 @@ async def on_block_input(
     user: TelegramUserDto = dialog_manager.middleware_data[USER_KEY]
 
     raw = (message.text or "").strip()
-    if raw and is_valid_url(raw):
+    if raw and is_valid_public_https_url(raw):
         ids = await fetch_blacklist_ids.system(raw)
         if not ids:
             await notifier.notify_user(user, i18n_key="ntf-blacklist.no-ids-found")
@@ -232,7 +232,7 @@ async def on_source_add_input(
     user: TelegramUserDto = dialog_manager.middleware_data[USER_KEY]
 
     raw = (message.text or "").strip()
-    if not is_valid_url(raw):
+    if not is_valid_public_https_url(raw):
         await notifier.notify_user(user, i18n_key="ntf-common.invalid-value")
         return
 

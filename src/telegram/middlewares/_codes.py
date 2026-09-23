@@ -18,7 +18,7 @@ def _parse_deeplink_code(event: TelegramObject, deeplink: Deeplink) -> Optional[
     prefix = deeplink.with_underscore
     if code.startswith(prefix):
         raw = code[len(prefix) :]
-        logger.debug(f"Parsed '{deeplink.value}' code '{raw}' from deeplink")
+        logger.debug(f"Parsed '{deeplink.value}' code from deeplink")
         return raw
 
     return None

@@ -3,7 +3,9 @@ from dishka import AnyOf, Provider, Scope, alias, provide
 from src.application.common import (
     BotService,
     BroadcastDispatcher,
+    BroadcastExecutionLock,
     Cryptographer,
+    EmailDeliveryRunLock,
     EmailSender,
     EventPublisher,
     EventSubscriber,
@@ -16,6 +18,9 @@ from src.application.common import (
     Remnawave,
     SubscriptionMutationLock,
     XuiDbReader,
+)
+from src.application.legacy_referral_recovery import (
+    LegacyReferralRecoveryAuthorizer,
 )
 from src.application.services import (
     PaymentCursorCodec,
@@ -38,7 +43,9 @@ from src.infrastructure.services import (
     NotificationWorker,
     PasswordHasherImpl,
     PaymentNotificationDispatcherImpl,
+    PostgresBroadcastExecutionLock,
     RedirectImpl,
+    RedisEmailDeliveryRunLock,
     RedisSubscriptionMutationLock,
     RemnawaveImpl,
     SmtpEmailSender,
@@ -51,16 +58,27 @@ class ServicesProvider(Provider):
     scope = Scope.APP
 
     bot = provide(source=BotServiceImpl, provides=BotService)
+    broadcast_execution_lock = provide(
+        source=PostgresBroadcastExecutionLock,
+        provides=BroadcastExecutionLock,
+    )
     health = provide(source=HealthService)
     cryptographer = provide(source=CryptographerImpl, provides=Cryptographer)
     password_hasher = provide(source=PasswordHasherImpl, provides=PasswordHasher)
     email_sender = provide(source=SmtpEmailSender, provides=EmailSender)
+    email_delivery_run_lock = provide(
+        source=RedisEmailDeliveryRunLock,
+        provides=EmailDeliveryRunLock,
+    )
     http_client = provide(source=AiohttpClient, provides=HttpClient)
     redirect = provide(source=RedirectImpl, provides=Redirect)
     pricing = provide(source=PricingService)
     payment_idempotency = provide(source=PaymentIdempotencyService, scope=Scope.REQUEST)
     payment_reconciliation = provide(source=PaymentReconciliationService, scope=Scope.REQUEST)
     payment_cursor = provide(source=PaymentCursorCodec)
+    legacy_referral_recovery_authorizer = provide(
+        source=LegacyReferralRecoveryAuthorizer,
+    )
     event_bus = provide(EventBusImpl)
     publisher = alias(source=EventBusImpl, provides=EventPublisher)
     subscriber = alias(source=EventBusImpl, provides=EventSubscriber)
