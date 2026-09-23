@@ -3,8 +3,10 @@ WORKDIR /opt/remnashop
 RUN apk add --no-cache git
 COPY pyproject.toml uv.lock ./
 COPY vendor/remnapy/remnapy-2.7.1.dev7+cleanpay.g06802538-py3-none-any.whl ./vendor/remnapy/
+COPY deploy/patch_remnapy_compat.py ./deploy/patch_remnapy_compat.py
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-dev --compile-bytecode \
+    && .venv/bin/python deploy/patch_remnapy_compat.py \
     && rm -rf .venv/lib/python3.12/site-packages/{pip,setuptools,wheel}*
 
 FROM python:3.12-alpine@sha256:b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a AS final
