@@ -341,6 +341,9 @@ def test_sender_reuses_one_authenticated_connection(
         def login(self, username: str, password: str) -> None:
             assert (username, password) == ("smtp-user", "smtp-password")
 
+        def noop(self) -> tuple[int, bytes]:
+            return 250, b"2.0.0 Ok"
+
         def send_message(self, message: object) -> None:
             sent_messages.append(message)
 
@@ -361,6 +364,70 @@ def test_sender_reuses_one_authenticated_connection(
 
     assert constructor_calls == 1
     assert len(sent_messages) == 2
+
+
+@pytest.mark.parametrize(
+    "stale_noop",
+    [
+        pytest.param(lambda: (421, b"4.4.2 Error: timeout exceeded"), id="421"),
+        pytest.param(
+            lambda: (_ for _ in ()).throw(smtplib.SMTPServerDisconnected("closed")),
+            id="disconnected",
+        ),
+        pytest.param(
+            lambda: (_ for _ in ()).throw(ConnectionResetError("reset")),
+            id="reset",
+        ),
+    ],
+)
+def test_sender_reconnects_when_idle_connection_was_closed_by_server(
+    monkeypatch: pytest.MonkeyPatch,
+    stale_noop,
+) -> None:
+    clients: list["FakeSmtp"] = []
+    sent: list[tuple[int, object]] = []
+
+    class FakeSmtp:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            self.index = len(clients)
+            self.closed = False
+            clients.append(self)
+
+        def ehlo(self) -> None:
+            return None
+
+        def starttls(self, *, context: ssl.SSLContext) -> None:
+            return None
+
+        def login(self, username: str, password: str) -> None:
+            return None
+
+        def noop(self) -> tuple[int, bytes]:
+            if self.index == 0:
+                return stale_noop()
+            return 250, b"2.0.0 Ok"
+
+        def send_message(self, message: object) -> None:
+            sent.append((self.index, message))
+
+        def close(self) -> None:
+            self.closed = True
+
+    monkeypatch.setattr(
+        "src.infrastructure.services.email_sender.smtplib.SMTP",
+        FakeSmtp,
+    )
+    sender = SmtpEmailSender(
+        _smtp_config(port=587, use_ssl=False, use_tls=True),  # type: ignore[arg-type]
+        _rate_limiter(),  # type: ignore[arg-type]
+    )
+
+    sender._send_sync(to="first@example.org", subject="one", body="one", message_id=None)
+    sender._send_sync(to="second@example.org", subject="two", body="two", message_id=None)
+
+    assert len(clients) == 2
+    assert clients[0].closed is True
+    assert [index for index, _ in sent] == [0, 1]
 
 
 async def test_reminder_rate_slot_is_reserved_immediately_before_smtp(

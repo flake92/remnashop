@@ -316,12 +316,24 @@ class SmtpEmailSender(EmailSender):
             message_id=message_id,
         )
         try:
+            if self._client is not None and not self._client_is_alive(self._client):
+                # The server closes idle sessions (Postfix answers 421 after
+                # smtpd_timeout); reconnect instead of failing the first send.
+                self._discard_client()
             if self._client is None:
                 self._client = self._open_client()
             self._client.send_message(message)
         except Exception:
             self._discard_client()
             raise
+
+    @staticmethod
+    def _client_is_alive(client: smtplib.SMTP | smtplib.SMTP_SSL) -> bool:
+        try:
+            code, _ = client.noop()
+        except (smtplib.SMTPException, OSError):
+            return False
+        return code == 250
 
 
 __all__ = ["SmtpEmailSender"]
