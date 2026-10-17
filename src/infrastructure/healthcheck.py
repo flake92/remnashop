@@ -20,9 +20,9 @@ if TYPE_CHECKING:
 
 async def legacy_taskiq_backlog(redis: Redis) -> int:
     """Count only pending/unread legacy work, not old acknowledged history."""
-    from redis.exceptions import ResponseError
+    from redis.exceptions import ResponseError  # noqa: PLC0415
 
-    from src.infrastructure.taskiq.health_state import (
+    from src.infrastructure.taskiq.health_state import (  # noqa: PLC0415
         LEGACY_TASKIQ_QUEUE_NAME,
         TASKIQ_CONSUMER_GROUP_NAME,
     )
@@ -54,7 +54,9 @@ async def legacy_taskiq_backlog(redis: Redis) -> int:
 
 
 def heartbeat_is_fresh(value: str | bytes | None, *, now: float) -> bool:
-    from src.infrastructure.taskiq.health_state import TASKIQ_HEARTBEAT_MAX_AGE_SECONDS
+    from src.infrastructure.taskiq.health_state import (  # noqa: PLC0415
+        TASKIQ_HEARTBEAT_MAX_AGE_SECONDS,
+    )
 
     if value is None:
         return False
@@ -80,11 +82,11 @@ def check_web() -> bool:
 
 
 async def check_taskiq() -> bool:
-    from redis.asyncio import Redis
-    from redis.exceptions import RedisError
+    from redis.asyncio import Redis  # noqa: PLC0415
+    from redis.exceptions import RedisError  # noqa: PLC0415
 
-    from src.core.config import AppConfig
-    from src.infrastructure.taskiq.health_state import (
+    from src.core.config import AppConfig  # noqa: PLC0415
+    from src.infrastructure.taskiq.health_state import (  # noqa: PLC0415
         taskiq_deployment_id,
         taskiq_heartbeat_key,
         taskiq_queue_name,
