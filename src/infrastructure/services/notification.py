@@ -482,6 +482,7 @@ class NotificationService(Notifier):
         if user.telegram_id is None:
             logger.debug(f"Skipping notification for web-only user {user.log}")
             return None
+        chat_id: int = user.telegram_id
 
         render_kwargs = payload.i18n_kwargs.copy()
 
@@ -513,7 +514,7 @@ class NotificationService(Notifier):
             if payload.is_text:
                 message = await _send_with_connect_retry(
                     lambda: self.bot.send_message(
-                        chat_id=user.telegram_id,
+                        chat_id=chat_id,
                         text=text,
                         disable_web_page_preview=True,
                         **kwargs,
@@ -531,7 +532,7 @@ class NotificationService(Notifier):
                 # rebuilt per attempt: an input file stream must not be reused
                 message = await _send_with_connect_retry(
                     lambda: method(
-                        user.telegram_id,
+                        chat_id,
                         self._build_media(media_payload),
                         caption=text,
                         **kwargs,
