@@ -1,26 +1,32 @@
+"""Container health checks: ``python -m src.infrastructure.healthcheck web|taskiq``.
+
+Docker runs this as a fresh process on every interval, so only the standard
+library is imported at module level. The ``web`` check is one HTTP request; the
+application config, Redis client and taskiq helpers load only for ``taskiq``.
+"""
+
+from __future__ import annotations
+
 import asyncio
 import os
 import sys
 import time
 import urllib.request
+from typing import TYPE_CHECKING
 
-from redis.asyncio import Redis
-from redis.exceptions import RedisError, ResponseError
-
-from src.core.config import AppConfig
-from src.infrastructure.taskiq.health_state import (
-    LEGACY_TASKIQ_QUEUE_NAME,
-    TASKIQ_CONSUMER_GROUP_NAME,
-    TASKIQ_HEARTBEAT_MAX_AGE_SECONDS,
-    taskiq_deployment_id,
-    taskiq_heartbeat_key,
-    taskiq_queue_name,
-    taskiq_stream_max_entries,
-)
+if TYPE_CHECKING:
+    from redis.asyncio import Redis
 
 
 async def legacy_taskiq_backlog(redis: Redis) -> int:
     """Count only pending/unread legacy work, not old acknowledged history."""
+    from redis.exceptions import ResponseError
+
+    from src.infrastructure.taskiq.health_state import (
+        LEGACY_TASKIQ_QUEUE_NAME,
+        TASKIQ_CONSUMER_GROUP_NAME,
+    )
+
     try:
         groups = await redis.xinfo_groups(LEGACY_TASKIQ_QUEUE_NAME)
     except ResponseError as error:
@@ -48,6 +54,8 @@ async def legacy_taskiq_backlog(redis: Redis) -> int:
 
 
 def heartbeat_is_fresh(value: str | bytes | None, *, now: float) -> bool:
+    from src.infrastructure.taskiq.health_state import TASKIQ_HEARTBEAT_MAX_AGE_SECONDS
+
     if value is None:
         return False
     try:
@@ -72,6 +80,17 @@ def check_web() -> bool:
 
 
 async def check_taskiq() -> bool:
+    from redis.asyncio import Redis
+    from redis.exceptions import RedisError
+
+    from src.core.config import AppConfig
+    from src.infrastructure.taskiq.health_state import (
+        taskiq_deployment_id,
+        taskiq_heartbeat_key,
+        taskiq_queue_name,
+        taskiq_stream_max_entries,
+    )
+
     redis = Redis.from_url(
         AppConfig.get().redis.dsn,
         decode_responses=True,

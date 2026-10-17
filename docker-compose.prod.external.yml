@@ -145,10 +145,12 @@ services:
 
     healthcheck:
       test: ["CMD", "python", "-m", "src.infrastructure.healthcheck", "web"]
-      interval: 30s
+      # Each probe is a new process; 120 s keeps idle CPU flat, start_interval keeps startup fast.
+      interval: 120s
       timeout: 10s
       retries: 3
       start_period: 1m
+      start_interval: 10s
 
     ports:
       - 127.0.0.1:5000:${APP_PORT:-5000}
@@ -177,10 +179,12 @@ services:
 
     healthcheck:
       test: ["CMD", "python", "-m", "src.infrastructure.healthcheck", "taskiq"]
-      interval: 30s
+      # Loads the app config and Redis client; the taskiq heartbeat already covers liveness.
+      interval: 300s
       timeout: 10s
       retries: 3
       start_period: 3m
+      start_interval: 10s
 
     command: >
       taskiq worker src.infrastructure.taskiq.worker:worker
@@ -209,10 +213,12 @@ services:
 
     healthcheck:
       test: ["CMD", "python", "-m", "src.infrastructure.healthcheck", "taskiq"]
-      interval: 30s
+      # Loads the app config and Redis client; the taskiq heartbeat already covers liveness.
+      interval: 300s
       timeout: 10s
       retries: 3
       start_period: 3m
+      start_interval: 10s
 
     command: >
       taskiq scheduler src.infrastructure.taskiq.scheduler:scheduler

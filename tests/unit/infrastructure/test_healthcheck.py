@@ -1,7 +1,11 @@
+import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
+from redis.asyncio import Redis
 
+from src.core.config import AppConfig
 from src.infrastructure import healthcheck
 from src.infrastructure.healthcheck import heartbeat_is_fresh
 from src.infrastructure.taskiq.health_state import (
@@ -95,12 +99,12 @@ async def test_taskiq_health_rejects_unbounded_stream_backlog(
     monkeypatch.setenv("TASKIQ_DEPLOYMENT_ID", "blue")
     monkeypatch.setenv("TASKIQ_STREAM_MAX_ENTRIES", "10")
     monkeypatch.setattr(
-        healthcheck.AppConfig,
+        AppConfig,
         "get",
         lambda: SimpleNamespace(redis=SimpleNamespace(dsn="redis://unused")),
     )
     monkeypatch.setattr(
-        healthcheck.Redis,
+        Redis,
         "from_url",
         lambda *_args, **_kwargs: fake_redis,
     )
@@ -122,14 +126,32 @@ async def test_taskiq_health_includes_legacy_pending_and_unread_work(
     monkeypatch.setenv("TASKIQ_DEPLOYMENT_ID", "blue")
     monkeypatch.setenv("TASKIQ_STREAM_MAX_ENTRIES", "10")
     monkeypatch.setattr(
-        healthcheck.AppConfig,
+        AppConfig,
         "get",
         lambda: SimpleNamespace(redis=SimpleNamespace(dsn="redis://unused")),
     )
     monkeypatch.setattr(
-        healthcheck.Redis,
+        Redis,
         "from_url",
         lambda *_args, **_kwargs: fake_redis,
     )
 
     assert not await healthcheck.check_taskiq()
+
+
+def test_web_health_check_imports_only_the_standard_library() -> None:
+    # Docker runs the check as a new process every interval; importing the app
+    # config, Redis or taskiq here cost ~1 s of CPU per probe on small hosts.
+    probe = (
+        "import sys\n"
+        "import src.infrastructure.healthcheck as healthcheck\n"
+        "healthcheck.check_web\n"
+        "heavy = sorted(name for name in sys.modules if name.split('.')[0] in "
+        "{'redis', 'pydantic', 'pydantic_settings', 'taskiq', 'sqlalchemy', 'aiogram'} "
+        "or name.startswith(('src.core', 'src.infrastructure.taskiq')))\n"
+        "print(','.join(heavy))\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True, check=True
+    )
+    assert result.stdout.strip() == ""
