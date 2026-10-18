@@ -1,13 +1,19 @@
 """Container health checks: ``python -m src.infrastructure.healthcheck web|taskiq``.
 
 Docker runs this as a fresh process on every interval, so only the standard
-library is imported at module level. The ``web`` check is one HTTP request; the
-application config, Redis client and taskiq helpers load only for ``taskiq``.
+library is imported at module level. The ``web`` check is one HTTP request. The
+``taskiq`` check imports only the Redis client: the application config and the
+taskiq package pull in the whole application (about 5 s of CPU on a 1-vCPU
+host), which made every probe time out during startup on small servers. The
+key, queue and Redis settings are therefore derived here from the environment
+exactly as ``src.infrastructure.taskiq.health_state`` and ``RedisConfig`` do;
+tests keep the two in lockstep.
 """
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import sys
 import time
@@ -17,15 +23,62 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from redis.asyncio import Redis
 
+# Mirrors of src.infrastructure.taskiq.health_state (checked by tests).
+TASKIQ_HEARTBEAT_MAX_AGE_SECONDS = 150
+TASKIQ_QUEUE_PREFIX = "taskiq"
+LEGACY_TASKIQ_QUEUE_NAME = TASKIQ_QUEUE_PREFIX
+TASKIQ_CONSUMER_GROUP_NAME = "taskiq"
+TASKIQ_HEARTBEAT_KEY_PREFIX = "taskiq_pipeline_heartbeat"
+DEFAULT_TASKIQ_STREAM_MAX_ENTRIES = 100_000
+
+
+def taskiq_deployment_id() -> str:
+    configured = os.environ.get("TASKIQ_DEPLOYMENT_ID", "local").strip()
+    if not configured or configured.casefold() in {"change_me", "replace_me"}:
+        raise ValueError("TASKIQ_DEPLOYMENT_ID must be a non-placeholder value")
+    return hashlib.sha256(configured.encode("utf-8")).hexdigest()[:24]
+
+
+def taskiq_heartbeat_key() -> str:
+    return f"{TASKIQ_HEARTBEAT_KEY_PREFIX}:{taskiq_deployment_id()}"
+
+
+def taskiq_queue_name() -> str:
+    return f"{TASKIQ_QUEUE_PREFIX}:{taskiq_deployment_id()}"
+
+
+def taskiq_stream_max_entries() -> int:
+    value = int(os.environ.get("TASKIQ_STREAM_MAX_ENTRIES", str(DEFAULT_TASKIQ_STREAM_MAX_ENTRIES)))
+    if value < 1:
+        raise ValueError("TASKIQ_STREAM_MAX_ENTRIES must be greater than zero")
+    return value
+
+
+def redis_connection_settings() -> dict[str, object]:
+    """The REDIS_* settings RedisConfig reads, with the same defaults."""
+    password = os.environ.get("REDIS_PASSWORD") or None
+    return {
+        "host": os.environ.get("REDIS_HOST", "remnashop-redis"),
+        "port": int(os.environ.get("REDIS_PORT", "6379")),
+        "db": int(os.environ.get("REDIS_NAME", "0")),
+        "password": password,
+    }
+
+
+def redis_client() -> Redis:
+    from redis.asyncio import Redis  # noqa: PLC0415
+
+    return Redis(
+        **redis_connection_settings(),  # type: ignore[arg-type]
+        decode_responses=True,
+        socket_connect_timeout=5,
+        socket_timeout=5,
+    )
+
 
 async def legacy_taskiq_backlog(redis: Redis) -> int:
     """Count only pending/unread legacy work, not old acknowledged history."""
     from redis.exceptions import ResponseError  # noqa: PLC0415
-
-    from src.infrastructure.taskiq.health_state import (  # noqa: PLC0415
-        LEGACY_TASKIQ_QUEUE_NAME,
-        TASKIQ_CONSUMER_GROUP_NAME,
-    )
 
     try:
         groups = await redis.xinfo_groups(LEGACY_TASKIQ_QUEUE_NAME)
@@ -54,10 +107,6 @@ async def legacy_taskiq_backlog(redis: Redis) -> int:
 
 
 def heartbeat_is_fresh(value: str | bytes | None, *, now: float) -> bool:
-    from src.infrastructure.taskiq.health_state import (  # noqa: PLC0415
-        TASKIQ_HEARTBEAT_MAX_AGE_SECONDS,
-    )
-
     if value is None:
         return False
     try:
@@ -82,23 +131,13 @@ def check_web() -> bool:
 
 
 async def check_taskiq() -> bool:
-    from redis.asyncio import Redis  # noqa: PLC0415
     from redis.exceptions import RedisError  # noqa: PLC0415
 
-    from src.core.config import AppConfig  # noqa: PLC0415
-    from src.infrastructure.taskiq.health_state import (  # noqa: PLC0415
-        taskiq_deployment_id,
-        taskiq_heartbeat_key,
-        taskiq_queue_name,
-        taskiq_stream_max_entries,
-    )
-
-    redis = Redis.from_url(
-        AppConfig.get().redis.dsn,
-        decode_responses=True,
-        socket_connect_timeout=5,
-        socket_timeout=5,
-    )
+    try:
+        redis = redis_client()
+    except ValueError as error:
+        sys.stderr.write(f"Taskiq health check failed: {type(error).__name__}\n")
+        return False
     try:
         deployment_id = taskiq_deployment_id()
         value = await redis.get(taskiq_heartbeat_key())

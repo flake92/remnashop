@@ -179,9 +179,9 @@ services:
 
     healthcheck:
       test: ["CMD", "python", "-m", "src.infrastructure.healthcheck", "taskiq"]
-      # Loads the app config and Redis client; the taskiq heartbeat already covers liveness.
+      # Redis client only (~0.6 s on 1 vCPU); 30 s leaves room for a busy startup.
       interval: 300s
-      timeout: 10s
+      timeout: 30s
       retries: 3
       start_period: 3m
       start_interval: 10s
@@ -213,9 +213,9 @@ services:
 
     healthcheck:
       test: ["CMD", "python", "-m", "src.infrastructure.healthcheck", "taskiq"]
-      # Loads the app config and Redis client; the taskiq heartbeat already covers liveness.
+      # Redis client only (~0.6 s on 1 vCPU); 30 s leaves room for a busy startup.
       interval: 300s
-      timeout: 10s
+      timeout: 30s
       retries: 3
       start_period: 3m
       start_interval: 10s
