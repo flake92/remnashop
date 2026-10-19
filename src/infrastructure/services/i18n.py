@@ -37,28 +37,46 @@ class LayeredFileStorage(BaseStorage):
         message references (``{ key }``) — which only resolve within their own bundle —
         never see the overrides. Default definitions of overridden ids are stripped so
         no duplicate-message junk is produced.
+
+        An override replaces only what it defines: attributes (``btn-menu.connect``)
+        and the value are taken from custom.ftl, while every default attribute it does
+        not mention is kept. Operators often copied a whole message such as
+        ``btn-menu`` from an older release; replacing it wholesale dropped attributes
+        added later and raised KeyNotFoundError for them.
         """
         if not custom_text:
             return default_texts
 
         custom_ast = FluentParser().parse(custom_text)
-        overridden: set[tuple[type, str]] = {
-            (type(entry), entry.id.name)
+        custom_entries: dict[tuple[type, str], ast.Message | ast.Term] = {
+            (type(entry), entry.id.name): entry
             for entry in custom_ast.body
             if isinstance(entry, (ast.Message, ast.Term))
         }
 
         default_ast = FluentParser().parse("\n".join(default_texts))
-        default_ast.body = [
-            entry
-            for entry in default_ast.body
-            if not (
-                isinstance(entry, (ast.Message, ast.Term))
-                and (type(entry), entry.id.name) in overridden
-            )
-        ]
+        kept_defaults: list[ast.EntryType] = []
+        for entry in default_ast.body:
+            if not isinstance(entry, (ast.Message, ast.Term)):
+                kept_defaults.append(entry)
+                continue
+            override = custom_entries.get((type(entry), entry.id.name))
+            if override is None:
+                kept_defaults.append(entry)
+                continue
+            if isinstance(override, ast.Message) and override.value is None:
+                override.value = entry.value
+            overridden_attributes = {attribute.id.name for attribute in override.attributes}
+            override.attributes = [
+                attribute
+                for attribute in entry.attributes
+                if attribute.id.name not in overridden_attributes
+            ] + list(override.attributes)
+        default_ast.body = kept_defaults
+
         stripped = FluentSerializer(with_junk=False).serialize(default_ast)
-        return [stripped, custom_text]
+        merged_custom = FluentSerializer(with_junk=True).serialize(custom_ast)
+        return [stripped, merged_custom]
 
     def _load_translations(self) -> None:
         # Local dev fallback: assets.default/ not present — behave like FileStorage
