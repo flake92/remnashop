@@ -8,6 +8,7 @@ from fluentogram.exceptions import KeyNotFoundError
 from loguru import logger
 
 from src.core.utils.converters import event_to_key
+from src.core.utils.i18n_helpers import I18N_KEY_OR_TEXT
 
 
 class TranslatorRunnerImpl(TranslatorRunner):
@@ -84,6 +85,13 @@ class TranslatorRunnerImpl(TranslatorRunner):
             and isinstance(data[1], dict)
         ):
             return self.get(data[0], **self._translate_values(data[1]))
+
+        if (
+            isinstance(data, dict)
+            and len(data) == 1
+            and isinstance(data.get(I18N_KEY_OR_TEXT), str)
+        ):
+            return self.get_or_raw(data[I18N_KEY_OR_TEXT])
 
         if isinstance(data, dict) and "key" in data:
             key = data.pop("key")

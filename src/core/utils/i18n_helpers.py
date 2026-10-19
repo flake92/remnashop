@@ -7,6 +7,18 @@ from src.core.utils.time import datetime_now
 
 from .i18n_keys import ByteUnitKey, TimeUnitKey, UtilKey
 
+I18N_KEY_OR_TEXT: Final = "key_or_text"
+
+
+def i18n_key_or_text(value: str) -> dict[str, str]:
+    """Wrap operator-owned display text such as a plan name for a message kwarg.
+
+    The translator renders a Fluent key (for example ``custom-plan-name1`` from
+    custom.ftl) in the reader's language and shows any other text unchanged,
+    without a missing-key warning.
+    """
+    return {I18N_KEY_OR_TEXT: value}
+
 
 def i18n_format_bytes_to_unit(
     value: Optional[Union[int, float]],

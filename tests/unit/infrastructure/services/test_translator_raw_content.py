@@ -3,6 +3,7 @@ from unittest.mock import MagicMock
 from fluentogram.exceptions import KeyNotFoundError
 from loguru import logger
 
+from src.core.utils.i18n_helpers import i18n_key_or_text
 from src.infrastructure.services.translator import TranslatorRunnerImpl
 
 
@@ -79,4 +80,27 @@ def test_operator_plan_names_are_rendered_as_values_without_key_lookup() -> None
         logger.remove(sink_id)
 
     assert text == "1 устройство: 1 устройство -> 1 устройство: 1 устройство"
+    assert records == []
+
+
+def test_plan_name_from_custom_ftl_is_translated_in_event_messages() -> None:
+    runner = _runner(
+        {
+            "event-subscription-renew": "{plan_name} <- {previous_plan_name}",
+            "custom-plan-name1": "1️⃣ Первый план",
+        }
+    )
+    records: list[dict[str, object]] = []
+    sink_id = logger.add(lambda message: records.append(message.record), level="WARNING")
+
+    try:
+        text = runner.get(
+            "event-subscription-renew",
+            plan_name=i18n_key_or_text("custom-plan-name1"),
+            previous_plan_name=i18n_key_or_text("1 устройство"),
+        )
+    finally:
+        logger.remove(sink_id)
+
+    assert text == "1️⃣ Первый план <- 1 устройство"
     assert records == []

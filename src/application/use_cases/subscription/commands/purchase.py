@@ -22,6 +22,7 @@ from src.core.utils.i18n_helpers import (
     i18n_format_days,
     i18n_format_device_limit,
     i18n_format_traffic_limit,
+    i18n_key_or_text,
 )
 from src.core.utils.time import datetime_now
 
@@ -108,7 +109,7 @@ class ActivateTrialSubscription(Interactor[ActivateTrialSubscriptionDto, None]):
             username=user.username,
             name=user.name,
             email=user.email,
-            plan_name=plan.name,
+            plan_name=i18n_key_or_text(plan.name),
             plan_type=plan.type,
             plan_traffic_limit=i18n_format_traffic_limit(plan.traffic_limit),
             plan_device_limit=i18n_format_device_limit(plan.device_limit),

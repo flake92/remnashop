@@ -80,6 +80,7 @@ from src.core.utils.i18n_helpers import (
     i18n_format_days,
     i18n_format_device_limit,
     i18n_format_traffic_limit,
+    i18n_key_or_text,
 )
 from src.core.utils.payment_methods import normalize_platega_payment_method
 
@@ -848,14 +849,14 @@ class ProcessPayment(Interactor[ProcessPaymentDto, None]):
             original_amount=transaction.pricing.original_amount,
             currency=transaction.currency.symbol,
             #
-            # Plan names are operator-owned display text, not Fluent keys.
-            plan_name=transaction.plan_snapshot.name,
+            # Plan names are operator text or a custom.ftl key (custom-plan-name1).
+            plan_name=i18n_key_or_text(transaction.plan_snapshot.name),
             plan_type=transaction.plan_snapshot.type,
             plan_traffic_limit=i18n_format_traffic_limit(transaction.plan_snapshot.traffic_limit),
             plan_device_limit=i18n_format_device_limit(transaction.plan_snapshot.device_limit),
             plan_duration=i18n_format_days(transaction.plan_snapshot.duration),
             #
-            previous_plan_name=old_plan.name if old_plan else "N/A",
+            previous_plan_name=i18n_key_or_text(old_plan.name) if old_plan else "N/A",
             previous_plan_type={
                 "key": "plan-type",
                 "plan_type": old_plan.type if old_plan else "N/A",

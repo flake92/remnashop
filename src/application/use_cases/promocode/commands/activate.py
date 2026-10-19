@@ -19,6 +19,7 @@ from src.application.use_cases.promocode.queries.validate import (
 )
 from src.core.enums import PromocodeRewardType, SubscriptionStatus
 from src.core.utils.converters import days_to_datetime
+from src.core.utils.i18n_helpers import i18n_key_or_text
 from src.core.utils.time import datetime_now
 
 
@@ -108,7 +109,7 @@ class ActivatePromocode(Interactor[ActivatePromocodeDto, PromocodeDto]):
             promocode_code=promo.code,
             reward_type=promo.reward_type.value,
             reward=promo.reward,
-            plan_name=str(promo.plan_snapshot.get("name"))
+            plan_name=i18n_key_or_text(str(promo.plan_snapshot.get("name")))
             if promo.plan_snapshot and promo.plan_snapshot.get("name")
             else "",
         )
