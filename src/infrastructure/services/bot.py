@@ -7,6 +7,7 @@ from aiogram.utils.chat_member import ChatMemberUnion
 from src.core.config import AppConfig
 from src.core.constants import T_ME
 from src.core.enums import Deeplink
+from src.infrastructure.services.telegram_retry import call_with_connect_retry
 
 
 class BotService:
@@ -75,4 +76,9 @@ class BotService:
         return f"{base_url}?text={encoded_text}"
 
     async def get_chat_member(self, chat_id: Union[str, int], user_id: int) -> ChatMemberUnion:
-        return await self.bot.get_chat_member(chat_id=chat_id, user_id=user_id)
+        # the channel check runs on every message, so a router tunnel restart must not
+        # turn it into an error; the call is a read and safe to repeat
+        return await call_with_connect_retry(
+            lambda: self.bot.get_chat_member(chat_id=chat_id, user_id=user_id),
+            "channel subscription check",
+        )

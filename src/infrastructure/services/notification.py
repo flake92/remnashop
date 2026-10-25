@@ -3,7 +3,7 @@ import base64
 import string
 import traceback
 from dataclasses import asdict
-from typing import Any, Awaitable, Callable, Optional, Sequence, TypeVar, Union
+from typing import Any, Callable, Optional, Sequence, Union
 
 from aiogram import Bot
 from aiogram.exceptions import (
@@ -23,7 +23,6 @@ from aiogram.types import (
 )
 from aiogram.utils.formatting import Text
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiohttp import ClientConnectorCertificateError, ClientConnectorError
 from loguru import logger
 
 from src.application.common import EventPublisher, Notifier, TranslatorHub
@@ -68,6 +67,7 @@ from src.core.logger import sanitize_log_text
 from src.core.types import AnyKeyboard, NotificationType
 from src.infrastructure.services.event_bus import on_event
 from src.infrastructure.services.notification_queue import NotificationWorker
+from src.infrastructure.services.telegram_retry import call_with_connect_retry
 from src.telegram.keyboards import (
     get_buy_keyboard,
     get_close_notification_button,
@@ -78,8 +78,6 @@ from src.telegram.keyboards import (
     get_user_keyboard,
 )
 from src.telegram.widgets import extract_color, extract_tg_emoji
-
-T = TypeVar("T")
 
 _DELETE_NOT_FOUND_ERRORS = (
     "message to delete not found",
@@ -108,67 +106,6 @@ def _is_unreachable_chat_error(error: Exception) -> bool:
         return False
     error_text = str(error).lower()
     return any(message in error_text for message in _UNREACHABLE_CHAT_ERRORS)
-
-
-# Retry a send only while Telegram could not even be reached. Each pause is awaited
-# with asyncio.sleep inside the notification task, so the bot keeps serving updates;
-# the budget caps how long a single notification can hold its task during an outage.
-TELEGRAM_CONNECT_RETRY_DELAYS: tuple[float, ...] = (1.0, 3.0)
-TELEGRAM_CONNECT_RETRY_BUDGET = 15.0
-
-try:
-    from python_socks import ProxyConnectionError, ProxyError, ProxyTimeoutError
-
-    _PROXY_CONNECT_ERRORS: tuple[type[BaseException], ...] = (
-        ProxyConnectionError,
-        ProxyError,
-        ProxyTimeoutError,
-    )
-except ImportError:  # pragma: no cover - python_socks ships with aiohttp-socks
-    _PROXY_CONNECT_ERRORS = ()
-
-
-def _is_telegram_unreachable_error(error: BaseException) -> bool:
-    """True only when the HTTP request never reached Telegram, so resending cannot
-    duplicate a message: DNS failures, refused connections, resets during the TLS
-    handshake, or a SOCKS proxy that could not open the tunnel. Timeouts and resets
-    after the request was written are not retried, because Telegram may already have
-    delivered the message. Certificate errors are not transient either."""
-    current: BaseException | None = error
-    while current is not None:
-        if isinstance(current, ClientConnectorCertificateError):
-            return False
-        if isinstance(current, ClientConnectorError):
-            return True
-        if _PROXY_CONNECT_ERRORS and isinstance(current, _PROXY_CONNECT_ERRORS):
-            return True
-        current = current.__cause__
-    return False
-
-
-async def _send_with_connect_retry(
-    send: Callable[[], Awaitable[T]],
-    log_context: str,
-) -> T:
-    loop = asyncio.get_running_loop()
-    started = loop.time()
-    delays = (*TELEGRAM_CONNECT_RETRY_DELAYS, None)
-    for attempt, delay in enumerate(delays, start=1):
-        try:
-            return await send()
-        except Exception as error:
-            if (
-                delay is None
-                or not _is_telegram_unreachable_error(error)
-                or loop.time() - started + delay > TELEGRAM_CONNECT_RETRY_BUDGET
-            ):
-                raise
-            logger.warning(
-                f"Telegram is unreachable ({type(error).__name__}) while notifying "
-                f"{log_context}; attempt {attempt} of {len(delays)}, retrying in {delay:g}s"
-            )
-            await asyncio.sleep(delay)
-    raise AssertionError("unreachable")  # pragma: no cover
 
 
 def _sanitized_error_diagnostics(
@@ -512,14 +449,14 @@ class NotificationService(Notifier):
 
         try:
             if payload.is_text:
-                message = await _send_with_connect_retry(
+                message = await call_with_connect_retry(
                     lambda: self.bot.send_message(
                         chat_id=chat_id,
                         text=text,
                         disable_web_page_preview=True,
                         **kwargs,
                     ),
-                    user.log,
+                    f"notification to {user.log}",
                 )
             elif payload.media:
                 method = self._get_media_method(payload)
@@ -530,14 +467,14 @@ class NotificationService(Notifier):
 
                 media_payload = payload.media
                 # rebuilt per attempt: an input file stream must not be reused
-                message = await _send_with_connect_retry(
+                message = await call_with_connect_retry(
                     lambda: method(
                         chat_id,
                         self._build_media(media_payload),
                         caption=text,
                         **kwargs,
                     ),
-                    user.log,
+                    f"notification to {user.log}",
                 )
             else:
                 logger.error(f"Payload must contain text or media for user {user.log}")

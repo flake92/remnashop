@@ -1,6 +1,10 @@
 from typing import Any, Awaitable, Callable, Final, Optional, cast
 
-from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
+from aiogram.exceptions import (
+    TelegramBadRequest,
+    TelegramForbiddenError,
+    TelegramNetworkError,
+)
 from aiogram.types import ErrorEvent as AiogramErrorEvent
 from aiogram.types import TelegramObject
 from aiogram.types import User as AiogramUser
@@ -55,6 +59,16 @@ class ErrorMiddleware(EventTypedMiddleware):
         notifier = await container.get(Notifier)
         redirect_menu = await container.get(RedirectMenu)
         user_dao = await container.get(UserDao)
+
+        if isinstance(event.exception, TelegramNetworkError):
+            # Telegram was unreachable (the router restarts its VPN tunnel when it
+            # switches nodes): replying or alerting the admins would hit the same
+            # outage, and the user simply repeats the action once the link is back
+            logger.warning(
+                f"Update handling failed, Telegram is unreachable: "
+                f"{type(event.exception).__name__}: {event.exception}"
+            )
+            return None
 
         is_context_loss = isinstance(
             event.exception,
