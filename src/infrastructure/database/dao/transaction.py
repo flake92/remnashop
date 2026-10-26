@@ -12,7 +12,10 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.application.common.dao import TransactionDao
-from src.application.common.dao.transaction import TransactionOwnerUnavailableError
+from src.application.common.dao.transaction import (
+    FULFILLMENT_PANEL_UNREACHABLE,
+    TransactionOwnerUnavailableError,
+)
 from src.application.dto import (
     GatewayStatsDto,
     PaymentWebhookEventDto,
@@ -352,6 +355,12 @@ class TransactionDaoImpl(TransactionDao):
                         ),
                         Transaction.fulfillment_status == TransactionFulfillmentStatus.NOT_STARTED,
                     ),
+                    # Released after a provably unapplied attempt: nothing to revoke.
+                    and_(
+                        Transaction.status == TransactionStatus.COMPLETED,
+                        Transaction.fulfillment_status == TransactionFulfillmentStatus.NOT_STARTED,
+                        Transaction.fulfillment_last_error == FULFILLMENT_PANEL_UNREACHABLE,
+                    ),
                     and_(
                         Transaction.status == TransactionStatus.COMPLETED,
                         Transaction.fulfillment_status == TransactionFulfillmentStatus.SUCCEEDED,
@@ -417,6 +426,12 @@ class TransactionDaoImpl(TransactionDao):
                     and_(
                         Transaction.status == TransactionStatus.CANCELED,
                         Transaction.cancellation_reason == "LOCAL_TIMEOUT",
+                    ),
+                    # A paid transaction whose earlier attempt never reached the
+                    # panel (see release_unapplied_fulfillment).
+                    and_(
+                        Transaction.status == TransactionStatus.COMPLETED,
+                        Transaction.fulfillment_last_error == FULFILLMENT_PANEL_UNREACHABLE,
                     ),
                 ),
                 Transaction.fulfillment_status == TransactionFulfillmentStatus.NOT_STARTED,
@@ -508,6 +523,34 @@ class TransactionDaoImpl(TransactionDao):
             )
             .values(
                 fulfillment_status=TransactionFulfillmentStatus.MANUAL_REQUIRED,
+                fulfillment_lease_expires_at=None,
+                fulfillment_last_error=error_code,
+            )
+        )
+        return cast(int, result.rowcount) == 1  # type: ignore[attr-defined]
+
+    async def release_unapplied_fulfillment(
+        self,
+        payment_id: UUID,
+        *,
+        token_hash: str,
+        error_code: str = FULFILLMENT_PANEL_UNREACHABLE,
+    ) -> bool:
+        # Only for side effects proven not to have reached the panel. The payment
+        # stays COMPLETED (money received); NOT_STARTED makes it claimable again.
+        result = await self.session.execute(
+            update(Transaction)
+            .where(
+                Transaction.payment_id == payment_id,
+                Transaction.status == TransactionStatus.COMPLETED,
+                Transaction.fulfillment_status == TransactionFulfillmentStatus.PROCESSING,
+                Transaction.fulfillment_token_hash == token_hash,
+                Transaction.fulfillment_lease_expires_at > func.clock_timestamp(),
+            )
+            .values(
+                fulfillment_status=TransactionFulfillmentStatus.NOT_STARTED,
+                fulfillment_token_hash=None,
+                fulfillment_started_at=None,
                 fulfillment_lease_expires_at=None,
                 fulfillment_last_error=error_code,
             )

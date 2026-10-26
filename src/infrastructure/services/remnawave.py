@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 from typing import Optional, Union
 from uuid import UUID
 
+import httpx
 from loguru import logger
 from packaging.version import Version
 from remnapy import RemnawaveSDK
@@ -33,8 +34,26 @@ from src.application.dto import (
 )
 from src.core.constants import REMNAWAVE_MIN_VERSION
 from src.core.enums import SubscriptionStatus
+from src.core.exceptions import RemnawaveUnreachableError
 from src.core.utils.converters import days_to_datetime, gb_to_bytes
 from src.core.utils.time import datetime_now
+
+# Failures raised before a connection (TCP + TLS) is established or before a pooled
+# connection is handed out. In these cases no request bytes reached the panel, so the
+# mutation is provably not applied and is safe to retry. Read/write timeouts and
+# protocol errors are deliberately excluded: the panel may already have applied them.
+_NEVER_SENT_ERRORS = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)
+
+
+def never_reached_panel(exc: BaseException) -> bool:
+    seen: set[int] = set()
+    current: Optional[BaseException] = exc
+    while current is not None and id(current) not in seen:
+        if isinstance(current, _NEVER_SENT_ERRORS):
+            return True
+        seen.add(id(current))
+        current = current.__cause__ or current.__context__
+    return False
 
 
 class RemnawaveImpl(Remnawave):
@@ -104,6 +123,12 @@ class RemnawaveImpl(Remnawave):
                 f"already exists in panel"
             )
             raise
+        except Exception as exc:
+            if never_reached_panel(exc):
+                raise RemnawaveUnreachableError(
+                    f"Create of RemnaUser '{request_dto.username}' never reached the panel"
+                ) from exc
+            raise
 
     async def update_user(
         self,
@@ -146,7 +171,15 @@ class RemnawaveImpl(Remnawave):
                 f"RemnaUser '{request_dto.username}' with UUID '{request_dto.uuid}' not found"
             )
             raise
+        except Exception as exc:
+            if never_reached_panel(exc):
+                raise RemnawaveUnreachableError(
+                    f"Update of RemnaUser '{request_dto.username}' never reached the panel"
+                ) from exc
+            raise
 
+        # Only the first mutation is classified: once the update is applied, a later
+        # traffic-reset failure is a partial side effect and stays ambiguous.
         if reset_traffic:
             await self.reset_traffic(uuid)
 

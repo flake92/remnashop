@@ -10,6 +10,7 @@ from uuid import UUID
 import pytest
 from remnapy.enums.users import TrafficLimitStrategy
 
+from src.application.common.dao.transaction import FULFILLMENT_PANEL_UNREACHABLE
 from src.application.dto import (
     PaymentWebhookEventDto,
     PlanSnapshotDto,
@@ -17,7 +18,9 @@ from src.application.dto import (
     TransactionDto,
 )
 from src.application.use_cases.gateways.commands.payment import (
+    PANEL_UNREACHABLE_MAX_ATTEMPTS,
     PaymentEventNotAppliedError,
+    PaymentFulfillmentDeferredError,
     PaymentTransactionNotReadyError,
     ProcessPayment,
     ProcessPaymentDto,
@@ -34,6 +37,7 @@ from src.core.enums import (
     TransactionFulfillmentStatus,
     TransactionStatus,
 )
+from src.core.exceptions import PurchaseError, RemnawaveUnreachableError
 from src.core.utils.time import datetime_now
 
 
@@ -89,9 +93,16 @@ class FakeTransactionDao:
             TransactionFulfillmentStatus.NOT_STARTED
         ):
             return None
-        claimable = transaction.status == TransactionStatus.PENDING or (
-            transaction.status == TransactionStatus.CANCELED
-            and transaction.cancellation_reason == "LOCAL_TIMEOUT"
+        claimable = (
+            transaction.status == TransactionStatus.PENDING
+            or (
+                transaction.status == TransactionStatus.CANCELED
+                and transaction.cancellation_reason == "LOCAL_TIMEOUT"
+            )
+            or (
+                transaction.status == TransactionStatus.COMPLETED
+                and transaction.fulfillment_last_error == FULFILLMENT_PANEL_UNREACHABLE
+            )
         )
         if not claimable:
             return None
@@ -152,6 +163,33 @@ class FakeTransactionDao:
         self.transaction = replace(
             transaction,
             fulfillment_status=TransactionFulfillmentStatus.MANUAL_REQUIRED,
+            fulfillment_lease_expires_at=None,
+            fulfillment_last_error=error_code,
+        )
+        return True
+
+    async def release_unapplied_fulfillment(
+        self,
+        payment_id: UUID,
+        *,
+        token_hash: str,
+        error_code: str = FULFILLMENT_PANEL_UNREACHABLE,
+    ) -> bool:
+        transaction = await self.get_by_payment_id(payment_id)
+        if (
+            transaction is None
+            or transaction.status != TransactionStatus.COMPLETED
+            or transaction.fulfillment_status != TransactionFulfillmentStatus.PROCESSING
+            or transaction.fulfillment_token_hash != token_hash
+            or transaction.fulfillment_lease_expires_at is None
+            or transaction.fulfillment_lease_expires_at <= datetime_now()
+        ):
+            return False
+        self.transaction = replace(
+            transaction,
+            fulfillment_status=TransactionFulfillmentStatus.NOT_STARTED,
+            fulfillment_token_hash=None,
+            fulfillment_started_at=None,
             fulfillment_lease_expires_at=None,
             fulfillment_last_error=error_code,
         )
@@ -247,8 +285,14 @@ class FakeTransactionDao:
         if transaction is None:
             return None
         unfulfilled = (
-            transaction.status in {TransactionStatus.PENDING, TransactionStatus.CANCELED}
-            and transaction.fulfillment_status == TransactionFulfillmentStatus.NOT_STARTED
+            transaction.fulfillment_status == TransactionFulfillmentStatus.NOT_STARTED
+            and (
+                transaction.status in {TransactionStatus.PENDING, TransactionStatus.CANCELED}
+                or (
+                    transaction.status == TransactionStatus.COMPLETED
+                    and transaction.fulfillment_last_error == FULFILLMENT_PANEL_UNREACHABLE
+                )
+            )
         )
         fulfilled = (
             transaction.status == TransactionStatus.COMPLETED
@@ -841,3 +885,151 @@ async def test_refund_notification_failure_is_replayed_before_inbox_delete() -> 
 
     assert notifier.admin_calls == 2
     assert dao.events == []
+
+
+def deferred_dto(payment_id: UUID) -> ProcessPaymentDto:
+    return replace(completed_dto(payment_id), defer_unreachable_fulfillment=True)
+
+
+@pytest.mark.asyncio
+async def test_unreachable_panel_releases_claim_and_replay_fulfills_once() -> None:
+    dao = FakeTransactionDao(transaction())
+    notifier = FakeNotifier()
+    process = process_payment(dao, notifier)
+    process._handle_success = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[PaymentFulfillmentDeferredError("panel down"), None]
+    )
+    payment_id = dao.transaction.payment_id
+
+    with pytest.raises(PaymentFulfillmentDeferredError):
+        await process._execute(SimpleNamespace(), deferred_dto(payment_id))
+
+    assert dao.transaction.status == TransactionStatus.COMPLETED
+    assert dao.transaction.fulfillment_status == TransactionFulfillmentStatus.NOT_STARTED
+    assert dao.transaction.fulfillment_last_error == FULFILLMENT_PANEL_UNREACHABLE
+    assert dao.transaction.fulfillment_token_hash is None
+
+    await process._execute(SimpleNamespace(), deferred_dto(payment_id))
+    # A duplicate success after completion must not fulfill again.
+    await process._execute(SimpleNamespace(), deferred_dto(payment_id))
+
+    assert process._handle_success.await_count == 2  # type: ignore[attr-defined]
+    assert dao.transaction.fulfillment_status == TransactionFulfillmentStatus.SUCCEEDED
+    assert notifier.system_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_released_fulfillment_is_refundable_without_manual_review() -> None:
+    dao = FakeTransactionDao(transaction())
+    notifier = FakeNotifier()
+    process = process_payment(dao, notifier)
+    process._handle_success = AsyncMock(  # type: ignore[method-assign]
+        side_effect=PaymentFulfillmentDeferredError("panel down")
+    )
+    payment_id = dao.transaction.payment_id
+    with pytest.raises(PaymentFulfillmentDeferredError):
+        await process._execute(SimpleNamespace(), deferred_dto(payment_id))
+
+    refunded = await dao.transition_refunded(payment_id)
+
+    assert refunded is not None
+    assert dao.transaction.status == TransactionStatus.REFUNDED
+    assert dao.transaction.fulfillment_status == TransactionFulfillmentStatus.NOT_STARTED
+    assert (
+        await dao.claim_fulfillment(payment_id, token_hash="x", lease_for=timedelta(minutes=1))
+        is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_completed_without_unreachable_marker_is_never_reclaimed() -> None:
+    dao = FakeTransactionDao(
+        replace(
+            transaction(status=TransactionStatus.COMPLETED),
+            fulfillment_last_error="LEGACY_COMPLETED_WITHOUT_PROOF",
+        )
+    )
+
+    claimed = await dao.claim_fulfillment(
+        dao.transaction.payment_id, token_hash="x", lease_for=timedelta(minutes=1)
+    )
+
+    assert claimed is None
+
+
+@pytest.mark.asyncio
+async def test_replay_backs_off_deferred_fulfillment_until_budget_is_spent() -> None:
+    dao = FakeTransactionDao(transaction())
+    assert dao.transaction is not None
+    payment_id = dao.transaction.payment_id
+    await dao.store_webhook_event(
+        payment_id=payment_id,
+        gateway_type=PaymentGatewayType.YOOKASSA,
+        status=TransactionStatus.COMPLETED,
+    )
+    notifier = FakeNotifier()
+    process = process_payment(dao, notifier)
+    seen_flags: list[bool] = []
+
+    async def unreachable(*args: Any, defer_unreachable: bool = False, **kwargs: Any) -> None:
+        seen_flags.append(defer_unreachable)
+        if defer_unreachable:
+            raise PaymentFulfillmentDeferredError("panel down")
+        raise RuntimeError("panel still down on the last attempt")
+
+    process._handle_success = unreachable  # type: ignore[method-assign]
+    replay = ReplayPendingPaymentWebhooks(
+        FakeUnitOfWork(),  # type: ignore[arg-type]
+        dao,  # type: ignore[arg-type]
+        process,
+        notifier,
+    )
+
+    await replay._execute(SimpleNamespace(), None)
+
+    event = dao.events[0]
+    assert event.manual_required_at is None
+    assert event.processing_next_attempt_at is not None
+    assert event.processing_next_attempt_at > datetime_now()
+    assert dao.transaction.fulfillment_status == TransactionFulfillmentStatus.NOT_STARTED
+
+    for _ in range(PANEL_UNREACHABLE_MAX_ATTEMPTS - 1):
+        await replay._execute(SimpleNamespace(), None)
+
+    assert seen_flags == [True] * (PANEL_UNREACHABLE_MAX_ATTEMPTS - 1) + [False]
+    assert dao.transaction.fulfillment_status == TransactionFulfillmentStatus.MANUAL_REQUIRED
+    assert dao.events[0].manual_required_at is not None
+
+
+@pytest.mark.asyncio
+async def test_handle_success_defers_only_unreachable_panel_errors() -> None:
+    dao = FakeTransactionDao(transaction())
+    notifier = FakeNotifier()
+    process = process_payment(dao, notifier)
+    del process._handle_success
+    process.subscription_dao = SimpleNamespace(get_current=AsyncMock(return_value=None))  # type: ignore[assignment]
+    redirect = SimpleNamespace(to_failed_payment=AsyncMock())
+    process.redirect = redirect  # type: ignore[assignment]
+    process.purchase_subscription = SimpleNamespace(  # type: ignore[assignment]
+        system=AsyncMock(side_effect=RemnawaveUnreachableError("connect timeout"))
+    )
+    user = SimpleNamespace(
+        id=7,
+        remna_name="user-7",
+        log="user-7",
+        telegram_id=42,
+        username=None,
+        name="User",
+        email=None,
+        is_privileged=False,
+    )
+
+    with pytest.raises(PaymentFulfillmentDeferredError):
+        await process._handle_success(user, dao.transaction, defer_unreachable=True)  # type: ignore[arg-type]
+    assert notifier.system_calls == 0
+    assert redirect.to_failed_payment.await_count == 0
+
+    with pytest.raises(PurchaseError):
+        await process._handle_success(user, dao.transaction, defer_unreachable=False)  # type: ignore[arg-type]
+    assert notifier.system_calls == 1
+    assert redirect.to_failed_payment.await_count == 1

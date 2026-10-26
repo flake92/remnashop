@@ -49,6 +49,10 @@ class GatewayNotConfiguredError(Exception): ...
 class PurchaseError(Exception): ...
 
 
+class RemnawaveUnreachableError(Exception):
+    """The panel mutation provably never reached Remnawave (no connection was made)."""
+
+
 class TransactionNotRetryableError(Exception): ...
 
 

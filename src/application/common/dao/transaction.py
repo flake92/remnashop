@@ -15,6 +15,11 @@ from src.core.enums import PaymentGatewayType, TransactionStatus
 class TransactionOwnerUnavailableError(Exception): ...
 
 
+# fulfillment_last_error of a COMPLETED payment whose fulfillment was released
+# because the panel was provably never reached; only such rows are re-claimable.
+FULFILLMENT_PANEL_UNREACHABLE = "FULFILLMENT_PANEL_UNREACHABLE"
+
+
 @runtime_checkable
 class TransactionDao(Protocol):
     async def create(self, transaction: TransactionDto) -> TransactionDto: ...
@@ -108,6 +113,14 @@ class TransactionDao(Protocol):
         *,
         token_hash: str,
         error_code: str,
+    ) -> bool: ...
+
+    async def release_unapplied_fulfillment(
+        self,
+        payment_id: UUID,
+        *,
+        token_hash: str,
+        error_code: str = FULFILLMENT_PANEL_UNREACHABLE,
     ) -> bool: ...
 
     async def expire_fulfillment(self, payment_id: UUID) -> bool: ...

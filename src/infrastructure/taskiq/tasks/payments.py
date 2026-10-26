@@ -9,9 +9,12 @@ from loguru import logger
 from src.application.common.dao import TransactionDao
 from src.application.common.uow import UnitOfWork
 from src.application.use_cases.gateways.commands.payment import (
+    PANEL_UNREACHABLE_MAX_ATTEMPTS,
     PaymentEventNotAppliedError,
+    PaymentFulfillmentDeferredError,
     ProcessPayment,
     ProcessPaymentDto,
+    panel_unreachable_retry_after,
 )
 from src.application.use_cases.misc.commands.maintenance import (
     CancelOldTransactions,
@@ -86,8 +89,29 @@ async def _handle_payment_transaction(
                 new_transaction_status=payment_status,
                 gateway_type=gateway_type,
                 selected_payment_method=event.selected_payment_method,
+                defer_unreachable_fulfillment=(
+                    event.processing_attempt_count < PANEL_UNREACHABLE_MAX_ATTEMPTS
+                ),
             )
         )
+    except PaymentFulfillmentDeferredError as exc:
+        async with uow:
+            await transaction_dao.release_webhook_event(
+                event.id,
+                token_hash=token_hash,
+                retry_after=panel_unreachable_retry_after(event.processing_attempt_count),
+                error_code=_webhook_error_code(exc),
+                manual_required=False,
+            )
+            await uow.commit()
+        # Expected and self-healing: do not surface it as a task error (ErrorEvent).
+        logger.warning(
+            "Payment '{}' fulfillment deferred (attempt {}): {}",
+            payment_id,
+            event.processing_attempt_count,
+            exc,
+        )
+        return
     except Exception as exc:
         manual_required = (
             isinstance(exc, PaymentEventNotAppliedError)

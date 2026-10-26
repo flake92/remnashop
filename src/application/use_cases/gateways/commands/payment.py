@@ -75,7 +75,11 @@ from src.core.enums import (
     TransactionFulfillmentStatus,
     TransactionStatus,
 )
-from src.core.exceptions import PurchaseError, TransactionNotRetryableError
+from src.core.exceptions import (
+    PurchaseError,
+    RemnawaveUnreachableError,
+    TransactionNotRetryableError,
+)
 from src.core.utils.i18n_helpers import (
     i18n_format_days,
     i18n_format_device_limit,
@@ -381,12 +385,30 @@ class ProcessPaymentDto:
     new_transaction_status: TransactionStatus
     gateway_type: PaymentGatewayType
     selected_payment_method: Optional[str] = None
+    # Set by the webhook inbox while it still has retry budget. When the panel was
+    # provably never reached, the fulfillment claim is released instead of being
+    # fenced for manual review, and the inbox replays the event later.
+    defer_unreachable_fulfillment: bool = False
 
 
 class PaymentTransactionNotReadyError(Exception): ...
 
 
 class PaymentEventNotAppliedError(Exception): ...
+
+
+class PaymentFulfillmentDeferredError(Exception):
+    """Fulfillment was not applied (panel unreachable) and is safe to replay."""
+
+
+# Webhook attempts that may defer an unreachable-panel fulfillment. With the backoff
+# below the inbox keeps retrying for ~1.5 hours; the last attempt fences the payment
+# for manual review exactly as before.
+PANEL_UNREACHABLE_MAX_ATTEMPTS = 12
+
+
+def panel_unreachable_retry_after(attempt_count: int) -> timedelta:
+    return timedelta(minutes=min(2 ** max(attempt_count - 1, 0), 10))
 
 
 class ProcessPayment(Interactor[ProcessPaymentDto, None]):
@@ -676,7 +698,37 @@ class ProcessPayment(Interactor[ProcessPaymentDto, None]):
         # The external subscription operation is intentionally outside the claim
         # transaction. The durable PROCESSING state prevents an ambiguous retry.
         try:
-            await self._handle_success(user, transaction)
+            await self._handle_success(
+                user,
+                transaction,
+                defer_unreachable=data.defer_unreachable_fulfillment,
+            )
+        except PaymentFulfillmentDeferredError:
+            async with self.uow:
+                released = await self.transaction_dao.release_unapplied_fulfillment(
+                    payment_id,
+                    token_hash=fulfillment_token_hash,
+                )
+                if not released:
+                    # A refund or lease expiry moved the fence meanwhile; keep the
+                    # conservative path rather than replaying a changed transaction.
+                    marked_manual = await self.transaction_dao.mark_fulfillment_manual_required(
+                        payment_id,
+                        token_hash=fulfillment_token_hash,
+                        error_code="FULFILLMENT_SIDE_EFFECT_FAILED",
+                    )
+                    if not marked_manual:
+                        raise RuntimeError("Deferred payment fulfillment could not be fenced")
+                await self.uow.commit()
+            if not released:
+                raise PaymentEventNotAppliedError(
+                    "Deferred fulfillment changed state before release"
+                )
+            logger.warning(
+                f"Remnawave unreachable; fulfillment of '{payment_id}' for user "
+                f"'{user.remna_name}' released for replay"
+            )
+            raise
         except Exception as exc:
             async with self.uow:
                 marked_manual = await self.transaction_dao.mark_fulfillment_manual_required(
@@ -825,7 +877,13 @@ class ProcessPayment(Interactor[ProcessPaymentDto, None]):
             await self.transaction_dao.mark_fulfillment_alerted(transaction.payment_id)
             await self.uow.commit()
 
-    async def _handle_success(self, user: UserDto, transaction: TransactionDto) -> None:
+    async def _handle_success(
+        self,
+        user: UserDto,
+        transaction: TransactionDto,
+        *,
+        defer_unreachable: bool = False,
+    ) -> None:
         if transaction.is_test:
             await self.notifier.notify_user(user, i18n_key="ntf-gateway.test-payment-confirmed")
             return
@@ -874,32 +932,15 @@ class ProcessPayment(Interactor[ProcessPaymentDto, None]):
             await self.purchase_subscription.system(
                 PurchaseSubscriptionDto(user, transaction, subscription)
             )
+        except RemnawaveUnreachableError as e:
+            if not defer_unreachable:
+                await self._report_purchase_failure(user, transaction)
+                raise PurchaseError(e)
+            # Nothing reached the panel: stay silent towards the customer and the
+            # operator; the webhook inbox replays the payment after a backoff.
+            raise PaymentFulfillmentDeferredError(str(e)) from e
         except Exception as e:
-            logger.exception(
-                f"Failed to process purchase for user '{user.remna_name}', "
-                f"transaction '{transaction.payment_id}'"
-            )
-            await self.notifier.notify_system(
-                MessagePayloadDto(
-                    i18n_key="event-payment.purchase-failed",
-                    i18n_kwargs={
-                        "payment_id": str(transaction.payment_id),
-                        "gateway_type": transaction.gateway_type,
-                        "final_amount": transaction.pricing.final_amount,
-                        "original_amount": transaction.pricing.original_amount,
-                        "discount_percent": transaction.pricing.discount_percent,
-                        "currency": transaction.currency.symbol,
-                        "telegram_id": user.telegram_id or 0,
-                        "username": user.username or 0,
-                        "name": user.name,
-                        "email": user.email,
-                    },
-                ),
-                roles=[Role.OWNER, Role.DEV],
-                notification_type=SystemNotificationType.SYSTEM,
-            )
-            if user.telegram_id is not None:
-                await self.redirect.to_failed_payment(user.telegram_id)
+            await self._report_purchase_failure(user, transaction)
             raise PurchaseError(e)
 
         await self.event_publisher.publish(event)
@@ -912,6 +953,37 @@ class ProcessPayment(Interactor[ProcessPaymentDto, None]):
 
         if user.telegram_id is not None:
             await self.redirect.to_success_payment(user.telegram_id, transaction.purchase_type)
+
+    async def _report_purchase_failure(
+        self,
+        user: UserDto,
+        transaction: TransactionDto,
+    ) -> None:
+        logger.exception(
+            f"Failed to process purchase for user '{user.remna_name}', "
+            f"transaction '{transaction.payment_id}'"
+        )
+        await self.notifier.notify_system(
+            MessagePayloadDto(
+                i18n_key="event-payment.purchase-failed",
+                i18n_kwargs={
+                    "payment_id": str(transaction.payment_id),
+                    "gateway_type": transaction.gateway_type,
+                    "final_amount": transaction.pricing.final_amount,
+                    "original_amount": transaction.pricing.original_amount,
+                    "discount_percent": transaction.pricing.discount_percent,
+                    "currency": transaction.currency.symbol,
+                    "telegram_id": user.telegram_id or 0,
+                    "username": user.username or 0,
+                    "name": user.name,
+                    "email": user.email,
+                },
+            ),
+            roles=[Role.OWNER, Role.DEV],
+            notification_type=SystemNotificationType.SYSTEM,
+        )
+        if user.telegram_id is not None:
+            await self.redirect.to_failed_payment(user.telegram_id)
 
 
 class RetryFailedTransaction(Interactor[UUID, None]):

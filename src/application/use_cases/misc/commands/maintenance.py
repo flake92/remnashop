@@ -19,9 +19,12 @@ from src.application.dto import (
     UserDto,
 )
 from src.application.use_cases.gateways.commands.payment import (
+    PANEL_UNREACHABLE_MAX_ATTEMPTS,
     PaymentEventNotAppliedError,
+    PaymentFulfillmentDeferredError,
     ProcessPayment,
     ProcessPaymentDto,
+    panel_unreachable_retry_after,
 )
 from src.core.enums import Currency, Role, SystemNotificationType
 
@@ -183,8 +186,28 @@ class ReplayPendingPaymentWebhooks(Interactor[None, None]):
                         new_transaction_status=event.status,
                         gateway_type=event.gateway_type,
                         selected_payment_method=event.selected_payment_method,
+                        defer_unreachable_fulfillment=(
+                            event.processing_attempt_count < PANEL_UNREACHABLE_MAX_ATTEMPTS
+                        ),
                     )
                 )
+            except PaymentFulfillmentDeferredError as exc:
+                logger.warning(
+                    "Replayed payment webhook '{}' deferred again (attempt {}): {}",
+                    event.id,
+                    event.processing_attempt_count,
+                    exc,
+                )
+                async with self.uow:
+                    await self.transaction_dao.release_webhook_event(
+                        event.id,
+                        token_hash=replay_token_hash,
+                        retry_after=panel_unreachable_retry_after(event.processing_attempt_count),
+                        error_code=_webhook_error_code(exc),
+                        manual_required=False,
+                    )
+                    await self.uow.commit()
+                continue
             except Exception as exc:
                 logger.exception(
                     "Failed to replay early payment webhook '{}'",
