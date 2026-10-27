@@ -157,6 +157,29 @@ class SmtpEmailSender(EmailSender):
                 )
                 raise classified from exc
 
+    async def probe(self) -> str | None:
+        # A separate short session, so the probe neither waits for the shared
+        # connection lock nor consumes a delivery rate slot: no mail is sent.
+        try:
+            await asyncio.to_thread(self._probe_sync)
+        except Exception as exc:
+            return _classify_smtp_error(exc).code
+        return None
+
+    def _probe_sync(self) -> None:
+        client = self._open_client()
+        try:
+            code, _ = client.noop()
+            if code != 250:
+                raise smtplib.SMTPResponseException(code, b"NOOP rejected")
+        finally:
+            try:
+                client.quit()
+            except Exception:
+                # The session already proved the server works or failed with
+                # the error that matters; a failed goodbye changes neither.
+                client.close()
+
     async def _wait_for_rate_permit(
         self,
         *,

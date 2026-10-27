@@ -194,6 +194,41 @@ class NotificationErrorEvent(SystemEvent):
 
 
 @dataclass(frozen=True, kw_only=True)
+class SmtpUnavailableEvent(SystemEvent):
+    notification_type: NotificationType = field(
+        default=SystemNotificationType.SYSTEM,
+        init=False,
+    )
+
+    server: str
+    error_code: str
+    failing_since: str
+    failing_for: str
+    failed_checks: int
+    is_repeat: bool
+
+    @property
+    def event_key(self) -> str:
+        return "event-smtp.unavailable"
+
+
+@dataclass(frozen=True, kw_only=True)
+class SmtpRestoredEvent(SystemEvent):
+    notification_type: NotificationType = field(
+        default=SystemNotificationType.SYSTEM,
+        init=False,
+    )
+
+    server: str
+    failing_since: str
+    failing_for: str
+
+    @property
+    def event_key(self) -> str:
+        return "event-smtp.restored"
+
+
+@dataclass(frozen=True, kw_only=True)
 class BotLifecycleEvent(SystemEvent, BuildInfoDto):
     notification_type: NotificationType = field(
         default=SystemNotificationType.BOT_LIFECYCLE,

@@ -13,6 +13,8 @@ from .system import (
     NotificationErrorEvent,
     RemnawaveErrorEvent,
     RemnawaveVersionWarningEvent,
+    SmtpRestoredEvent,
+    SmtpUnavailableEvent,
     TorrentBlockerReportEvent,
     TrialActivatedEvent,
     UserAllDevicesDeletedEvent,
@@ -46,6 +48,8 @@ __all__ = [
     "BotInlineModeDisabledEvent",
     "RemnawaveErrorEvent",
     "RemnawaveVersionWarningEvent",
+    "SmtpRestoredEvent",
+    "SmtpUnavailableEvent",
     #
     "BotShutdownEvent",
     "BotStartupEvent",

@@ -85,6 +85,47 @@ event-error =
     Проверьте маршрут уведомлений и убедитесь, что бот является участником группы с правами на отправку сообщений.
 
 
+event-smtp =
+    .unavailable =
+    #SmtpUnavailableEvent
+
+    <b>📭 Почтовый сервер не отвечает{ $is_repeat ->
+    [0] { space }
+    *[1] { space }(всё ещё)
+    }</b>
+
+    <blockquote>
+    • <b>Сервер</b>: <code>{ $server }</code>
+    • <b>Ошибка</b>: <code>{ $error_code }</code> — { $error_code ->
+        [SMTP_CONNECTION_ERROR] нет соединения с сервером
+        [SMTP_TIMEOUT_OR_DISCONNECT] таймаут или обрыв соединения
+        [SMTP_AUTH_REJECTED] сервер отклонил логин или пароль
+        [SMTP_AUTH_TEMPORARY] временная ошибка авторизации
+        [SMTP_TLS_CERTIFICATE_ERROR] ошибка сертификата сервера
+        [SMTP_TLS_CONFIGURATION] ошибка настройки TLS
+        [SMTP_TLS_TRANSIENT] сбой TLS
+        [SMTP_TLS_DISCONNECTED] обрыв во время TLS
+        *[other] сервер не принимает сессию
+    }
+    • <b>Не работает с</b>: { $failing_since } ({ $failing_for })
+    • <b>Проверок подряд с ошибкой</b>: { $failed_checks }
+    </blockquote>
+
+    Письма с кодами входа и сброса пароля сейчас не доходят; напоминания о подписке бот повторит сам после восстановления.
+
+    <i>Проверка идет каждые 5 минут; это сообщение повторится не чаще раза в 12 часов, а после восстановления придет отдельное.</i>
+
+    .restored =
+    #SmtpRestoredEvent
+
+    <b>✅ Почтовый сервер снова работает</b>
+
+    <blockquote>
+    • <b>Сервер</b>: <code>{ $server }</code>
+    • <b>Не работал</b>: с { $failing_since }, { $failing_for }
+    </blockquote>
+
+
 event-bot =
     .startup =
     #BotStartupEvent
