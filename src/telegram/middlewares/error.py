@@ -39,6 +39,14 @@ _IGNORED_BAD_REQUESTS: Final[tuple[str, ...]] = (
     "Bad Request: message to forward not found",
 )
 
+# The user's chat cannot be reached at all. Redirecting to the menu would fail
+# with the same error inside a new update and loop until the database pool is
+# exhausted, so such errors end here.
+_UNREACHABLE_CHAT_BAD_REQUESTS: Final[tuple[str, ...]] = (
+    "chat not found",
+    "user is deactivated",
+)
+
 
 class ErrorMiddleware(EventTypedMiddleware):
     __event_types__ = [MiddlewareEventType.ERROR]
@@ -82,6 +90,9 @@ class ErrorMiddleware(EventTypedMiddleware):
 
         if isinstance(event.exception, TelegramBadRequest):
             error_text = str(event.exception)
+            if any(msg in error_text for msg in _UNREACHABLE_CHAT_BAD_REQUESTS):
+                logger.warning(f"Update skipped, the user's chat is unreachable: {error_text}")
+                return None
             if any(msg in error_text for msg in _IGNORED_BAD_REQUESTS):
                 logger.warning(f"Ignored expected TelegramBadRequest: {event.exception}")
                 if aiogram_user:
