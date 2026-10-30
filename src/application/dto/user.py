@@ -56,6 +56,9 @@ class UserDto(BaseDto, TrackableMixin, TimestampMixin):
     merged_into_user_id: Optional[int] = None
     subscription_expiration_email_enabled: bool = False
     subscription_expiration_email_enabled_at: Optional[datetime] = None
+    email_service_notifications_enabled: bool = True
+    email_news_enabled: bool = False
+    email_news_enabled_at: Optional[datetime] = None
 
     username: Optional[str] = None
     referral_code: str = ""

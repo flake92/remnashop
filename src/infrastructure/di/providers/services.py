@@ -4,6 +4,8 @@ from src.application.common import (
     BotService,
     BroadcastDispatcher,
     BroadcastExecutionLock,
+    BulkEmailRunLock,
+    BulkEmailSender,
     Cryptographer,
     EmailDeliveryRunLock,
     EmailSender,
@@ -11,6 +13,7 @@ from src.application.common import (
     EventSubscriber,
     FileDownloader,
     HttpClient,
+    NotificationChannels,
     Notifier,
     PasswordHasher,
     PaymentNotificationDispatcher,
@@ -34,10 +37,12 @@ from src.infrastructure.services import (
     AiohttpClient,
     BotServiceImpl,
     BroadcastDispatcherImpl,
+    BulkSmtpEmailSender,
     CommandService,
     CryptographerImpl,
     EventBusImpl,
     HealthService,
+    NotificationChannelsImpl,
     NotificationQueue,
     NotificationService,
     NotificationWorker,
@@ -45,6 +50,7 @@ from src.infrastructure.services import (
     PaymentNotificationDispatcherImpl,
     PostgresBroadcastExecutionLock,
     RedirectImpl,
+    RedisBulkEmailRunLock,
     RedisEmailDeliveryRunLock,
     RedisSubscriptionMutationLock,
     RemnawaveImpl,
@@ -69,6 +75,12 @@ class ServicesProvider(Provider):
     email_delivery_run_lock = provide(
         source=RedisEmailDeliveryRunLock,
         provides=EmailDeliveryRunLock,
+    )
+    bulk_email_sender = provide(source=BulkSmtpEmailSender, provides=BulkEmailSender)
+    bulk_email_run_lock = provide(source=RedisBulkEmailRunLock, provides=BulkEmailRunLock)
+    notification_channels = provide(
+        source=NotificationChannelsImpl,
+        provides=NotificationChannels,
     )
     http_client = provide(source=AiohttpClient, provides=HttpClient)
     redirect = provide(source=RedirectImpl, provides=Redirect)

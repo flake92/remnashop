@@ -36,3 +36,7 @@ class NotificationPreferencesDto:
     email_eligible: bool
     sender_email: str | None
     days_before: tuple[int, ...]
+    service_email_enabled: bool = True
+    news_email_enabled: bool = False
+    bulk_sender_email: str | None = None
+    push_available: bool = False

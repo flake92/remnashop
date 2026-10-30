@@ -39,6 +39,11 @@ class InitializeBroadcastMessages(
             return existing.messages
 
         async with self.uow:
+            if existing and not existing.audience_count:
+                # StartBroadcast counted the whole audience into total_count;
+                # keep it for the e-mail/push report before it becomes the
+                # Telegram recipient count below.
+                await self.broadcast_dao.update_audience_count(data.task_id, existing.total_count)
             messages = await self.broadcast_dao.add_messages(data.task_id, data.messages)
             # Align total_count with the real recipient count: the audience count saved at
             # StartBroadcast includes web-only users that are filtered out before sending.

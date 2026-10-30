@@ -7,11 +7,18 @@ from .email_delivery_lock import (
     EmailDeliveryRunLock,
     EmailDeliveryRunLockLostError,
 )
-from .email_sender import EmailSender
+from .email_sender import BulkEmailRunLock, BulkEmailSender, EmailSender
 from .event_bus import EventPublisher, EventSubscriber
 from .file_downloader import FileDownloader
 from .http_client import HttpClient
 from .interactor import Interactor
+from .notification_channels import (
+    ChannelCopy,
+    ChannelCounts,
+    ChannelStats,
+    NotificationCategory,
+    NotificationChannels,
+)
 from .notifier import Notifier
 from .password_hasher import PasswordHasher
 from .redirect import Redirect
@@ -27,6 +34,8 @@ __all__ = [
     "BotService",
     "BroadcastExecutionLock",
     "Cryptographer",
+    "BulkEmailRunLock",
+    "BulkEmailSender",
     "EmailSender",
     "EmailDeliveryRunBusyError",
     "EmailDeliveryRunLock",
@@ -36,6 +45,11 @@ __all__ = [
     "FileDownloader",
     "HttpClient",
     "Interactor",
+    "ChannelCopy",
+    "ChannelCounts",
+    "ChannelStats",
+    "NotificationCategory",
+    "NotificationChannels",
     "Notifier",
     "BroadcastDispatcher",
     "PasswordHasher",

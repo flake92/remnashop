@@ -6,11 +6,13 @@ from .commands import (
     DeliverSubscriptionExpirationEmailReminders,
     GenerateSubscriptionExpirationEmailReminders,
     GetNotificationPreferences,
+    UnsubscribeEmail,
     UpdateNotificationPreferences,
 )
 
 NOTIFICATION_USE_CASES: Final[tuple[type[Interactor], ...]] = (
     GetNotificationPreferences,
+    UnsubscribeEmail,
     UpdateNotificationPreferences,
     GenerateSubscriptionExpirationEmailReminders,
     DeliverSubscriptionExpirationEmailReminders,
@@ -21,5 +23,6 @@ __all__ = [
     "GenerateSubscriptionExpirationEmailReminders",
     "GetNotificationPreferences",
     "NOTIFICATION_USE_CASES",
+    "UnsubscribeEmail",
     "UpdateNotificationPreferences",
 ]

@@ -192,6 +192,7 @@ class SubscriptionEmailReminderDaoImpl(SubscriptionEmailReminderDao):
                 User.email.is_not(None),
                 User.is_email_verified.is_(True),
                 User.subscription_expiration_email_enabled.is_(True),
+                User.email_service_notifications_enabled.is_(True),
                 User.subscription_expiration_email_enabled_at.is_not(None),
                 User.subscription_expiration_email_enabled_at <= SubscriptionEmailReminder.due_at,
                 User.current_subscription_id == Subscription.id,
@@ -320,6 +321,7 @@ class SubscriptionEmailReminderDaoImpl(SubscriptionEmailReminderDao):
             and user.email is not None
             and user.is_email_verified
             and user.subscription_expiration_email_enabled
+            and user.email_service_notifications_enabled
             and user.subscription_expiration_email_enabled_at is not None
             and user.subscription_expiration_email_enabled_at <= reminder.due_at
             and user.current_subscription_id == subscription.id

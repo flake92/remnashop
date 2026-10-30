@@ -48,6 +48,10 @@ def test_notification_preferences_response_contract() -> None:
         "email_eligible": True,
         "sender_email": "notice@example.org",
         "days_before": [7, 3, 1],
+        "service_email_enabled": True,
+        "news_email_enabled": False,
+        "bulk_sender_email": None,
+        "push_available": False,
     }
 
 

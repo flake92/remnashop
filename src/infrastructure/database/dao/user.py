@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone
 from itertools import batched
-from typing import Optional, cast
+from typing import Any, Optional, cast
 from uuid import UUID
 
 from adaptix import Retort
@@ -191,6 +191,37 @@ class UserDaoImpl(UserDao):
 
         logger.warning(f"Failed to update user '{user.id}'")
         return None
+
+    async def set_email_channel_preferences(
+        self,
+        user_id: int,
+        *,
+        service: Optional[bool] = None,
+        news: Optional[bool] = None,
+    ) -> Optional[UserDto]:
+        values: dict[str, Any] = {}
+        if service is not None:
+            values["email_service_notifications_enabled"] = service
+        if news is not None:
+            values["email_news_enabled"] = news
+            # Keep the original consent time on a repeated opt-in; the
+            # timestamp is evaluated after the row lock, like reminder consent.
+            values["email_news_enabled_at"] = (
+                case(
+                    (User.email_news_enabled.is_(True), User.email_news_enabled_at),
+                    else_=func.clock_timestamp(),
+                )
+                if news
+                else None
+            )
+        if not values:
+            return await self.get_by_id(user_id)
+        db_user = await self.session.scalar(
+            update(User).where(User.id == user_id).values(**values).returning(User)
+        )
+        if db_user is None:
+            return None
+        return self._convert_to_dto(db_user)
 
     async def set_subscription_expiration_email_preference(
         self,

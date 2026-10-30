@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from src.core.constants import EMAIL_CODE_LENGTH
 from src.core.enums import AuthType
@@ -14,6 +14,8 @@ class RegisterRequest(BaseModel):
     password: str = Field(min_length=8, max_length=256)
     name: Optional[str] = Field(default=None, min_length=1, max_length=128)
     referral_code: Optional[str] = Field(default=None, min_length=3, max_length=64)
+    # News e-mail is advertising: only an explicit tick opts in.
+    email_news_consent: bool = Field(default=False, strict=True)
 
     @field_validator("email")
     @classmethod
@@ -132,10 +134,59 @@ class NotificationPreferencesResponse(BaseModel):
     email_eligible: bool
     sender_email: Optional[str]
     days_before: list[int]
+    service_email_enabled: bool = True
+    news_email_enabled: bool = False
+    bulk_sender_email: Optional[str] = None
+    push_available: bool = False
 
 
 class UpdateNotificationPreferencesRequest(BaseModel):
-    subscription_expiration_email_enabled: bool = Field(strict=True)
+    # Every field is optional; at least one must be present.
+    subscription_expiration_email_enabled: Optional[bool] = Field(default=None, strict=True)
+    service_email_enabled: Optional[bool] = Field(default=None, strict=True)
+    news_email_enabled: Optional[bool] = Field(default=None, strict=True)
+
+    @model_validator(mode="after")
+    def require_one_field(self) -> "UpdateNotificationPreferencesRequest":
+        if (
+            self.subscription_expiration_email_enabled is None
+            and self.service_email_enabled is None
+            and self.news_email_enabled is None
+        ):
+            raise ValueError("At least one preference is required")
+        return self
+
+
+class PushSubscriptionKeys(BaseModel):
+    p256dh: str = Field(min_length=80, max_length=128, pattern=r"^[A-Za-z0-9_-]+=*$")
+    auth: str = Field(min_length=16, max_length=64, pattern=r"^[A-Za-z0-9_-]+=*$")
+
+
+class PushSubscriptionRequest(BaseModel):
+    endpoint: str = Field(min_length=12, max_length=2048)
+    keys: PushSubscriptionKeys
+    user_agent: Optional[str] = Field(default=None, max_length=512)
+
+
+class PushSubscriptionDeleteRequest(BaseModel):
+    endpoint: str = Field(min_length=12, max_length=2048)
+
+
+class PushKeyResponse(BaseModel):
+    enabled: bool
+    public_key: Optional[str]
+
+
+class PushStatusResponse(BaseModel):
+    devices: int
+
+
+class UnsubscribeRequest(BaseModel):
+    token: str = Field(min_length=5, max_length=128)
+
+
+class UnsubscribeResponse(BaseModel):
+    category: str
 
 
 class ChangePasswordResponse(BaseModel):

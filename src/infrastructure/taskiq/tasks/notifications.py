@@ -1,10 +1,11 @@
 import asyncio
 import time
+from uuid import uuid4
 
 from dishka.integrations.taskiq import FromDishka, inject
 from loguru import logger
 
-from src.application.common import Notifier
+from src.application.common import NotificationCategory, Notifier
 from src.application.common.dao import UserDao
 from src.application.dto import MessagePayloadDto
 from src.core.constants import BATCH_DELAY, BATCH_SIZE_20
@@ -24,6 +25,13 @@ async def notify_payments_restored(
     if not users:
         logger.debug("No users found for access notification")
         return
+
+    await notifier.copy_to_channels(
+        users,
+        MessagePayloadDto(i18n_key="ntf-access.payments-restored"),
+        category=NotificationCategory.SERVICE,
+        dedupe_prefix=f"payments-restored:{uuid4()}",
+    )
 
     total_users = len(users)
     total_errors = 0

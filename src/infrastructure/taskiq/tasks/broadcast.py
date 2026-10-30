@@ -6,7 +6,7 @@ from aiogram.exceptions import TelegramRetryAfter
 from dishka.integrations.taskiq import FromDishka, inject
 from loguru import logger
 
-from src.application.common import BroadcastExecutionLock, Notifier
+from src.application.common import BroadcastExecutionLock, NotificationCategory, Notifier
 from src.application.common.dao import BroadcastDao
 from src.application.dto import BroadcastDto, BroadcastMessageDto, MessagePayloadDto, UserDto
 from src.application.use_cases.broadcast.commands.lifecycle import (
@@ -31,6 +31,7 @@ from src.core.utils.iterables import chunked
 from src.infrastructure.taskiq.broker import broker
 
 BROADCAST_MAX_RETRY_WAIT_SECONDS = 10 * 60
+CHANNEL_COPY_BATCH = 500
 
 
 def _pending_broadcast_users(
@@ -74,7 +75,18 @@ async def _send_broadcast_locked(  # noqa: C901
             GetBroadcastAudienceUsersDto(current_broadcast.audience, plan_id)
         )
 
-        # Broadcast is Telegram-only; exclude web-only users without a telegram_id
+        # E-mail and push copies go to the whole audience, web-only users
+        # included. Replays are idempotent per broadcast and user.
+        for channel_batch in chunked(users, CHANNEL_COPY_BATCH):
+            await notifier.copy_to_channels(
+                channel_batch,
+                current_broadcast.payload,
+                category=NotificationCategory.NEWS,
+                dedupe_prefix=f"broadcast:{task_id}",
+                source=f"broadcast:{task_id}",
+            )
+
+        # The Telegram part needs a chat; exclude web-only users.
         users = [u for u in users if u.telegram_id is not None]
 
         if not users:

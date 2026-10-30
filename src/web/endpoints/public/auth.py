@@ -164,6 +164,7 @@ async def register_public_user(
             password=body.password,
             name=body.name,
             referral_code=body.referral_code,
+            email_news_consent=body.email_news_consent,
         )
     )
     return await _issue_and_set(user, response, config, auth_session)
@@ -340,7 +341,9 @@ async def update_notification_preferences(
         preferences = await update_preferences(
             user,
             UpdateNotificationPreferencesDto(
-                subscription_expiration_email_enabled=(body.subscription_expiration_email_enabled)
+                subscription_expiration_email_enabled=(body.subscription_expiration_email_enabled),
+                service_email_enabled=body.service_email_enabled,
+                news_email_enabled=body.news_email_enabled,
             ),
         )
     except NotificationEmailNotEligibleError as exc:

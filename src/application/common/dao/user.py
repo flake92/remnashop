@@ -36,6 +36,14 @@ class UserDao(Protocol):
         enabled: bool,
     ) -> Optional[UserDto]: ...
 
+    async def set_email_channel_preferences(
+        self,
+        user_id: int,
+        *,
+        service: Optional[bool] = None,
+        news: Optional[bool] = None,
+    ) -> Optional[UserDto]: ...
+
     async def delete(self, user_id: int) -> bool: ...
 
     async def count(self) -> int: ...

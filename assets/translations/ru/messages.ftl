@@ -451,11 +451,42 @@ msg-broadcast-view =
     • <b>Создано</b>: { $created_at }
     </blockquote>
 
+    <b>👥 Аудитория</b>: { $audience_count }
+
+    <b>✈️ Telegram</b>
     <blockquote>
     • <b>Всего сообщений</b>: { $total_count }
     • <b>Успешных</b>: { $success_count }
     • <b>Неудачных</b>: { $failed_count }
+    • <b>Без Telegram</b>: { $telegram_missing }
     </blockquote>
+
+    <b>📧 E-mail</b>{ $email_enabled ->
+        [0] { space }(SMTP рассылок не настроен)
+        *[other] { space }
+    }
+    <blockquote>
+    • <b>Отправлено</b>: { $email_sent }
+    • <b>В очереди</b>: { $email_queued }
+    • <b>Ошибок</b>: { $email_failed }
+    • <b>Отменено</b>: { $email_canceled }
+    • <b>Не получат</b>: { $email_missing } — нет подтверждённого e-mail или согласия на новости
+    </blockquote>
+
+    <b>🔔 Push</b>{ $push_enabled ->
+        [0] { space }(VAPID не настроен)
+        *[other] { space }
+    }
+    <blockquote>
+    • <b>Пользователей</b>: { $push_recipients } (устройств: { $push_rows })
+    • <b>Доставлено</b>: { $push_sent }
+    • <b>В очереди</b>: { $push_queued }
+    • <b>Ошибок</b>: { $push_failed }
+    • <b>Отменено</b>: { $push_canceled }
+    • <b>Не получат</b>: { $push_missing } — не включили уведомления в приложении
+    </blockquote>
+
+    <i>E-mail и push уходят после Telegram с ограничением скорости; откройте рассылку снова, чтобы обновить цифры. Устаревшие копии отменяются через 3 дня.</i>
 
 
 # Users

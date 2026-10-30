@@ -33,6 +33,11 @@ class User(BaseSql, TimestampMixin):
             "AND subscription_expiration_email_enabled_at IS NULL)",
             name="ck_users_subscription_email_consent_timestamp",
         ),
+        CheckConstraint(
+            "(email_news_enabled AND email_news_enabled_at IS NOT NULL) OR "
+            "(NOT email_news_enabled AND email_news_enabled_at IS NULL)",
+            name="ck_users_email_news_consent_timestamp",
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -64,6 +69,23 @@ class User(BaseSql, TimestampMixin):
         nullable=False,
     )
     subscription_expiration_email_enabled_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    email_service_notifications_enabled: Mapped[bool] = mapped_column(
+        Boolean,
+        default=True,
+        server_default="true",
+        nullable=False,
+    )
+    # Advertising consent (news broadcasts): off until the user opts in.
+    email_news_enabled: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        server_default="false",
+        nullable=False,
+    )
+    email_news_enabled_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True),
         nullable=True,
     )

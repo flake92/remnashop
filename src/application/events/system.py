@@ -201,6 +201,8 @@ class SmtpUnavailableEvent(SystemEvent):
     )
 
     server: str
+    # MAIN (login codes, reminders) or BULK (notification copies, news).
+    role: str = "MAIN"
     error_code: str
     failing_since: str
     failing_for: str
@@ -220,6 +222,7 @@ class SmtpRestoredEvent(SystemEvent):
     )
 
     server: str
+    role: str = "MAIN"
     failing_since: str
     failing_for: str
 

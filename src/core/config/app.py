@@ -18,6 +18,7 @@ from .build import BuildConfig
 from .database import DatabaseConfig
 from .email import EmailConfig
 from .log import LogConfig
+from .notifications import BulkEmailConfig, WebPushConfig
 from .redis import RedisConfig
 from .remnawave import RemnawaveConfig
 from .validators import validate_not_change_me, validate_strong_secret
@@ -76,6 +77,8 @@ class AppConfig(BaseConfig, env_prefix="APP_"):
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     redis: RedisConfig = Field(default_factory=RedisConfig)
     email: EmailConfig = Field(default_factory=EmailConfig)
+    bulk_email: BulkEmailConfig = Field(default_factory=BulkEmailConfig)
+    web_push: WebPushConfig = Field(default_factory=WebPushConfig)
     build: BuildConfig = Field(default_factory=BuildConfig)
     log: LogConfig = Field(default_factory=LogConfig)
 

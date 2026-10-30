@@ -12,6 +12,10 @@ from src.application.events import SmtpRestoredEvent, SmtpUnavailableEvent
 from src.core.config import AppConfig
 
 SMTP_HEALTH_STATE_KEY: Final[str] = "smtp_health:state"
+# MAIN: login codes and reminders (EMAIL_*). BULK: copies of bot notifications
+# and news (BULK_EMAIL_*). Each is probed and reported on its own.
+SMTP_ROLE_MAIN: Final[str] = "MAIN"
+SMTP_ROLE_BULK: Final[str] = "BULK"
 # One failed probe is often a Postfix reload or a short network blip; alert once
 # the server has failed two probes in a row (5-10 minutes with the 5-minute cron).
 SMTP_HEALTH_ALERT_AFTER_FAILURES: Final[int] = 2
@@ -82,19 +86,29 @@ class SmtpHealthMonitor:
         email_sender: EmailSender,
         redis: Redis,
         event_publisher: EventPublisher,
+        role: str = SMTP_ROLE_MAIN,
     ) -> None:
         self.config = config
         self.email_sender = email_sender
         self.redis = redis
         self.event_publisher = event_publisher
+        self.role = role
+        # The main server keeps its original key so a running outage survives
+        # the upgrade; the bulk server gets its own state.
+        self.state_key = (
+            SMTP_HEALTH_STATE_KEY
+            if role == SMTP_ROLE_MAIN
+            else f"{SMTP_HEALTH_STATE_KEY}:{role.lower()}"
+        )
 
     @property
     def _server(self) -> str:
-        return f"{self.config.email.host}:{self.config.email.port}"
+        settings = self.config.email if self.role == SMTP_ROLE_MAIN else self.config.bulk_email
+        return f"{settings.host}:{settings.port}"
 
     async def check(self, now: float) -> SmtpHealthAction:
         if not self.email_sender.is_enabled:
-            await self.redis.delete(SMTP_HEALTH_STATE_KEY)
+            await self.redis.delete(self.state_key)
             return SmtpHealthAction.NONE
 
         error_code = await self.email_sender.probe()
@@ -102,13 +116,14 @@ class SmtpHealthMonitor:
         state, action = evaluate_smtp_probe(previous, error_code, now)
 
         if error_code is None:
-            await self.redis.delete(SMTP_HEALTH_STATE_KEY)
+            await self.redis.delete(self.state_key)
         else:
             logger.warning(
-                f"SMTP probe failed (code={error_code}, failures in a row={state.failures})"
+                f"{self.role} SMTP probe failed "
+                f"(code={error_code}, failures in a row={state.failures})"
             )
             await self.redis.set(
-                SMTP_HEALTH_STATE_KEY,
+                self.state_key,
                 orjson.dumps(asdict(state)),
                 ex=_STATE_TTL_SECONDS,
             )
@@ -118,6 +133,7 @@ class SmtpHealthMonitor:
             await self.event_publisher.publish(
                 SmtpUnavailableEvent(
                     server=self._server,
+                    role=self.role,
                     error_code=state.last_code,
                     failing_since=format_msk(state.failing_since),
                     failing_for=format_duration(now - state.failing_since),
@@ -127,10 +143,11 @@ class SmtpHealthMonitor:
             )
         elif action is SmtpHealthAction.RESTORED:
             assert previous.failing_since is not None
-            logger.info("SMTP server is reachable again")
+            logger.info(f"{self.role} SMTP server is reachable again")
             await self.event_publisher.publish(
                 SmtpRestoredEvent(
                     server=self._server,
+                    role=self.role,
                     failing_since=format_msk(previous.failing_since),
                     failing_for=format_duration(now - previous.failing_since),
                 )
@@ -138,7 +155,7 @@ class SmtpHealthMonitor:
         return action
 
     async def _load_state(self) -> SmtpHealthState:
-        raw = await self.redis.get(SMTP_HEALTH_STATE_KEY)
+        raw = await self.redis.get(self.state_key)
         if not raw:
             return SmtpHealthState()
         try:

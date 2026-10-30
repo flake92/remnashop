@@ -22,6 +22,7 @@ class Broadcast(BaseSql, TimestampMixin):
     total_count: Mapped[int]
     success_count: Mapped[int]
     failed_count: Mapped[int]
+    audience_count: Mapped[int] = mapped_column(default=0, server_default="0")
 
     payload: Mapped[dict[str, Any]]
 

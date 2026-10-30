@@ -226,6 +226,7 @@ def test_alert_and_recovery_messages_render(tmp_path: Path) -> None:
         tmp_path,
         "event-smtp.unavailable",
         server="clear-vpn.org:587",
+        role="MAIN",
         error_code="SMTP_CONNECTION_ERROR",
         failing_since="27.10 14:05 МСК",
         failing_for="10 мин",
@@ -236,6 +237,7 @@ def test_alert_and_recovery_messages_render(tmp_path: Path) -> None:
         tmp_path,
         "event-smtp.unavailable",
         server="clear-vpn.org:587",
+        role="MAIN",
         error_code="SMTP_SOMETHING_NEW",
         failing_since="27.10 14:05 МСК",
         failing_for="12 ч 5 мин",
@@ -246,6 +248,7 @@ def test_alert_and_recovery_messages_render(tmp_path: Path) -> None:
         tmp_path,
         "event-smtp.restored",
         server="clear-vpn.org:587",
+        role="MAIN",
         failing_since="27.10 14:05 МСК",
         failing_for="25 мин",
     )
@@ -256,3 +259,27 @@ def test_alert_and_recovery_messages_render(tmp_path: Path) -> None:
     assert "сервер не принимает сессию" in repeat
     assert "27.10 14:05 МСК" in restored
     assert "25 мин" in restored
+    assert "Основной SMTP" in alert and "коды входа" in alert
+
+    bulk = _translate(
+        tmp_path,
+        "event-smtp.unavailable",
+        server="smtp.bulk.example:465",
+        role="BULK",
+        error_code="SMTP_AUTH_REJECTED",
+        failing_since="27.10 14:05 МСК",
+        failing_for="10 мин",
+        failed_checks=2,
+        is_repeat=False,
+    )
+    bulk_restored = _translate(
+        tmp_path,
+        "event-smtp.restored",
+        server="smtp.bulk.example:465",
+        role="BULK",
+        failing_since="27.10 14:05 МСК",
+        failing_for="25 мин",
+    )
+    assert "SMTP рассылок не отвечает" in bulk
+    assert "BULK_EMAIL_" in bulk and "Коды входа идут через основной SMTP" in bulk
+    assert "SMTP рассылок снова работает" in bulk_restored

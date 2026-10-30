@@ -4,7 +4,7 @@ from uuid import UUID, uuid4
 
 from loguru import logger
 
-from src.application.common import BroadcastDispatcher, Interactor
+from src.application.common import BroadcastDispatcher, Interactor, NotificationChannels
 from src.application.common.dao import BroadcastDao
 from src.application.common.policy import Permission
 from src.application.common.uow import UnitOfWork
@@ -94,11 +94,24 @@ class DeleteBroadcast(Interactor[UUID, None]):
 class CancelBroadcast(Interactor[UUID, None]):
     required_permission = Permission.BROADCAST
 
-    def __init__(self, uow: UnitOfWork, broadcast_dao: BroadcastDao) -> None:
+    def __init__(
+        self,
+        uow: UnitOfWork,
+        broadcast_dao: BroadcastDao,
+        channels: NotificationChannels,
+    ) -> None:
         self.uow = uow
         self.broadcast_dao = broadcast_dao
+        self.channels = channels
 
     async def _execute(self, actor: UserDto, data: UUID) -> None:
+        await self._cancel(actor, data)
+        # Copies not yet sent by e-mail or push are canceled as well.
+        canceled = await self.channels.cancel_pending(f"broadcast:{data}")
+        if canceled:
+            logger.info(f"{actor.log} Canceled '{canceled}' queued e-mail/push copies")
+
+    async def _cancel(self, actor: UserDto, data: UUID) -> None:
         async with self.uow:
             broadcast = await self.broadcast_dao.get_by_task_id(data)
 

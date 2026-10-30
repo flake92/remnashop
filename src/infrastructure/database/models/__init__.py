@@ -1,6 +1,7 @@
 from .ad_link import AdLink
 from .base import BaseSql
 from .broadcast import Broadcast, BroadcastMessage
+from .notification_delivery import NotificationDelivery, WebPushSubscription
 from .oauth_provider import UserOAuthProvider
 from .payment_gateway import PaymentGateway
 from .payment_operation import PaymentOperation
@@ -40,7 +41,9 @@ __all__ = [
     "ReferralRewardResolution",
     "Settings",
     "Subscription",
+    "NotificationDelivery",
     "SubscriptionEmailReminder",
+    "WebPushSubscription",
     "Transaction",
     "User",
     "UserMergeAudit",

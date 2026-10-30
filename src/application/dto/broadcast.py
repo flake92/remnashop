@@ -18,6 +18,8 @@ class BroadcastDto(BaseDto, TrackableMixin, TimestampMixin):
     total_count: int = 0
     success_count: int = 0
     failed_count: int = 0
+    # Whole audience (web-only users included); total_count is Telegram only.
+    audience_count: int = 0
 
     payload: MessagePayloadDto
 

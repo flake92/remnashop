@@ -97,7 +97,10 @@ async def test_concurrent_send_replay_waits_then_observes_completed_state() -> N
     initialize = SimpleNamespace(system=AsyncMock(return_value=[message]))
     update = SimpleNamespace(system=AsyncMock())
     finish_broadcast = SimpleNamespace(system=AsyncMock(side_effect=finish))
-    notifier = SimpleNamespace(notify_user=AsyncMock(side_effect=notify_user))
+    notifier = SimpleNamespace(
+        notify_user=AsyncMock(side_effect=notify_user),
+        copy_to_channels=AsyncMock(return_value=0),
+    )
 
     first = asyncio.create_task(
         _run_send_broadcast_task(
@@ -207,3 +210,36 @@ async def test_concurrent_delete_replay_uses_fresh_deleted_state(
     bot.delete_message.assert_awaited_once()
     finish_broadcast.system.assert_awaited_once()
     notifier.notify_admins.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_broadcast_copies_go_to_the_whole_audience_including_web_only_users() -> None:
+    current = _broadcast(status=BroadcastStatus.PROCESSING)
+    telegram_user = cast(UserDto, SimpleNamespace(id=1, telegram_id=1001, log="user-1"))
+    web_user = cast(UserDto, SimpleNamespace(id=2, telegram_id=None, log="user-2"))
+    message = BroadcastMessageDto(
+        id=31, user_id=1, user_telegram_id=1001, status=BroadcastMessageStatus.PENDING
+    )
+    notifier = SimpleNamespace(
+        notify_user=AsyncMock(return_value=SimpleNamespace(message_id=7)),
+        copy_to_channels=AsyncMock(return_value=2),
+    )
+
+    await _run_send_broadcast_task(
+        current,
+        None,
+        SimpleNamespace(get_by_task_id=AsyncMock(return_value=current)),
+        SimpleNamespace(system=AsyncMock(return_value=[telegram_user, web_user])),
+        SimpleNamespace(system=AsyncMock(return_value=[message])),
+        SimpleNamespace(system=AsyncMock()),
+        SimpleNamespace(system=AsyncMock()),
+        notifier,
+        _SerializedBroadcastLock(),
+    )
+
+    copied_users = notifier.copy_to_channels.await_args.args[0]
+    assert [user.id for user in copied_users] == [1, 2]
+    kwargs = notifier.copy_to_channels.await_args.kwargs
+    assert kwargs["category"] == "NEWS"
+    assert kwargs["source"] == f"broadcast:{current.task_id}"
+    notifier.notify_user.assert_awaited_once()

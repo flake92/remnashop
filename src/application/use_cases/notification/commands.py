@@ -14,6 +14,7 @@ from src.application.common import (
     EmailDeliveryRunLock,
     EmailSender,
     Interactor,
+    NotificationCategory,
 )
 from src.application.common.dao import SubscriptionEmailReminderDao, UserDao
 from src.application.common.policy import Permission
@@ -94,6 +95,12 @@ def _preferences(
         email_eligible=eligible,
         sender_email=config.email.from_email.strip() or None,
         days_before=REMINDER_DAYS_BEFORE,
+        service_email_enabled=actor.email_service_notifications_enabled,
+        news_email_enabled=actor.email_news_enabled,
+        bulk_sender_email=(
+            getattr(getattr(config, "bulk_email", None), "from_email", "").strip() or None
+        ),
+        push_available=bool(getattr(getattr(config, "web_push", None), "is_configured", False)),
     )
 
 
@@ -109,7 +116,11 @@ class GetNotificationPreferences(Interactor[None, NotificationPreferencesDto]):
 
 @dataclass(frozen=True)
 class UpdateNotificationPreferencesDto:
-    subscription_expiration_email_enabled: bool
+    subscription_expiration_email_enabled: bool | None = None
+    # "Service e-mail" covers the expiry reminder too: switching it on or off
+    # also switches reminders (when a verified address allows them).
+    service_email_enabled: bool | None = None
+    news_email_enabled: bool | None = None
 
 
 class UpdateNotificationPreferences(
@@ -132,22 +143,70 @@ class UpdateNotificationPreferences(
         actor: UserDto,
         data: UpdateNotificationPreferencesDto,
     ) -> NotificationPreferencesDto:
+        reminders = data.subscription_expiration_email_enabled
+        if data.service_email_enabled is not None and reminders is None:
+            # Off always applies; on applies only where reminders are allowed.
+            if not data.service_email_enabled or _user_email_eligible(actor):
+                reminders = data.service_email_enabled
         if data.subscription_expiration_email_enabled and not _user_email_eligible(actor):
             if not actor.email or not actor.is_email_verified:
                 raise NotificationEmailNotEligibleError("A verified email address is required")
             raise NotificationEmailNotEligibleError("User is not eligible")
 
         async with self.uow:
-            updated = await self.user_dao.set_subscription_expiration_email_preference(
-                actor.id,
-                enabled=data.subscription_expiration_email_enabled,
-            )
+            updated: UserDto | None = actor
+            if data.service_email_enabled is not None or data.news_email_enabled is not None:
+                updated = await self.user_dao.set_email_channel_preferences(
+                    actor.id,
+                    service=data.service_email_enabled,
+                    news=data.news_email_enabled,
+                )
+            if updated is not None and reminders is not None:
+                updated = await self.user_dao.set_subscription_expiration_email_preference(
+                    actor.id,
+                    enabled=reminders,
+                )
             if updated is None:
                 raise NotificationEmailNotEligibleError(
                     "Verified email eligibility changed; refresh and try again"
                 )
             await self.uow.commit()
         return _preferences(updated, config=self.config)
+
+
+@dataclass(frozen=True)
+class UnsubscribeEmailDto:
+    user_id: int
+    category: NotificationCategory
+
+
+class UnsubscribeEmail(Interactor[UnsubscribeEmailDto, bool]):
+    """One-click opt-out from an e-mail link; the signed token is the auth."""
+
+    required_permission = None
+
+    def __init__(self, user_dao: UserDao, uow: UnitOfWork) -> None:
+        self.user_dao = user_dao
+        self.uow = uow
+
+    async def _execute(self, actor: UserDto, data: UnsubscribeEmailDto) -> bool:
+        async with self.uow:
+            if data.category is NotificationCategory.NEWS:
+                updated = await self.user_dao.set_email_channel_preferences(
+                    data.user_id, news=False
+                )
+            else:
+                updated = await self.user_dao.set_email_channel_preferences(
+                    data.user_id, service=False
+                )
+                if updated is not None:
+                    updated = await self.user_dao.set_subscription_expiration_email_preference(
+                        data.user_id, enabled=False
+                    )
+            await self.uow.commit()
+        if updated is not None:
+            logger.info(f"User '{data.user_id}' unsubscribed from '{data.category}' e-mail")
+        return updated is not None
 
 
 class GenerateSubscriptionExpirationEmailReminders(Interactor[None, int]):
@@ -610,4 +669,6 @@ __all__ = [
     "REMINDER_DAYS_BEFORE",
     "UpdateNotificationPreferences",
     "UpdateNotificationPreferencesDto",
+    "UnsubscribeEmail",
+    "UnsubscribeEmailDto",
 ]

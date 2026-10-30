@@ -4,7 +4,7 @@ from aiogram_dialog import DialogManager
 from dishka import FromDishka
 from dishka.integrations.aiogram_dialog import inject
 
-from src.application.common import BotService, TranslatorRunner
+from src.application.common import BotService, NotificationChannels, TranslatorRunner
 from src.application.common.dao import BroadcastDao, PlanDao, SettingsDao
 from src.application.dto import PlanDto
 from src.core.constants import DATETIME_VIEW_FORMAT
@@ -102,6 +102,7 @@ async def list_getter(
 async def view_getter(
     dialog_manager: DialogManager,
     broadcast_dao: FromDishka[BroadcastDao],
+    channels: FromDishka[NotificationChannels],
     **kwargs: Any,
 ) -> dict[str, Any]:
     task_id = dialog_manager.dialog_data.get("task_id")
@@ -122,4 +123,33 @@ async def view_getter(
         "total_count": broadcast.total_count,
         "success_count": broadcast.success_count,
         "failed_count": broadcast.failed_count,
+        **await channel_report(broadcast, channels),
     }
+
+
+async def channel_report(broadcast: Any, channels: NotificationChannels) -> dict[str, Any]:
+    # Read live from the outbox: e-mail and push are sent after Telegram, at
+    # the provider's pace, so the report keeps changing until the queue drains.
+    stats = await channels.source_stats(f"broadcast:{broadcast.task_id}")
+    # Before 0060 and for audiences without Telegram users, total_count still
+    # holds the whole audience.
+    audience = broadcast.audience_count or broadcast.total_count
+    result: dict[str, Any] = {
+        "audience_count": audience,
+        "telegram_missing": max(audience - broadcast.total_count, 0),
+        "email_enabled": int(channels.email_enabled),
+        "push_enabled": int(channels.push_enabled),
+    }
+    for name, counts in (("email", stats.email), ("push", stats.push)):
+        result.update(
+            {
+                f"{name}_recipients": counts.recipients,
+                f"{name}_rows": counts.rows,
+                f"{name}_sent": counts.sent,
+                f"{name}_queued": counts.queued,
+                f"{name}_failed": counts.failed,
+                f"{name}_canceled": counts.canceled,
+                f"{name}_missing": max(audience - counts.recipients, 0),
+            }
+        )
+    return result

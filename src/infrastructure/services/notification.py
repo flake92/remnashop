@@ -25,7 +25,14 @@ from aiogram.utils.formatting import Text
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from loguru import logger
 
-from src.application.common import EventPublisher, Notifier, TranslatorHub
+from src.application.common import (
+    ChannelCopy,
+    EventPublisher,
+    NotificationCategory,
+    NotificationChannels,
+    Notifier,
+    TranslatorHub,
+)
 from src.application.common.dao import SettingsDao, UserDao
 from src.application.dto import (
     MediaDescriptorDto,
@@ -141,6 +148,7 @@ class NotificationService(Notifier):
         settings_dao: SettingsDao,
         worker: NotificationWorker,
         event_publisher: EventPublisher,
+        channels: NotificationChannels,
     ) -> None:
         self.bot = bot
         self.config = config
@@ -149,6 +157,68 @@ class NotificationService(Notifier):
         self.settings_dao = settings_dao
         self.worker = worker
         self.event_publisher = event_publisher
+        self.channels = channels
+
+    def _render_text(self, user: Union[TempUserDto, UserDto], payload: MessagePayloadDto) -> str:
+        render_kwargs = payload.i18n_kwargs.copy()
+        if isinstance(user, UserDto) and payload.i18n_key == "raw-message":
+            user_data = asdict(user)
+            render_kwargs = {**user_data, **payload.i18n_kwargs}
+        return self._get_translated_text(
+            locale=user.language,
+            i18n_key=payload.i18n_key,
+            i18n_kwargs=render_kwargs,
+        )
+
+    @staticmethod
+    def _channel_link(keyboard: Optional[AnyKeyboard]) -> Optional[str]:
+        # A URL button (support chat, external page) is kept as the e-mail and
+        # push link; bot-only buttons ("Renew", "Buy") lead to the cabinet.
+        if not isinstance(keyboard, InlineKeyboardMarkup):
+            return None
+        for row in keyboard.inline_keyboard:
+            for button in row:
+                if button.url and button.url.startswith("https://"):
+                    return button.url
+                if button.web_app and button.web_app.url.startswith("https://"):
+                    return button.web_app.url
+        return None
+
+    async def copy_to_channels(
+        self,
+        users: Sequence[UserDto],
+        payload: MessagePayloadDto,
+        *,
+        category: NotificationCategory,
+        dedupe_prefix: str,
+        skip_email: bool = False,
+        source: Optional[str] = None,
+    ) -> int:
+        """Queue e-mail and Web Push copies of a bot message.
+
+        Never raises: a channel outage must not stop the Telegram message.
+        """
+        try:
+            if not (self.channels.email_enabled or self.channels.push_enabled):
+                return 0
+            link = self._channel_link(payload.reply_markup)
+            copies = [
+                ChannelCopy(
+                    user_id=user.id,
+                    text=self._render_text(user, payload),
+                    category=category,
+                    dedupe_key=f"{dedupe_prefix}:{user.id}",
+                    link_url=link,
+                    skip_email=skip_email,
+                    source=source,
+                )
+                for user in users
+                if user.id is not None
+            ]
+            return await self.channels.enqueue(copies)
+        except Exception as exc:
+            logger.exception(f"Failed to queue e-mail/push copies '{dedupe_prefix}': {exc}")
+            return 0
 
     async def notify_user(
         self,
@@ -237,6 +307,16 @@ class NotificationService(Notifier):
 
         payload = event.as_payload()
         payload.reply_markup = self._resolve_keyboard(event)
+        # Copies are queued first: a web-only user has no Telegram chat, and a
+        # Telegram failure must not lose the e-mail and push copies.
+        await self.copy_to_channels(
+            [event.user],
+            payload,
+            category=NotificationCategory.SERVICE,
+            dedupe_prefix=f"event:{event.event_id}",
+            # The expiry e-mail has its own reminder pipeline (no duplicates).
+            skip_email=isinstance(event, SubscriptionExpiresEvent),
+        )
         await self.notify_user(event.user, payload)
 
     @on_event(SystemEvent)
@@ -421,12 +501,6 @@ class NotificationService(Notifier):
             return None
         chat_id: int = user.telegram_id
 
-        render_kwargs = payload.i18n_kwargs.copy()
-
-        if isinstance(user, UserDto) and payload.i18n_key == "raw-message":
-            user_data = asdict(user)
-            render_kwargs = {**user_data, **payload.i18n_kwargs}
-
         reply_markup = self._prepare_reply_markup(
             payload.reply_markup,
             payload.disable_default_markup,
@@ -435,11 +509,7 @@ class NotificationService(Notifier):
             user.telegram_id,
         )
 
-        text = self._get_translated_text(
-            locale=user.language,
-            i18n_key=payload.i18n_key,
-            i18n_kwargs=render_kwargs,
-        )
+        text = self._render_text(user, payload)
 
         kwargs: dict[str, Any] = {
             "disable_notification": payload.disable_notification,

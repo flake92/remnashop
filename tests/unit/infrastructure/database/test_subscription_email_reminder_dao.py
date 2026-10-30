@@ -219,6 +219,7 @@ def _delivery_record(
         is_email_verified=True,
         subscription_expiration_email_enabled=True,
         subscription_expiration_email_enabled_at=enabled_at,
+        email_service_notifications_enabled=True,
         current_subscription_id=9,
     )
     subscription = SimpleNamespace(

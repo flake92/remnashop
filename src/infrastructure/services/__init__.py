@@ -1,5 +1,6 @@
 from .bot import BotService as BotServiceImpl
 from .broadcast_execution_lock import PostgresBroadcastExecutionLock
+from .bulk_email import BulkSmtpEmailSender, RedisBulkEmailRunLock
 from .command import CommandService
 from .cryptography import CryptographerImpl
 from .dispatcher import BroadcastDispatcherImpl, PaymentNotificationDispatcherImpl
@@ -10,6 +11,7 @@ from .file_downloader import AiogramFileDownloader
 from .health import HealthService
 from .http_client import AiohttpClient
 from .notification import NotificationService
+from .notification_channels import NotificationChannelsImpl
 from .notification_queue import NotificationQueue, NotificationWorker
 from .password_hasher import PasswordHasherImpl
 from .redirect import RedirectImpl
@@ -25,12 +27,15 @@ __all__ = [
     "BotServiceImpl",
     "PostgresBroadcastExecutionLock",
     "BroadcastDispatcherImpl",
+    "BulkSmtpEmailSender",
     "CommandService",
     "CryptographerImpl",
     "SmtpEmailSender",
     "RedisEmailDeliveryRunLock",
+    "RedisBulkEmailRunLock",
     "EventBusImpl",
     "HealthService",
+    "NotificationChannelsImpl",
     "NotificationService",
     "NotificationQueue",
     "NotificationWorker",

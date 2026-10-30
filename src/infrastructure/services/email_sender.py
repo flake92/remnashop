@@ -1,7 +1,9 @@
 import asyncio
 import smtplib
 import ssl
+from collections.abc import Mapping
 from email.message import EmailMessage
+from typing import Any
 
 from loguru import logger
 
@@ -97,8 +99,13 @@ class SmtpEmailSender(EmailSender):
         self._client: smtplib.SMTP | smtplib.SMTP_SSL | None = None
 
     @property
+    def _settings(self) -> Any:
+        # SMTP account section of AppConfig; the bulk sender overrides it.
+        return self._config.email
+
+    @property
     def is_enabled(self) -> bool:
-        email = self._config.email
+        email = self._settings
         return bool(
             email.enabled
             and email.host
@@ -116,6 +123,8 @@ class SmtpEmailSender(EmailSender):
         message_id: str | None = None,
         rate_limit_per_minute: int | None = None,
         rate_limit_max_wait_seconds: float | None = None,
+        html: str | None = None,
+        headers: Mapping[str, str] | None = None,
     ) -> None:
         # SmtpEmailSender is application-scoped. Serialize access so the shared
         # smtplib connection is never used concurrently by web and worker jobs.
@@ -145,6 +154,8 @@ class SmtpEmailSender(EmailSender):
                     message_id=message_id,
                     rate_limit_per_minute=effective_rate,
                     rate_limit_max_wait_seconds=effective_max_wait,
+                    html=html,
+                    headers=headers,
                 )
             except EmailDeliveryRateDeferredError:
                 raise
@@ -209,6 +220,8 @@ class SmtpEmailSender(EmailSender):
         message_id: str | None,
         rate_limit_per_minute: int,
         rate_limit_max_wait_seconds: float,
+        html: str | None = None,
+        headers: Mapping[str, str] | None = None,
     ) -> None:
         loop = asyncio.get_running_loop()
         rate_wait_deadline = loop.time() + rate_limit_max_wait_seconds
@@ -235,6 +248,8 @@ class SmtpEmailSender(EmailSender):
                         subject=subject,
                         body=body,
                         message_id=message_id,
+                        html=html,
+                        headers=headers,
                     ),
                     name="smtp-send-thread",
                 )
@@ -268,8 +283,10 @@ class SmtpEmailSender(EmailSender):
         subject: str,
         body: str,
         message_id: str | None,
+        html: str | None = None,
+        headers: Mapping[str, str] | None = None,
     ) -> EmailMessage:
-        email = self._config.email
+        email = self._settings
         message = EmailMessage()
         message["Subject"] = subject
         from_name = email.from_name.strip()
@@ -278,11 +295,15 @@ class SmtpEmailSender(EmailSender):
         message["To"] = to
         if message_id:
             message["Message-ID"] = message_id
+        for name, value in (headers or {}).items():
+            message[name] = value
         message.set_content(body)
+        if html is not None:
+            message.add_alternative(html, subtype="html")
         return message
 
     def _open_client(self) -> smtplib.SMTP | smtplib.SMTP_SSL:
-        email = self._config.email
+        email = self._settings
         smtp_user = email.username.get_secret_value()
         smtp_password = email.password.get_secret_value()
         tls_context = ssl.create_default_context()
@@ -331,12 +352,16 @@ class SmtpEmailSender(EmailSender):
         subject: str,
         body: str,
         message_id: str | None,
+        html: str | None = None,
+        headers: Mapping[str, str] | None = None,
     ) -> None:
         message = self._build_message(
             to=to,
             subject=subject,
             body=body,
             message_id=message_id,
+            html=html,
+            headers=headers,
         )
         try:
             if self._client is not None and not self._client_is_alive(self._client):

@@ -14,6 +14,7 @@ from src.application.use_cases.user.commands.web_registration import (
 )
 from src.core.config import AppConfig
 from src.core.enums import AuthType
+from src.core.utils.time import datetime_now
 
 
 @dataclass
@@ -22,6 +23,8 @@ class RegisterEmailUserDto:
     password: str
     name: Optional[str] = None
     referral_code: Optional[str] = None
+    # Explicit opt-in to news e-mail, asked on the registration form.
+    email_news_consent: bool = False
 
 
 class RegisterEmailUser(Interactor[RegisterEmailUserDto, UserDto]):
@@ -55,6 +58,8 @@ class RegisterEmailUser(Interactor[RegisterEmailUserDto, UserDto]):
             username=None,
             name=data.name or data.email.split("@")[0],
             language=self.config.default_locale,
+            email_news_enabled=data.email_news_consent,
+            email_news_enabled_at=datetime_now() if data.email_news_consent else None,
         )
 
         try:
