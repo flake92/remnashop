@@ -139,17 +139,28 @@ def test_smtp_message_is_multipart_with_custom_headers() -> None:
         ),
         SimpleNamespace(),  # type: ignore[arg-type]
     )
+    unsubscribe = (
+        "<https://cabinet.example.com/api/notifications/unsubscribe"
+        "?token=35.N.e259c604454ada96b92b6b80e84d7d9e>"
+    )
     message = sender._build_message(
         to="user@example.org",
         subject="Тема",
         body="Текст",
         message_id="<1@mail.example.com>",
         html="<p>Текст</p>",
-        headers={"List-Unsubscribe-Post": "List-Unsubscribe=One-Click"},
+        headers={
+            "List-Unsubscribe": unsubscribe,
+            "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+        },
     )
 
-    parsed = message_from_bytes(message.as_bytes(), policy=default)
+    raw = message.as_bytes()
+    # Providers read the URL only from a plain header line, never from an encoded-word.
+    assert f"List-Unsubscribe: {unsubscribe}\n".encode() in raw
+    parsed = message_from_bytes(raw, policy=default)
     assert parsed.get_content_type() == "multipart/alternative"
+    assert parsed["List-Unsubscribe"] == unsubscribe
     assert parsed["List-Unsubscribe-Post"] == "List-Unsubscribe=One-Click"
     parts = [part.get_content_type() for part in parsed.iter_parts()]  # type: ignore[attr-defined]
     assert parts == ["text/plain", "text/html"]

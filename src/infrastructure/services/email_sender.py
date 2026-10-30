@@ -3,6 +3,7 @@ import smtplib
 import ssl
 from collections.abc import Mapping
 from email.message import EmailMessage
+from email.policy import EmailPolicy
 from typing import Any
 
 from loguru import logger
@@ -15,6 +16,28 @@ from src.core.exceptions import EmailDeliveryError, EmailDeliveryRateDeferredErr
 _SMTP_AUTH_MAX_ATTEMPTS = 2
 _SMTP_AUTH_RETRY_DELAY_SECONDS = 0.5
 _TRANSACTIONAL_RATE_MAX_WAIT_SECONDS = 10.0
+
+
+class _MailPolicy(EmailPolicy):
+    # The default policy folds an unbreakable long URL into RFC 2047
+    # encoded-words, which mailbox providers do not decode in List-Unsubscribe
+    # (RFC 2369/8058), so one-click unsubscribe would be lost. ASCII values of
+    # these headers stay on one line; they are far below the 998-octet limit.
+    def _keeps_line(self, name: str, value: Any) -> bool:
+        return name.lower().startswith("list-unsubscribe") and str(value).isascii()
+
+    def fold(self, name: str, value: Any) -> str:
+        if self._keeps_line(name, value):
+            return f"{name}: {value}{self.linesep}"
+        return str(super().fold(name, value))
+
+    def fold_binary(self, name: str, value: Any) -> bytes:
+        if self._keeps_line(name, value):
+            return self.fold(name, value).encode("ascii")
+        return super().fold_binary(name, value)
+
+
+_MAIL_POLICY = _MailPolicy()
 
 
 def _response_is_retryable(code: int) -> bool:
@@ -287,7 +310,7 @@ class SmtpEmailSender(EmailSender):
         headers: Mapping[str, str] | None = None,
     ) -> EmailMessage:
         email = self._settings
-        message = EmailMessage()
+        message = EmailMessage(policy=_MAIL_POLICY)
         message["Subject"] = subject
         from_name = email.from_name.strip()
         from_email = email.from_email.strip()
