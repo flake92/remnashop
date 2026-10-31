@@ -145,6 +145,8 @@ _CABINET_PATHS = {
     f"{GOTO_PREFIX}{PAYMENT_PREFIX}{PurchaseType.RENEW}": "/extend",
     f"{GOTO_PREFIX}{PAYMENT_PREFIX}{PurchaseType.NEW}": "/tariffs",
 }
+_SUPPORT_BUTTON = "btn-goto.contact-support"
+_CABINET_SUPPORT_PATH = "/support"
 
 
 class NotificationService(Notifier):
@@ -182,17 +184,19 @@ class NotificationService(Notifier):
     def _feed_buttons(
         self, keyboard: Optional[AnyKeyboard], locale: Locale
     ) -> list[list[dict[str, str]]]:
-        # URL buttons stay as they are; bot-only "Renew" and "Buy" lead to the
-        # same place in the cabinet, the rest only works inside Telegram.
+        # URL buttons stay as they are, except support, which has its own page
+        # in the cabinet; bot-only "Renew" and "Buy" lead to the same place
+        # there, the rest only works inside Telegram.
         if not isinstance(keyboard, InlineKeyboardMarkup):
             return []
         translated = cast(InlineKeyboardMarkup, self._translate_keyboard_text(keyboard, locale))
         rows: list[list[dict[str, str]]] = []
-        for row in translated.inline_keyboard:
+        for source_row, row in zip(keyboard.inline_keyboard, translated.inline_keyboard):
             buttons: list[dict[str, str]] = []
-            for button in row:
+            for source, button in zip(source_row, row):
                 url = (
-                    button.url
+                    (_CABINET_SUPPORT_PATH if source.text == _SUPPORT_BUTTON else None)
+                    or button.url
                     or (button.web_app.url if button.web_app else None)
                     or _CABINET_PATHS.get(button.callback_data or "")
                 )
