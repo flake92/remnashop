@@ -1,9 +1,11 @@
 from dataclasses import dataclass
+from uuid import uuid4
 
 from loguru import logger
 
 from src.application.common import Interactor, Notifier
 from src.application.common.dao import UserDao
+from src.application.common.notification_channels import NotificationCategory
 from src.application.common.policy import Permission
 from src.application.dto import MessagePayloadDto, UserDto
 from src.core.exceptions import PermissionDeniedError
@@ -38,9 +40,17 @@ class SendMessageToUser(Interactor[SendMessageToUserDto, bool]):
             )
             raise PermissionDeniedError()
 
+        # Queued first: a web-only user has no Telegram chat, and a Telegram
+        # failure must not lose the copies in the feed, e-mail and push.
+        queued = await self.notifier.copy_to_channels(
+            [target_user],
+            data.payload,
+            category=NotificationCategory.SERVICE,
+            dedupe_prefix=f"direct:{uuid4().hex}",
+        )
         message = await self.notifier.notify_user(user=target_user, payload=data.payload)
 
-        if message:
+        if message or queued:
             logger.info(f"{actor.log} Sent message to user '{data.user_id}'")
             return True
 
