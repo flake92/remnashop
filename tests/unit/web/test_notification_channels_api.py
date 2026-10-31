@@ -31,6 +31,10 @@ def test_channel_routes_live_under_the_service_key_protected_auth_prefix() -> No
         ("/auth/notifications/push/subscription", "GET"),
         ("/auth/notifications/push/subscription", "POST"),
         ("/auth/notifications/push/subscription/delete", "POST"),
+        ("/auth/notifications/feed", "GET"),
+        ("/auth/notifications/feed/read", "POST"),
+        ("/auth/notifications/feed/unread", "GET"),
+        ("/auth/notifications/feed/{item_id}/media", "GET"),
         ("/auth/notifications/unsubscribe", "POST"),
     }
     assert router.dependencies

@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
 from sqlalchemy import (
     BigInteger,
@@ -13,6 +13,7 @@ from sqlalchemy import (
     UniqueConstraint,
     text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import BaseSql
@@ -129,3 +130,49 @@ class NotificationDelivery(BaseSql, TimestampMixin):
     )
     last_error_code: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Set on a recall push: the tag of the delivered notification to remove.
+    revoke_tag: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+
+
+class NotificationFeedItem(BaseSql, TimestampMixin):
+    """One message of the cabinet's notification feed, as the bot wrote it."""
+
+    __tablename__ = "notification_feed_items"
+    __table_args__ = (
+        UniqueConstraint("dedupe_key", name="uq_notification_feed_item_dedupe_key"),
+        CheckConstraint(
+            "category IN ('SERVICE', 'NEWS')",
+            name="ck_notification_feed_item_category",
+        ),
+        Index(
+            "ix_notification_feed_items_user",
+            "user_id",
+            "id",
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        Index(
+            "ix_notification_feed_items_source",
+            "source",
+            postgresql_where=text("source IS NOT NULL"),
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    category: Mapped[str] = mapped_column(String(8), nullable=False)
+    source: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    dedupe_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    # Telegram's HTML subset; the cabinet renders it through a tag allowlist.
+    text_html: Mapped[str] = mapped_column(Text, nullable=False)
+    # Rows of {"text", "url"}; the url is absolute or a cabinet path.
+    buttons: Mapped[list[list[dict[str, Any]]]] = mapped_column(
+        JSONB, default=list, server_default=text("'[]'::jsonb"), nullable=False
+    )
+    media_type: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    media_file_id: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    read_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)

@@ -203,6 +203,50 @@ async def test_outbox_respects_consent_and_reports_a_broadcast() -> None:
             skip_email=True,
         )
         assert await channels.enqueue([skipped]) == 0
+
+        # Every copy is in the feed of its user, whatever the channels did.
+        unreachable = await channels.feed_page(NO_CONSENT, limit=10)
+        assert [item.text_html for item in unreachable.items] == [
+            "Подписка скоро закончится",
+            "Подписка закончилась",
+            "<b>Новый тариф</b>\nПодробности в кабинете",
+        ]
+        assert unreachable.unread_count == 3
+        assert await channels.feed_mark_read(NO_CONSENT, unreachable.items[1].id) == 1
+        paged = await channels.feed_page(NO_CONSENT, limit=2)
+        assert paged.next_before_id == paged.items[-1].id
+        assert (await channels.feed_page(WEB_ONLY, limit=10)).items[0].buttons == []
+
+        # Push and e-mail lead to the message in the feed.
+        async with sessions() as session:
+            urls = await session.scalars(
+                text(
+                    "SELECT DISTINCT url FROM notification_deliveries "
+                    "WHERE user_id = :id AND source = :source"
+                ),
+                {"id": CONSENTED, "source": source},
+            )
+            feed_id = (await channels.feed_page(CONSENTED, limit=10)).items[-1].id
+            assert list(urls) == [f"https://cabinet.example.com/notifications?item={feed_id}"]
+
+        # Deleting a broadcast: the feed item goes, delivered push is revoked,
+        # a sent e-mail is only counted.
+        recall = await channels.recall(source)
+        assert (recall.feed_removed, recall.push_revoked, recall.email_sent) == (4, 1, 1)
+        assert (await channels.recall(source)).push_revoked == 0  # a retry adds nothing
+        assert await channels.feed_media(CONSENTED, feed_id) is None
+        remaining = await channels.feed_page(CONSENTED, limit=10)
+        assert feed_id not in [item.id for item in remaining.items]
+
+        payloads: list[bytes] = []
+
+        async def capture(session: Any, target: Any, payload: bytes, **_: Any) -> PushResult:
+            payloads.append(payload)
+            return PushResult(201)
+
+        channels._push_client = SimpleNamespace(send=capture)  # type: ignore[assignment]
+        await channels.deliver_due()
+        assert any(b'"revoke":"notification-' in payload for payload in payloads)
     finally:
         async with sessions() as session:
             await session.execute(

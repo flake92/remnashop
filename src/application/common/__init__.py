@@ -15,7 +15,11 @@ from .interactor import Interactor
 from .notification_channels import (
     ChannelCopy,
     ChannelCounts,
+    ChannelRecall,
     ChannelStats,
+    FeedItem,
+    FeedMedia,
+    FeedPage,
     NotificationCategory,
     NotificationChannels,
 )
@@ -47,6 +51,10 @@ __all__ = [
     "Interactor",
     "ChannelCopy",
     "ChannelCounts",
+    "ChannelRecall",
+    "FeedItem",
+    "FeedMedia",
+    "FeedPage",
     "ChannelStats",
     "NotificationCategory",
     "NotificationChannels",

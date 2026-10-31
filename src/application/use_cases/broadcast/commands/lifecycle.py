@@ -108,6 +108,7 @@ class CancelBroadcast(Interactor[UUID, None]):
         await self._cancel(actor, data)
         # Copies not yet sent by e-mail or push are canceled as well.
         canceled = await self.channels.cancel_pending(f"broadcast:{data}")
+        await self.channels.hide_feed(f"broadcast:{data}")
         if canceled:
             logger.info(f"{actor.log} Canceled '{canceled}' queued e-mail/push copies")
 

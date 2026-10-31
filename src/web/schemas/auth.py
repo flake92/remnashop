@@ -181,6 +181,35 @@ class PushStatusResponse(BaseModel):
     devices: int
 
 
+class FeedButton(BaseModel):
+    text: str
+    url: str
+
+
+class FeedItemResponse(BaseModel):
+    id: int
+    category: str
+    text_html: str
+    buttons: list[list[FeedButton]]
+    media_type: Optional[str]
+    created_at: datetime
+    read: bool
+
+
+class FeedPageResponse(BaseModel):
+    items: list[FeedItemResponse]
+    unread_count: int
+    next_before_id: Optional[int]
+
+
+class FeedUnreadResponse(BaseModel):
+    unread_count: int
+
+
+class FeedReadRequest(BaseModel):
+    up_to_id: int = Field(ge=1)
+
+
 class UnsubscribeRequest(BaseModel):
     token: str = Field(min_length=5, max_length=128)
 

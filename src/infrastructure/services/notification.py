@@ -3,7 +3,7 @@ import base64
 import string
 import traceback
 from dataclasses import asdict
-from typing import Any, Callable, Optional, Sequence, Union
+from typing import Any, Callable, Optional, Sequence, Union, cast
 
 from aiogram import Bot
 from aiogram.exceptions import (
@@ -27,6 +27,7 @@ from loguru import logger
 
 from src.application.common import (
     ChannelCopy,
+    ChannelRecall,
     EventPublisher,
     NotificationCategory,
     NotificationChannels,
@@ -69,7 +70,8 @@ from src.application.events.user import (
     UserNotConnectedEvent,
 )
 from src.core.config import AppConfig
-from src.core.enums import Locale, Role
+from src.core.constants import GOTO_PREFIX, PAYMENT_PREFIX
+from src.core.enums import Locale, PurchaseType, Role
 from src.core.logger import sanitize_log_text
 from src.core.types import AnyKeyboard, NotificationType
 from src.infrastructure.services.event_bus import on_event
@@ -138,6 +140,13 @@ def _sanitized_error_diagnostics(
     return error_message, file_content
 
 
+# Where the bot-only purchase buttons lead in the cabinet.
+_CABINET_PATHS = {
+    f"{GOTO_PREFIX}{PAYMENT_PREFIX}{PurchaseType.RENEW}": "/extend",
+    f"{GOTO_PREFIX}{PAYMENT_PREFIX}{PurchaseType.NEW}": "/tariffs",
+}
+
+
 class NotificationService(Notifier):
     def __init__(
         self,
@@ -170,19 +179,28 @@ class NotificationService(Notifier):
             i18n_kwargs=render_kwargs,
         )
 
-    @staticmethod
-    def _channel_link(keyboard: Optional[AnyKeyboard]) -> Optional[str]:
-        # A URL button (support chat, external page) is kept as the e-mail and
-        # push link; bot-only buttons ("Renew", "Buy") lead to the cabinet.
+    def _feed_buttons(
+        self, keyboard: Optional[AnyKeyboard], locale: Locale
+    ) -> list[list[dict[str, str]]]:
+        # URL buttons stay as they are; bot-only "Renew" and "Buy" lead to the
+        # same place in the cabinet, the rest only works inside Telegram.
         if not isinstance(keyboard, InlineKeyboardMarkup):
-            return None
-        for row in keyboard.inline_keyboard:
+            return []
+        translated = cast(InlineKeyboardMarkup, self._translate_keyboard_text(keyboard, locale))
+        rows: list[list[dict[str, str]]] = []
+        for row in translated.inline_keyboard:
+            buttons: list[dict[str, str]] = []
             for button in row:
-                if button.url and button.url.startswith("https://"):
-                    return button.url
-                if button.web_app and button.web_app.url.startswith("https://"):
-                    return button.web_app.url
-        return None
+                url = (
+                    button.url
+                    or (button.web_app.url if button.web_app else None)
+                    or _CABINET_PATHS.get(button.callback_data or "")
+                )
+                if url and (url.startswith("https://") or url.startswith("/")):
+                    buttons.append({"text": button.text, "url": url})
+            if buttons:
+                rows.append(buttons)
+        return rows
 
     async def copy_to_channels(
         self,
@@ -199,16 +217,16 @@ class NotificationService(Notifier):
         Never raises: a channel outage must not stop the Telegram message.
         """
         try:
-            if not (self.channels.email_enabled or self.channels.push_enabled):
-                return 0
-            link = self._channel_link(payload.reply_markup)
+            media = payload.media if payload.media and payload.media.kind == "file_id" else None
             copies = [
                 ChannelCopy(
                     user_id=user.id,
                     text=self._render_text(user, payload),
                     category=category,
                     dedupe_key=f"{dedupe_prefix}:{user.id}",
-                    link_url=link,
+                    buttons=self._feed_buttons(payload.reply_markup, user.language),
+                    media_type=payload.media_type.value if media and payload.media_type else None,
+                    media_file_id=media.value if media else None,
                     skip_email=skip_email,
                     source=source,
                 )
@@ -219,6 +237,13 @@ class NotificationService(Notifier):
         except Exception as exc:
             logger.exception(f"Failed to queue e-mail/push copies '{dedupe_prefix}': {exc}")
             return 0
+
+    async def recall_copies(self, source: str) -> ChannelRecall:
+        try:
+            return await self.channels.recall(source)
+        except Exception as exc:
+            logger.exception(f"Failed to recall copies of '{source}': {exc}")
+            return ChannelRecall()
 
     async def notify_user(
         self,

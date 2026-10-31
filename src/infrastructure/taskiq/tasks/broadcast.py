@@ -6,7 +6,12 @@ from aiogram.exceptions import TelegramRetryAfter
 from dishka.integrations.taskiq import FromDishka, inject
 from loguru import logger
 
-from src.application.common import BroadcastExecutionLock, NotificationCategory, Notifier
+from src.application.common import (
+    BroadcastExecutionLock,
+    ChannelRecall,
+    NotificationCategory,
+    Notifier,
+)
 from src.application.common.dao import BroadcastDao
 from src.application.dto import BroadcastDto, BroadcastMessageDto, MessagePayloadDto, UserDto
 from src.application.use_cases.broadcast.commands.lifecycle import (
@@ -273,6 +278,7 @@ async def _finalize_broadcast_deletion(
     broadcast: BroadcastDto,
     total: int,
     deleted: int,
+    recall: ChannelRecall,
 ) -> None:
     await finish_broadcast.system(
         FinishBroadcastDto(task_id=broadcast.task_id, status=BroadcastStatus.DELETED)
@@ -285,6 +291,10 @@ async def _finalize_broadcast_deletion(
                 "total_count": total,
                 "deleted_count": deleted,
                 "failed_count": total - deleted,
+                "canceled_count": recall.canceled,
+                "feed_count": recall.feed_removed,
+                "push_count": recall.push_revoked,
+                "email_count": recall.email_sent,
             },
             disable_default_markup=False,
         )
@@ -317,9 +327,12 @@ async def _delete_broadcast_locked(  # noqa: C901
         logger.info(f"Broadcast '{broadcast_id}' is already deleted; skipping replay")
         return total_messages, deleted_count, total_messages - deleted_count
 
+    # Idempotent: a retried deletion only finds what the first run left.
+    recall = await notifier.recall_copies(f"broadcast:{broadcast.task_id}")
+
     if not broadcast.messages:
         logger.warning(f"No messages to delete for broadcast '{broadcast_id}'")
-        await _finalize_broadcast_deletion(finish_broadcast, notifier, broadcast, 0, 0)
+        await _finalize_broadcast_deletion(finish_broadcast, notifier, broadcast, 0, 0, recall)
         return 0, 0, 0
 
     logger.info(f"Started deleting messages for broadcast '{broadcast_id}'")
@@ -396,7 +409,7 @@ async def _delete_broadcast_locked(  # noqa: C901
     )
 
     await _finalize_broadcast_deletion(
-        finish_broadcast, notifier, broadcast, total_messages, deleted_count
+        finish_broadcast, notifier, broadcast, total_messages, deleted_count, recall
     )
     return total_messages, deleted_count, total_messages - deleted_count
 

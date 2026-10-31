@@ -7,6 +7,7 @@ from uuid import uuid4
 
 import pytest
 
+from src.application.common import ChannelRecall
 from src.application.dto import (
     BroadcastDto,
     BroadcastMessageDto,
@@ -171,7 +172,10 @@ async def test_concurrent_delete_replay_uses_fresh_deleted_state(
     broadcast_dao = SimpleNamespace(get_by_task_id=AsyncMock(return_value=current))
     bulk_update = SimpleNamespace(system=AsyncMock())
     finish_broadcast = SimpleNamespace(system=AsyncMock(side_effect=finish))
-    notifier = SimpleNamespace(notify_admins=AsyncMock())
+    notifier = SimpleNamespace(
+        notify_admins=AsyncMock(),
+        recall_copies=AsyncMock(return_value=ChannelRecall()),
+    )
 
     first = asyncio.create_task(
         _run_delete_broadcast_task(

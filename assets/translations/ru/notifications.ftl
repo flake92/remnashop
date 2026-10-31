@@ -146,6 +146,14 @@ ntf-broadcast =
         • <b>Не удалось удалить</b>: { $failed_count }
         </blockquote>
 
+        <b>Другие каналы</b>
+        <blockquote>
+        • <b>Убрано из ленты кабинета</b>: { $feed_count }
+        • <b>Отменено в очереди</b>: { $canceled_count }
+        • <b>Отзыв push отправлен</b>: { $push_count }
+        • <b>Писем уже отправлено</b>: { $email_count } (письмо отозвать нельзя)
+        </blockquote>
+
 ntf-importer =
     .not-file = ⚠️ <i>Отправьте базу данных в виде файла.</i>
     .db-failed = ❌ <i>Ошибка при экспорте пользователей из базы данных.</i>

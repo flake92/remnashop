@@ -36,6 +36,7 @@ from src.application.dto import UserDto
 from src.core.enums import ReferralRewardState, TransactionFulfillmentStatus
 from src.core.utils.time import datetime_now
 from src.infrastructure.database.models import (
+    NotificationFeedItem,
     PaymentOperation,
     Referral,
     ReferralReward,
@@ -734,6 +735,7 @@ class UserMergeDaoImpl(UserMergeDao):
 
         await self._move_simple_fk(Subscription, source.id, target.id)
         await self._move_simple_fk(Transaction, source.id, target.id)
+        await self._move_simple_fk(NotificationFeedItem, source.id, target.id)
         await self._move_payment_operations(source.id, target.id, moved)
         await self._move_referrals(source.id, target.id, moved)
         await self._move_promocode_activations(source.id, target.id)

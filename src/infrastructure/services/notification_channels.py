@@ -29,17 +29,26 @@ from src.application.common import (
     BulkEmailSender,
     ChannelCopy,
     ChannelCounts,
+    ChannelRecall,
     ChannelStats,
     EmailDeliveryRunBusyError,
+    FeedItem,
+    FeedMedia,
+    FeedPage,
     NotificationCategory,
     NotificationChannels,
 )
 from src.core.config import AppConfig
 from src.core.exceptions import EmailDeliveryError, EmailDeliveryRateDeferredError
 from src.core.utils.time import datetime_now
-from src.infrastructure.database.models import NotificationDelivery, User, WebPushSubscription
+from src.infrastructure.database.models import (
+    NotificationDelivery,
+    NotificationFeedItem,
+    User,
+    WebPushSubscription,
+)
 
-from .channel_render import push_text, render_telegram_html, safe_link, subject_for
+from .channel_render import push_text, render_telegram_html, subject_for
 from .web_push import PushResult, PushTarget, WebPushClient, is_allowed_endpoint
 
 EMAIL = "EMAIL"
@@ -56,6 +65,8 @@ LEASE = timedelta(minutes=10)
 MAX_ATTEMPTS = 8
 RETRY_MAX_SECONDS = 60 * 60
 TERMINAL_RETENTION = timedelta(days=30)
+FEED_RETENTION = timedelta(days=365)
+RECALL_TITLE = "Уведомление отозвано"
 MAINTENANCE_BATCH = 2000
 PUSH_CLAIM_BATCH = 50
 PUSH_CONCURRENCY = 10
@@ -184,8 +195,9 @@ class NotificationChannelsImpl(NotificationChannels):
     # ---------------------------------------------------------------- enqueue
 
     async def enqueue(self, copies: Sequence[ChannelCopy]) -> int:
+        # The feed needs no channel: it is the permanent copy of the message.
         email_on, push_on = self.email_enabled, self.push_enabled
-        if not copies or not (email_on or push_on):
+        if not copies:
             return 0
 
         user_ids = sorted({copy.user_id for copy in copies})
@@ -207,13 +219,19 @@ class NotificationChannelsImpl(NotificationChannels):
                     for user_id, subscription_id in rows:
                         subscriptions.setdefault(user_id, []).append(subscription_id)
 
+                known = [copy for copy in copies if copy.user_id in users]
+                feed_ids = await self._add_feed_items(session, known)
+
                 values: list[dict[str, Any]] = []
-                for copy in copies:
-                    user = users.get(copy.user_id)
-                    if user is None:
+                for copy in known:
+                    feed_id = feed_ids.get(copy.dedupe_key[:200])
+                    if feed_id is None:
                         continue
+                    user = users[copy.user_id]
                     values.extend(
-                        self._rows_for(copy, user, subscriptions.get(user.id, []), now, email_on)
+                        self._rows_for(
+                            copy, user, subscriptions.get(user.id, []), now, email_on, feed_id
+                        )
                     )
 
                 for start in range(0, len(values), INSERT_BATCH):
@@ -228,6 +246,43 @@ class NotificationChannelsImpl(NotificationChannels):
             logger.info(f"Queued '{inserted}' e-mail/push notification copies")
         return inserted
 
+    async def _add_feed_items(
+        self, session: AsyncSession, copies: Sequence[ChannelCopy]
+    ) -> dict[str, int]:
+        """Add feed items and return the ids of all of them, replays included."""
+        values = [
+            {
+                "user_id": copy.user_id,
+                "category": copy.category.value,
+                "source": copy.source,
+                "dedupe_key": copy.dedupe_key[:200],
+                "text_html": copy.text,
+                "buttons": copy.buttons,
+                "media_type": copy.media_type,
+                "media_file_id": copy.media_file_id,
+            }
+            for copy in copies
+            if render_telegram_html(copy.text).text or copy.media_file_id
+        ]
+        ids: dict[str, int] = {}
+        for start in range(0, len(values), INSERT_BATCH):
+            batch = values[start : start + INSERT_BATCH]
+            await session.execute(
+                insert(NotificationFeedItem)
+                .values(batch)
+                .on_conflict_do_nothing(constraint="uq_notification_feed_item_dedupe_key")
+            )
+            rows = await session.execute(
+                select(NotificationFeedItem.dedupe_key, NotificationFeedItem.id).where(
+                    NotificationFeedItem.dedupe_key.in_([row["dedupe_key"] for row in batch])
+                )
+            )
+            ids.update({row[0]: row[1] for row in rows})
+        return ids
+
+    def feed_url(self, item_id: int) -> Optional[str]:
+        return f"{self.cabinet_url}/notifications?item={item_id}" if self.cabinet_url else None
+
     def _rows_for(
         self,
         copy: ChannelCopy,
@@ -235,11 +290,12 @@ class NotificationChannelsImpl(NotificationChannels):
         subscription_ids: list[int],
         now: datetime,
         email_on: bool,
+        feed_id: int,
     ) -> list[dict[str, Any]]:
         rendered = render_telegram_html(copy.text)
         if not rendered.text:
             return []
-        link = safe_link(copy.link_url)
+        link = self.feed_url(feed_id)
         rows: list[dict[str, Any]] = []
         if email_on and not copy.skip_email and _email_allowed(user, copy.category):
             rows.append(
@@ -292,6 +348,171 @@ class NotificationChannelsImpl(NotificationChannels):
                     .returning(NotificationDelivery.id)
                 )
                 return len(canceled.all())
+
+    async def hide_feed(self, source: str) -> int:
+        async with self.session_maker() as session:
+            async with session.begin():
+                return await self._hide_feed(session, source)
+
+    async def _hide_feed(self, session: AsyncSession, source: str) -> int:
+        hidden = await session.scalars(
+            update(NotificationFeedItem)
+            .where(
+                NotificationFeedItem.source == source,
+                NotificationFeedItem.deleted_at.is_(None),
+            )
+            .values(deleted_at=datetime_now())
+            .returning(NotificationFeedItem.id)
+        )
+        return len(hidden.all())
+
+    async def recall(self, source: str) -> ChannelRecall:
+        now = datetime_now()
+        async with self.session_maker() as session:
+            async with session.begin():
+                canceled = await session.scalars(
+                    update(NotificationDelivery)
+                    .where(
+                        NotificationDelivery.source == source,
+                        NotificationDelivery.state.in_([PENDING, RETRY_WAITING]),
+                    )
+                    .values(state=CANCELED, last_error_code="CANCELED_BY_ADMIN")
+                    .returning(NotificationDelivery.id)
+                )
+                canceled_count = len(canceled.all())
+                feed_removed = await self._hide_feed(session, source)
+                delivered = (
+                    await session.execute(
+                        select(
+                            NotificationDelivery.id,
+                            NotificationDelivery.user_id,
+                            NotificationDelivery.category,
+                            NotificationDelivery.push_subscription_id,
+                        ).where(
+                            NotificationDelivery.source == source,
+                            NotificationDelivery.channel == PUSH,
+                            NotificationDelivery.state.in_([SENT, PROCESSING]),
+                        )
+                    )
+                ).all()
+                revoked = 0
+                revokes = [
+                    {
+                        "user_id": user_id,
+                        "channel": PUSH,
+                        "category": category,
+                        "push_subscription_id": subscription_id,
+                        "dedupe_key": f"revoke:{delivery_id}",
+                        "source": None,
+                        "subject": RECALL_TITLE,
+                        "text_body": "",
+                        "html_body": None,
+                        "url": None,
+                        "next_attempt_at": now,
+                        "expires_at": now + LIFETIME[(PUSH, NotificationCategory.NEWS)],
+                        "revoke_tag": f"notification-{delivery_id}",
+                    }
+                    for delivery_id, user_id, category, subscription_id in delivered
+                ]
+                for start in range(0, len(revokes), INSERT_BATCH):
+                    stmt = (
+                        insert(NotificationDelivery)
+                        .values(revokes[start : start + INSERT_BATCH])
+                        .on_conflict_do_nothing(constraint="uq_notification_delivery_dedupe_key")
+                        .returning(NotificationDelivery.id)
+                    )
+                    revoked += len((await session.scalars(stmt)).all())
+                email_sent = await session.scalar(
+                    select(func.count()).where(
+                        NotificationDelivery.source == source,
+                        NotificationDelivery.channel == EMAIL,
+                        NotificationDelivery.state.in_([SENT, PROCESSING]),
+                    )
+                )
+        return ChannelRecall(
+            canceled=canceled_count,
+            feed_removed=feed_removed,
+            push_revoked=revoked,
+            email_sent=int(email_sent or 0),
+        )
+
+    # ------------------------------------------------------------------- feed
+
+    async def feed_page(
+        self, user_id: int, *, limit: int, before_id: Optional[int] = None
+    ) -> FeedPage:
+        where = [
+            NotificationFeedItem.user_id == user_id,
+            NotificationFeedItem.deleted_at.is_(None),
+        ]
+        page_where = [*where, *([NotificationFeedItem.id < before_id] if before_id else [])]
+        async with self.session_maker() as session:
+            rows = (
+                await session.scalars(
+                    select(NotificationFeedItem)
+                    .where(*page_where)
+                    .order_by(NotificationFeedItem.id.desc())
+                    .limit(limit + 1)
+                )
+            ).all()
+            unread = await session.scalar(
+                select(func.count()).where(*where, NotificationFeedItem.read_at.is_(None))
+            )
+        page = rows[:limit]
+        return FeedPage(
+            items=[
+                FeedItem(
+                    id=row.id,
+                    category=row.category,
+                    text_html=row.text_html,
+                    buttons=row.buttons,
+                    media_type=row.media_type if row.media_file_id else None,
+                    created_at=row.created_at,
+                    read=row.read_at is not None,
+                )
+                for row in page
+            ],
+            unread_count=int(unread or 0),
+            next_before_id=page[-1].id if len(rows) > limit else None,
+        )
+
+    async def feed_unread_count(self, user_id: int) -> int:
+        async with self.session_maker() as session:
+            unread = await session.scalar(
+                select(func.count()).where(
+                    NotificationFeedItem.user_id == user_id,
+                    NotificationFeedItem.deleted_at.is_(None),
+                    NotificationFeedItem.read_at.is_(None),
+                )
+            )
+        return int(unread or 0)
+
+    async def feed_mark_read(self, user_id: int, up_to_id: int) -> int:
+        async with self.session_maker() as session:
+            async with session.begin():
+                await session.execute(
+                    update(NotificationFeedItem)
+                    .where(
+                        NotificationFeedItem.user_id == user_id,
+                        NotificationFeedItem.id <= up_to_id,
+                        NotificationFeedItem.read_at.is_(None),
+                    )
+                    .values(read_at=datetime_now())
+                )
+        return await self.feed_unread_count(user_id)
+
+    async def feed_media(self, user_id: int, item_id: int) -> Optional[FeedMedia]:
+        async with self.session_maker() as session:
+            row = await session.scalar(
+                select(NotificationFeedItem).where(
+                    NotificationFeedItem.id == item_id,
+                    NotificationFeedItem.user_id == user_id,
+                    NotificationFeedItem.deleted_at.is_(None),
+                )
+            )
+        if row is None or not row.media_file_id or not row.media_type:
+            return None
+        return FeedMedia(media_type=row.media_type, file_id=row.media_file_id)
 
     async def source_stats(self, source: str) -> ChannelStats:
         async with self.session_maker() as session:
@@ -386,6 +607,16 @@ class NotificationChannelsImpl(NotificationChannels):
                 )
                 await session.execute(
                     delete(NotificationDelivery).where(NotificationDelivery.id.in_(old))
+                )
+                old_feed = (
+                    select(NotificationFeedItem.id)
+                    .where(NotificationFeedItem.created_at < now - FEED_RETENTION)
+                    .limit(MAINTENANCE_BATCH)
+                    .with_for_update(skip_locked=True)
+                    .scalar_subquery()
+                )
+                await session.execute(
+                    delete(NotificationFeedItem).where(NotificationFeedItem.id.in_(old_feed))
                 )
 
     def _claimable(self, channel: str, now: datetime) -> list[Any]:
@@ -677,7 +908,8 @@ class NotificationChannelsImpl(NotificationChannels):
                         if not records:
                             break
                         for delivery, subscription, user in records:
-                            if not _push_allowed(user):
+                            # A recall also reaches a user blocked after the message.
+                            if not delivery.revoke_tag and not _push_allowed(user):
                                 delivery.state = CANCELED
                                 delivery.last_error_code = "INELIGIBLE_AT_DELIVERY"
                                 continue
@@ -765,6 +997,8 @@ class NotificationChannelsImpl(NotificationChannels):
                 )
 
     def push_payload(self, delivery: NotificationDelivery) -> bytes:
+        if delivery.revoke_tag:
+            return orjson.dumps({"title": delivery.subject, "revoke": delivery.revoke_tag})
         payload = {
             "title": delivery.subject,
             "body": delivery.text_body,

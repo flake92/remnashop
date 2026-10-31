@@ -7,7 +7,7 @@ from src.application.dto import MessagePayloadDto, TempUserDto, UserDto
 from src.core.enums import Role
 from src.core.types import NotificationType
 
-from .notification_channels import NotificationCategory
+from .notification_channels import ChannelRecall, NotificationCategory
 
 
 @runtime_checkable
@@ -44,5 +44,9 @@ class Notifier(Protocol):
         skip_email: bool = False,
         source: Optional[str] = None,
     ) -> int:
-        """Queue e-mail and Web Push copies; never raises."""
+        """Add feed items and queue e-mail and Web Push copies; never raises."""
+        ...
+
+    async def recall_copies(self, source: str) -> ChannelRecall:
+        """Withdraw the copies of a source; never raises."""
         ...
