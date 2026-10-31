@@ -49,6 +49,14 @@ DELIVERY_SCAN_MAX_PER_RUN = 500
 class NotificationEmailNotEligibleError(Exception): ...
 
 
+def _bulk_sender_email(config: AppConfig) -> str | None:
+    # A switched-off account sends nothing, so its address must not be advertised.
+    bulk = getattr(config, "bulk_email", None)
+    if bulk is None or not getattr(bulk, "enabled", False):
+        return None
+    return bulk.from_email.strip() or None
+
+
 def _sender_domain(sender_email: str) -> str | None:
     local, separator, domain = sender_email.strip().lower().rpartition("@")
     if not separator or not local or "@" in local or len(domain) > 253:
@@ -97,9 +105,7 @@ def _preferences(
         days_before=REMINDER_DAYS_BEFORE,
         service_email_enabled=actor.email_service_notifications_enabled,
         news_email_enabled=actor.email_news_enabled,
-        bulk_sender_email=(
-            getattr(getattr(config, "bulk_email", None), "from_email", "").strip() or None
-        ),
+        bulk_sender_email=_bulk_sender_email(config),
         push_available=bool(getattr(getattr(config, "web_push", None), "is_configured", False)),
     )
 

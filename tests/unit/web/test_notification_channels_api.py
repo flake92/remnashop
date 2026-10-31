@@ -87,12 +87,32 @@ class _Uow:
         return None
 
 
-def _config() -> SimpleNamespace:
+def _config(*, bulk_enabled: bool = True) -> SimpleNamespace:
     return SimpleNamespace(
         email=SimpleNamespace(from_email="notice@example.org"),
-        bulk_email=SimpleNamespace(from_email="news@example.org"),
+        bulk_email=SimpleNamespace(enabled=bulk_enabled, from_email="news@example.org"),
         web_push=SimpleNamespace(is_configured=True),
     )
+
+
+async def test_disabled_bulk_account_address_is_not_advertised() -> None:
+    updated = _user()
+    user_dao = SimpleNamespace(
+        set_email_channel_preferences=AsyncMock(return_value=updated),
+        set_subscription_expiration_email_preference=AsyncMock(return_value=updated),
+    )
+    use_case = UpdateNotificationPreferences(
+        _config(bulk_enabled=False),  # type: ignore[arg-type]
+        user_dao,  # type: ignore[arg-type]
+        _Uow(),  # type: ignore[arg-type]
+    )
+
+    result = await use_case._execute(
+        _user(), UpdateNotificationPreferencesDto(service_email_enabled=True)
+    )
+
+    assert result.sender_email == "notice@example.org"
+    assert result.bulk_sender_email is None
 
 
 async def test_service_switch_also_switches_expiry_reminders() -> None:
