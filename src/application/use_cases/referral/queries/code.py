@@ -25,10 +25,16 @@ class ValidateReferralCode(Interactor[ValidateReferralCodeDto, bool]):
 
     async def _execute(self, actor: UserDto, data: ValidateReferralCodeDto) -> bool:
         referrer = await self.user_dao.get_by_referral_code(data.referral_code)
-        if not referrer or referrer.id == data.user_id:
+        if not referrer:
+            # The access middleware validates before the user is known and passes the
+            # sentinel id 0, so the id is only worth logging when it is a real one.
+            for_user = f" (user_id '{data.user_id}')" if data.user_id > 0 else ""
+            logger.warning(f"Referral code '{data.referral_code}' not found{for_user}")
+            return False
+        if referrer.id == data.user_id:
             logger.warning(
-                f"Invalid referral code '{data.referral_code}' "
-                f"or self-referral by user_id '{data.user_id}'"
+                f"Self-referral rejected: user_id '{data.user_id}' used own code "
+                f"'{data.referral_code}'"
             )
             return False
         return True
