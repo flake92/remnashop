@@ -50,6 +50,63 @@ def daily_rate(durations: Sequence, days: int, currency: Currency = REFERENCE_CU
     return price / Decimal(tier_days)
 
 
+@dataclass(frozen=True)
+class ChangeCreditQuote:
+    enabled: bool  # admin switch «Перерасчёт при смене тарифа»
+    credit: Optional[ChangeCredit]
+
+    @property
+    def days(self) -> int:
+        return self.credit.days if self.credit else 0
+
+
+async def quote_change_credit(
+    *,
+    subscription,  # SubscriptionDto (current) or None
+    new_plan_id: int,
+    new_days: int,
+    plan_dao,
+    settings_dao,
+    now: datetime,
+) -> ChangeCreditQuote:
+    """Single source of truth for the confirm screen and for fulfillment."""
+    settings = await settings_dao.get()
+    if not settings.extra.change_credit:
+        return ChangeCreditQuote(enabled=False, credit=None)
+
+    # local import: avoid a dto <-> use-case import cycle
+    from src.core.enums import SubscriptionStatus
+
+    old = subscription.plan_snapshot if subscription else None
+    if (
+        old is None
+        or subscription.is_trial
+        or old.is_trial
+        or old.duration == 0
+        or new_days == 0
+        or subscription.grace_until is not None
+        or subscription.status not in {SubscriptionStatus.ACTIVE, SubscriptionStatus.LIMITED}
+        or subscription.expire_at is None
+        or subscription.expire_at.year >= 2099
+    ):
+        return ChangeCreditQuote(enabled=True, credit=None)
+
+    old_plan = await plan_dao.get_by_id(old.id)
+    new_plan = await plan_dao.get_by_id(new_plan_id)
+    if not old_plan or not new_plan:
+        return ChangeCreditQuote(enabled=True, credit=None)
+    return ChangeCreditQuote(
+        enabled=True,
+        credit=change_credit(
+            old_expire_at=subscription.expire_at,
+            now=now,
+            old_durations=old_plan.durations,
+            new_durations=new_plan.durations,
+            new_days=new_days,
+        ),
+    )
+
+
 def change_credit(
     *,
     old_expire_at: datetime,
