@@ -281,3 +281,32 @@ class HistoricalReferralBackfillApplyResponse(BaseModel):
     status: Literal["APPLIED"]
     created_intents: int
     idempotent_replay: bool
+
+
+class SupportSubscriptionResponse(BaseModel):
+    plan_id: int | None = None
+    plan_name: str | None = None
+    device_limit: int
+    status: str
+    is_trial: bool
+    expire_at: datetime
+    remaining_days: float
+
+
+class SupportChangeOptionResponse(BaseModel):
+    plan_id: int
+    plan_name: str
+    public_code: str | None = None
+    device_limit: int
+    days: int
+    price_rub: str
+    purchase_type: Literal["NEW", "RENEW", "CHANGE"]
+    credit_days: int
+    new_expire_at: datetime
+
+
+class SupportChangeQuoteResponse(BaseModel):
+    enabled: bool
+    not_eligible_reason: str | None = None
+    subscription: SupportSubscriptionResponse | None = None
+    options: list[SupportChangeOptionResponse]
