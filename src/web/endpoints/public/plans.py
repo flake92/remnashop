@@ -5,27 +5,33 @@ from dishka.integrations.fastapi import inject
 from fastapi import APIRouter
 from redis.asyncio import Redis
 
-from src.application.common.dao import PlanDao
+from src.application.common.dao import PlanDao, SettingsDao
 from src.core.constants import PUBLIC_LANDING_PLANS_CACHE_TTL_SECONDS
 from src.core.enums import Currency, PlanAvailability
 from src.web.schemas import PublicPlanLandingListResponse, PublicPlanLandingResponse
+from src.web.schemas.plans import PublicPlanDurationResponse
 
 from ._common import _normalize_decimal_str
 
 router = APIRouter(tags=["Public - Plans"])
 
-_CACHE_KEY = "cache:public_landing_plans"
+_CACHE_KEY = "cache:public_landing_plans:v2"
 
 
 @router.get("/plans/public", response_model=PublicPlanLandingListResponse)
 @inject
 async def get_public_landing_plans(
     plan_dao: FromDishka[PlanDao],
+    settings_dao: FromDishka[SettingsDao],
     redis: FromDishka[Redis],
 ) -> PublicPlanLandingListResponse:
+    # the switch is read on every request: the plan list is cached for hours
+    change_credit_enabled = (await settings_dao.get()).extra.change_credit
     cached = await redis.get(_CACHE_KEY)
     if cached is not None:
-        return PublicPlanLandingListResponse.model_validate_json(cached)
+        payload = PublicPlanLandingListResponse.model_validate_json(cached)
+        payload.change_credit_enabled = change_credit_enabled
+        return payload
 
     plans = await plan_dao.filter_by_availability(PlanAvailability.ALL)
 
@@ -62,9 +68,13 @@ async def get_public_landing_plans(
                 monthly_from_rub=_normalize_decimal_str(monthly_from),
                 max_duration_days=max_duration_days,
                 max_duration_price_rub=_normalize_decimal_str(max_duration_price),
+                durations=[
+                    PublicPlanDurationResponse(days=d, price_rub=_normalize_decimal_str(p))
+                    for d, p in sorted(rub_duration_candidates)
+                ],
             )
         )
 
-    payload = PublicPlanLandingListResponse(plans=result)
+    payload = PublicPlanLandingListResponse(plans=result, change_credit_enabled=change_credit_enabled)
     await redis.setex(_CACHE_KEY, PUBLIC_LANDING_PLANS_CACHE_TTL_SECONDS, payload.model_dump_json())
     return payload

@@ -12,7 +12,7 @@ from src.application.common import (
     SubscriptionMutationLock,
 )
 from src.application.common.dao import PlanDao, SettingsDao, SubscriptionDao, UserDao
-from src.application.use_cases.subscription.change_credit import ChangeCredit, change_credit
+from src.application.use_cases.subscription.change_credit import ChangeCredit, quote_change_credit
 from src.application.common.uow import UnitOfWork
 from src.application.dto import PlanSnapshotDto, SubscriptionDto, TransactionDto, UserDto
 from src.application.events import TrialActivatedEvent
@@ -255,7 +255,11 @@ class PurchaseSubscription(Interactor[PurchaseSubscriptionDto, None]):
                         f"No subscription found for change for user '{user.remna_name}'"
                     )
 
-                credit = None if has_trial else await self._change_credit(subscription, plan)
+                credit = (
+                    None
+                    if has_trial
+                    else await self._change_credit(subscription, plan, transaction)
+                )
                 panel_plan = plan
                 if credit:
                     # only the panel request gets the longer duration; the stored snapshot
@@ -311,35 +315,23 @@ class PurchaseSubscription(Interactor[PurchaseSubscriptionDto, None]):
         self,
         subscription: SubscriptionDto,
         plan: PlanSnapshotDto,
+        transaction: TransactionDto,
     ) -> Optional[ChangeCredit]:
-        """Unused days of the current paid subscription, converted to days of the new plan."""
-        old = subscription.plan_snapshot
-        if (
-            old is None
-            or old.is_trial
-            or old.duration == 0
-            or plan.duration == 0
-            or subscription.grace_until is not None
-            or subscription.status not in {SubscriptionStatus.ACTIVE, SubscriptionStatus.LIMITED}
-            or subscription.expire_at is None
-            or subscription.expire_at.year >= 2099
-        ):
-            return None
+        """Unused days of the current paid subscription, converted to days of the new plan.
+
+        Counted at the moment the payment was created, so the customer gets exactly what
+        the confirm screen showed, however long the provider takes to confirm.
+        """
         try:
-            settings = await self.settings_dao.get()
-            if not settings.extra.change_credit:
-                return None
-            old_plan = await self.plan_dao.get_by_id(old.id)
-            new_plan = await self.plan_dao.get_by_id(plan.id)
-            if not old_plan or not new_plan:
-                return None
-            return change_credit(
-                old_expire_at=subscription.expire_at,
-                now=datetime_now(),
-                old_durations=old_plan.durations,
-                new_durations=new_plan.durations,
+            quote = await quote_change_credit(
+                subscription=subscription,
+                new_plan_id=plan.id,
                 new_days=plan.duration,
+                plan_dao=self.plan_dao,
+                settings_dao=self.settings_dao,
+                now=getattr(transaction, "created_at", None) or datetime_now(),
             )
+            return quote.credit
         except Exception as exc:  # the purchase itself must never fail because of the credit
             logger.exception(f"Change credit calculation failed: {exc}")
             return None
