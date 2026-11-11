@@ -50,6 +50,8 @@ class AppConfig(BaseConfig, env_prefix="APP_"):
     jwt_secret: Optional[SecretStr] = None
     api_key: Optional[SecretStr] = None
     auth_service_key: Optional[SecretStr] = None
+    # read-only plan-change quotes for the support bot; nothing else accepts it
+    support_quote_key: Optional[SecretStr] = None
     assets_dir: Path = ASSETS_DIR
     origins: StringList = StringList("")
     swagger_enabled: bool = False
@@ -139,6 +141,7 @@ class AppConfig(BaseConfig, env_prefix="APP_"):
                 "APP_JWT_SECRET": self.jwt_secret,
                 "APP_API_KEY": self.api_key,
                 "APP_AUTH_SERVICE_KEY": self.auth_service_key,
+                "APP_SUPPORT_QUOTE_KEY": self.support_quote_key,
                 "BOT_SECRET_TOKEN": self.bot.secret_token,
                 "REMNAWAVE_WEBHOOK_SECRET": self.remnawave.webhook_secret,
                 "DATABASE_PASSWORD": self.database.password,
@@ -208,7 +211,7 @@ class AppConfig(BaseConfig, env_prefix="APP_"):
             validate_strong_secret(field, info, minimum_length=32, env_prefix="APP_")
         return field
 
-    @field_validator("api_key", "auth_service_key")
+    @field_validator("api_key", "auth_service_key", "support_quote_key")
     @classmethod
     def validate_service_secret(
         cls, field: Optional[SecretStr], info: ValidationInfo
