@@ -11,7 +11,7 @@ from src.application.common import (
     Remnawave,
     SubscriptionMutationLock,
 )
-from src.application.common.dao import PlanDao, SubscriptionDao, UserDao
+from src.application.common.dao import PlanDao, SettingsDao, SubscriptionDao, UserDao
 from src.application.use_cases.subscription.change_credit import ChangeCredit, change_credit
 from src.application.common.uow import UnitOfWork
 from src.application.dto import PlanSnapshotDto, SubscriptionDto, TransactionDto, UserDto
@@ -141,6 +141,7 @@ class PurchaseSubscription(Interactor[PurchaseSubscriptionDto, None]):
         remnawave: Remnawave,
         subscription_mutation_lock: SubscriptionMutationLock,
         plan_dao: PlanDao,
+        settings_dao: SettingsDao,
     ) -> None:
         self.uow = uow
         self.user_dao = user_dao
@@ -148,6 +149,7 @@ class PurchaseSubscription(Interactor[PurchaseSubscriptionDto, None]):
         self.remnawave = remnawave
         self.subscription_mutation_lock = subscription_mutation_lock
         self.plan_dao = plan_dao
+        self.settings_dao = settings_dao
 
     async def _execute(self, actor: UserDto, data: PurchaseSubscriptionDto) -> None:  # noqa: C901
         async with self.subscription_mutation_lock.hold(data.user.id):
@@ -324,6 +326,9 @@ class PurchaseSubscription(Interactor[PurchaseSubscriptionDto, None]):
         ):
             return None
         try:
+            settings = await self.settings_dao.get()
+            if not settings.extra.change_credit:
+                return None
             old_plan = await self.plan_dao.get_by_id(old.id)
             new_plan = await self.plan_dao.get_by_id(plan.id)
             if not old_plan or not new_plan:

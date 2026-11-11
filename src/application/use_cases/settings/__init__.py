@@ -12,6 +12,7 @@ from .commands.backup import (
 from .commands.currency import UpdateDefaultCurrency
 from .commands.defaults import CreateDefaultSettings
 from .commands.extra import (
+    ToggleChangeCredit,
     ToggleMiniAppReserve,
     ToggleResetFeature,
     ToggleStarsPaidRequirement,
@@ -72,6 +73,7 @@ SETTINGS_USE_CASES: Final[tuple[type[Interactor], ...]] = (
     ToggleTrialChannelGuard,
     ToggleMiniAppReserve,
     ToggleStarsPaidRequirement,
+    ToggleChangeCredit,
     UpdateResetCooldown,
     SetGraceExternalSquad,
     SetGraceStrategy,

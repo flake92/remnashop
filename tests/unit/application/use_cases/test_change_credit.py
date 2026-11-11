@@ -120,7 +120,7 @@ class FakeMutationLock:
         return None
 
 
-def make_purchase(subscription, plans):  # type: ignore[no-untyped-def]
+def make_purchase(subscription, plans, enabled=True):  # type: ignore[no-untyped-def]
     updated_user = SimpleNamespace(
         uuid=subscription.user_remna_id,
         status=SubscriptionStatus.ACTIVE.value,
@@ -137,6 +137,9 @@ def make_purchase(subscription, plans):  # type: ignore[no-untyped-def]
         remnawave=remnawave,  # type: ignore[arg-type]
         subscription_mutation_lock=FakeMutationLock(),  # type: ignore[arg-type]
         plan_dao=SimpleNamespace(get_by_id=AsyncMock(side_effect=lambda i: plans.get(i))),  # type: ignore[arg-type]
+        settings_dao=SimpleNamespace(  # type: ignore[arg-type]
+            get=AsyncMock(return_value=SimpleNamespace(extra=SimpleNamespace(change_credit=enabled)))
+        ),
     )
     return purchase, remnawave
 
@@ -179,9 +182,9 @@ def subscription_with(old_plan: SimpleNamespace, expire_in_days: float, **kw):  
 PLANS = {1: SimpleNamespace(durations=ONE), 10: SimpleNamespace(durations=TWO)}
 
 
-async def run_change(subscription):  # type: ignore[no-untyped-def]
+async def run_change(subscription, enabled=True):  # type: ignore[no-untyped-def]
     new_plan = snapshot(10, 365, 2)
-    purchase, remnawave = make_purchase(subscription, PLANS)
+    purchase, remnawave = make_purchase(subscription, PLANS, enabled)
     transaction = SimpleNamespace(id=5, purchase_type=PurchaseType.CHANGE, plan_snapshot=new_plan)
     user = SimpleNamespace(id=42, remna_name="u", purchase_discount=0)
     await purchase._execute(
@@ -214,3 +217,10 @@ async def test_grace_or_disabled_has_no_credit() -> None:
         subscription = subscription_with(snapshot(1, 365, 1), 56.5, **kw)
         sent_plan, _ = await run_change(subscription)
         assert sent_plan.duration == 365
+
+
+@pytest.mark.asyncio
+async def test_switch_off_keeps_old_behaviour() -> None:
+    subscription = subscription_with(snapshot(1, 365, 1), 56.5)
+    sent_plan, _ = await run_change(subscription, enabled=False)
+    assert sent_plan.duration == 365

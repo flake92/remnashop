@@ -230,6 +230,7 @@ class ExtraSettingsDto(TrackableMixin):
     trial_channel_guard: bool = False
     mini_app_reserve: bool = False
     stars_require_paid_purchase: bool = False
+    change_credit: bool = False
 
 
 @dataclass(kw_only=True)
