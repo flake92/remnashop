@@ -9,6 +9,7 @@ from src.telegram.widgets.kbd import Button, Row, Start, SwitchTo
 
 from .getters import extra_getter
 from .handlers import (
+    on_change_credit_toggle,
     on_cooldown_input,
     on_mini_app_reserve_toggle,
     on_stars_paid_requirement_toggle,
@@ -94,6 +95,16 @@ main = Window(
             ),
             id="stars_paid_requirement",
             state=RemnashopExtra.STARS_PAID_REQUIREMENT,
+        ),
+    ),
+    Row(
+        SwitchTo(
+            text=I18nFormat(
+                "btn-remnashop-extra.change-credit",
+                enabled=F["change_credit_enabled"],
+            ),
+            id="change_credit",
+            state=RemnashopExtra.CHANGE_CREDIT,
         ),
     ),
     Row(
@@ -301,6 +312,34 @@ stars_paid_requirement = Window(
     getter=extra_getter,
 )
 
+change_credit = Window(
+    Banner(BannerName.DASHBOARD),
+    I18nFormat(
+        "msg-extra-change-credit",
+        enabled=F["change_credit_enabled"],
+    ),
+    Row(
+        Button(
+            text=I18nFormat(
+                "btn-remnashop-extra.toggle",
+                enabled=F["change_credit_enabled"],
+            ),
+            id="change_credit_toggle",
+            on_click=on_change_credit_toggle,
+        ),
+    ),
+    Row(
+        SwitchTo(
+            text=I18nFormat("btn-back.general"),
+            id="back",
+            state=RemnashopExtra.MAIN,
+        ),
+    ),
+    IgnoreUpdate(),
+    state=RemnashopExtra.CHANGE_CREDIT,
+    getter=extra_getter,
+)
+
 router = Dialog(
     main,
     device_single,
@@ -310,4 +349,5 @@ router = Dialog(
     trial_channel_guard,
     mini_app_reserve,
     stars_paid_requirement,
+    change_credit,
 )

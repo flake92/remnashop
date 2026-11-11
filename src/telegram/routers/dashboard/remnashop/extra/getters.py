@@ -28,4 +28,5 @@ async def extra_getter(
         "trial_channel_guard_enabled": extra.trial_channel_guard,
         "mini_app_reserve_enabled": extra.mini_app_reserve,
         "stars_paid_requirement_enabled": extra.stars_require_paid_purchase,
+        "change_credit_enabled": extra.change_credit,
     }
