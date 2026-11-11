@@ -1,3 +1,4 @@
+from datetime import timedelta
 from typing import Any, cast
 
 from adaptix import Retort
@@ -15,9 +16,11 @@ from src.application.use_cases.plan.queries.match import (
     MatchPlanDto,
     resolve_renew_plan,
 )
+from src.application.use_cases.subscription.change_credit import quote_change_credit
 from src.application.use_cases.user.queries.plans import GetAvailablePlans
 from src.core.config import AppConfig
 from src.core.enums import PurchaseType
+from src.core.utils.time import datetime_now
 from src.core.utils.i18n_helpers import (
     i18n_format_days,
     i18n_format_device_limit,
@@ -25,6 +28,44 @@ from src.core.utils.i18n_helpers import (
     i18n_format_traffic_limit,
 )
 from src.telegram.routers.subscription.gift_flow import applies_discount, gift_getter_data
+
+
+async def _change_quote_data(
+    *,
+    purchase_type: Any,
+    user_id: int,
+    plan_id: int,
+    days: int,
+    subscription_dao: SubscriptionDao,
+    plan_dao: PlanDao,
+    settings_dao: SettingsDao,
+) -> dict[str, Any]:
+    """What the customer gets when switching plans: shown on the confirm screen.
+
+    Uses the same function as fulfillment, so the screen and the result always match.
+    """
+    data: dict[str, Any] = {"change_mode": "OFF", "credit_days": 0, "left_days": 0, "new_expire": ""}
+    if purchase_type != PurchaseType.CHANGE:
+        return data
+    now = datetime_now()
+    subscription = await subscription_dao.get_current(user_id)
+    quote = await quote_change_credit(
+        subscription=subscription,
+        new_plan_id=plan_id,
+        new_days=days,
+        plan_dao=plan_dao,
+        settings_dao=settings_dao,
+        now=now,
+    )
+    if not quote.enabled:
+        return data
+    data["change_mode"] = "CREDIT" if quote.credit else "NONE"
+    if quote.credit:
+        data["credit_days"] = quote.credit.days
+        data["left_days"] = int(quote.credit.remaining_days)
+    if days > 0:
+        data["new_expire"] = (now + timedelta(days=days + quote.days)).strftime("%d.%m.%Y")
+    return data
 
 
 def _get_gateway_title(i18n: TranslatorRunner, gateway: PaymentGatewayDto) -> str:
@@ -67,6 +108,7 @@ async def plan_getter(
     plan_dao: FromDishka[PlanDao],
     subscription_dao: FromDishka[SubscriptionDao],
     match_plan: FromDishka[MatchPlan],
+    settings_dao: FromDishka[SettingsDao],
     **kwargs: Any,
 ) -> dict[str, Any]:
     plan_id: int = dialog_manager.start_data["plan_id"]  # type: ignore[call-overload, index, assignment]
@@ -103,6 +145,7 @@ async def plan_getter(
         "name": i18n.get_or_raw(plan.name),
         "description": i18n.get_or_raw(plan.description) if plan.description else False,
         "purchase_type": purchase_type,
+        "change_mode": "ON" if (await settings_dao.get()).extra.change_credit else "OFF",
     }
 
 
@@ -264,6 +307,9 @@ async def confirm_getter(
     i18n: FromDishka[TranslatorRunner],
     payment_gateway_dao: FromDishka[PaymentGatewayDao],
     pricing_service: FromDishka[PricingService],
+    subscription_dao: FromDishka[SubscriptionDao],
+    plan_dao: FromDishka[PlanDao],
+    settings_dao: FromDishka[SettingsDao],
     **kwargs: Any,
 ) -> dict[str, Any]:
     raw_plan = dialog_manager.dialog_data.get(PlanDto.__name__)
@@ -295,6 +341,15 @@ async def confirm_getter(
     gateways = await payment_gateway_dao.get_active()
 
     plan_is_modified = 1 if dialog_manager.dialog_data.get("plan_is_modified", False) else 0
+    change_data = await _change_quote_data(
+        purchase_type=purchase_type,
+        user_id=user.id,
+        plan_id=plan.id,
+        days=duration.days,
+        subscription_dao=subscription_dao,
+        plan_dao=plan_dao,
+        settings_dao=settings_dao,
+    )
 
     return {
         **gift_getter_data(dialog_manager),
@@ -318,6 +373,7 @@ async def confirm_getter(
         "only_single_plan": only_single_plan,
         "is_free": is_free,
         "plan_is_modified": plan_is_modified,
+        **change_data,
     }
 
 
