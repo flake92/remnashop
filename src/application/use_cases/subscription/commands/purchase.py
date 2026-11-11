@@ -1,3 +1,4 @@
+from copy import copy
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Optional
@@ -10,7 +11,8 @@ from src.application.common import (
     Remnawave,
     SubscriptionMutationLock,
 )
-from src.application.common.dao import SubscriptionDao, UserDao
+from src.application.common.dao import PlanDao, SubscriptionDao, UserDao
+from src.application.use_cases.subscription.change_credit import ChangeCredit, change_credit
 from src.application.common.uow import UnitOfWork
 from src.application.dto import PlanSnapshotDto, SubscriptionDto, TransactionDto, UserDto
 from src.application.events import TrialActivatedEvent
@@ -138,12 +140,14 @@ class PurchaseSubscription(Interactor[PurchaseSubscriptionDto, None]):
         subscription_dao: SubscriptionDao,
         remnawave: Remnawave,
         subscription_mutation_lock: SubscriptionMutationLock,
+        plan_dao: PlanDao,
     ) -> None:
         self.uow = uow
         self.user_dao = user_dao
         self.subscription_dao = subscription_dao
         self.remnawave = remnawave
         self.subscription_mutation_lock = subscription_mutation_lock
+        self.plan_dao = plan_dao
 
     async def _execute(self, actor: UserDto, data: PurchaseSubscriptionDto) -> None:  # noqa: C901
         async with self.subscription_mutation_lock.hold(data.user.id):
@@ -249,10 +253,25 @@ class PurchaseSubscription(Interactor[PurchaseSubscriptionDto, None]):
                         f"No subscription found for change for user '{user.remna_name}'"
                     )
 
+                credit = None if has_trial else await self._change_credit(subscription, plan)
+                panel_plan = plan
+                if credit:
+                    # only the panel request gets the longer duration; the stored snapshot
+                    # keeps the duration the customer paid for
+                    panel_plan = copy(plan)
+                    panel_plan.duration = plan.duration + credit.days
+                    logger.info(
+                        f"{actor.log} Change credit for user '{user.id}': "
+                        f"{credit.remaining_days:.2f} days left on plan "
+                        f"'{subscription.plan_snapshot.id}' (rate {credit.old_rate:.4f}) -> "
+                        f"+{credit.days} days on plan '{plan.id}' (rate {credit.new_rate:.4f}), "
+                        f"transaction '{transaction.id}'"
+                    )
+
                 updated_user = await self.remnawave.update_user(
                     user=user,
                     uuid=subscription.user_remna_id,
-                    plan=plan,
+                    plan=panel_plan,
                     reset_traffic=True,
                 )
 
@@ -285,6 +304,40 @@ class PurchaseSubscription(Interactor[PurchaseSubscriptionDto, None]):
                 )
 
         logger.info(f"{actor.log} Purchase subscription completed for user '{user.id}'")
+
+    async def _change_credit(
+        self,
+        subscription: SubscriptionDto,
+        plan: PlanSnapshotDto,
+    ) -> Optional[ChangeCredit]:
+        """Unused days of the current paid subscription, converted to days of the new plan."""
+        old = subscription.plan_snapshot
+        if (
+            old is None
+            or old.is_trial
+            or old.duration == 0
+            or plan.duration == 0
+            or subscription.grace_until is not None
+            or subscription.status not in {SubscriptionStatus.ACTIVE, SubscriptionStatus.LIMITED}
+            or subscription.expire_at is None
+            or subscription.expire_at.year >= 2099
+        ):
+            return None
+        try:
+            old_plan = await self.plan_dao.get_by_id(old.id)
+            new_plan = await self.plan_dao.get_by_id(plan.id)
+            if not old_plan or not new_plan:
+                return None
+            return change_credit(
+                old_expire_at=subscription.expire_at,
+                now=datetime_now(),
+                old_durations=old_plan.durations,
+                new_durations=new_plan.durations,
+                new_days=plan.duration,
+            )
+        except Exception as exc:  # the purchase itself must never fail because of the credit
+            logger.exception(f"Change credit calculation failed: {exc}")
+            return None
 
     def _build_subscription_dto(
         self,

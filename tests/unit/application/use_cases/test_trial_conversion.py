@@ -98,6 +98,7 @@ async def test_paid_conversion_updates_trial_in_place_and_preserves_url() -> Non
         subscription_dao=subscription_dao,  # type: ignore[arg-type]
         remnawave=remnawave,  # type: ignore[arg-type]
         subscription_mutation_lock=FakeMutationLock(),  # type: ignore[arg-type]
+        plan_dao=SimpleNamespace(get_by_id=AsyncMock(return_value=None)),  # type: ignore[arg-type]
     )
 
     await purchase._execute(
