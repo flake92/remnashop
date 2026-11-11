@@ -370,6 +370,11 @@ btn-remnashop-extra =
         *[0] 🔴
     } Stars: только после оплаты
 
+    .change-credit = { $enabled ->
+        [1] 🟢
+        *[0] 🔴
+    } Перерасчёт при смене тарифа
+
     .toggle = { $enabled ->
         [1] 🟢 Включено
         *[0] 🔴 Выключено

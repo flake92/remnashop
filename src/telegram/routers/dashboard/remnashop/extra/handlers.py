@@ -11,6 +11,7 @@ from src.application.use_cases.settings.commands.extra import (
     ToggleMiniAppReserve,
     ToggleResetFeature,
     ToggleResetFeatureDto,
+    ToggleChangeCredit,
     ToggleStarsPaidRequirement,
     ToggleTrialChannelGuard,
     UpdateResetCooldown,
@@ -70,6 +71,17 @@ async def on_stars_paid_requirement_toggle(
 ) -> None:
     user: TelegramUserDto = dialog_manager.middleware_data[USER_KEY]
     await toggle_stars_paid_requirement(user)
+
+
+@inject
+async def on_change_credit_toggle(
+    callback: CallbackQuery,
+    widget: Button,
+    dialog_manager: DialogManager,
+    toggle_change_credit: FromDishka[ToggleChangeCredit],
+) -> None:
+    user: TelegramUserDto = dialog_manager.middleware_data[USER_KEY]
+    await toggle_change_credit(user)
 
 
 @inject

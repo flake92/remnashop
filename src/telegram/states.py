@@ -143,6 +143,7 @@ class RemnashopExtra(StatesGroup):
     TRIAL_CHANNEL_GUARD = State()
     MINI_APP_RESERVE = State()
     STARS_PAID_REQUIREMENT = State()
+    CHANGE_CREDIT = State()
 
 
 class RemnashopGrace(StatesGroup):
