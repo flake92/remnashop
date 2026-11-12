@@ -343,6 +343,20 @@ event-subscription =
     { hdr-plan }
     { frg-plan-snapshot-comparison }
 
+    .gift =
+    #SubscriptionGiftEvent
+
+    <b>🔅 Событие: Покупка подписки в подарок!</b>
+
+    { hdr-payment }
+    { frg-payment-info }
+
+    { hdr-user }
+    { frg-user-info }
+
+    { hdr-plan }
+    { frg-plan-snapshot }
+
     .expiring =
     { $is_trial ->
     [0]

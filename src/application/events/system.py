@@ -541,6 +541,8 @@ class UserPurchaseEvent(UserEvent):
                 return "event-subscription.renew"
             case PurchaseType.CHANGE:
                 return "event-subscription.change"
+            case PurchaseType.GIFT:
+                return "event-subscription.gift"
 
 
 @dataclass(frozen=True, kw_only=True)

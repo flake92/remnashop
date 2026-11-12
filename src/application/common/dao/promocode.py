@@ -1,6 +1,8 @@
 from typing import Optional, Protocol, runtime_checkable
+from uuid import UUID
 
 from src.application.dto import (
+    GiftDto,
     PromocodeActivationDto,
     PromocodeDetailStatisticsDto,
     PromocodeDto,
@@ -19,6 +21,12 @@ class PromocodeDao(Protocol):
     async def get_by_id(self, promocode_id: int) -> Optional[PromocodeDto]: ...
 
     async def get_by_code(self, code: str) -> Optional[PromocodeDto]: ...
+
+    async def get_by_gift_payment_id(self, payment_id: UUID) -> Optional[PromocodeDto]: ...
+
+    async def get_gifts_by_buyer(self, buyer_id: int, limit: int = 100) -> list[GiftDto]: ...
+
+    async def delete_activation(self, promocode_id: int, user_id: int) -> bool: ...
 
     async def get_list(self, limit: int = 100, offset: int = 0) -> list[PromocodeDto]: ...
 

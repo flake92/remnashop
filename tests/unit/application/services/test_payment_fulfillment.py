@@ -561,6 +561,7 @@ def process_payment(
         SimpleNamespace(),  # type: ignore[arg-type]
         SimpleNamespace(),  # type: ignore[arg-type]
         SimpleNamespace(),  # type: ignore[arg-type]
+        SimpleNamespace(),  # type: ignore[arg-type]
     )
     process._handle_success = AsyncMock()  # type: ignore[method-assign]
     return process
