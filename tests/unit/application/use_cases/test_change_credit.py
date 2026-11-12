@@ -36,9 +36,24 @@ def test_same_duration_is_price_ratio() -> None:
         old_durations=ONE,
         new_durations=TWO,
         new_days=365,
+        old_days=365,
     )
     assert credit is not None
     assert credit.days == 29  # 56 * 895 / 1690 = 29.66
+
+
+def test_old_rate_is_what_the_customer_paid_per_day() -> None:
+    # bought 1 device for a month (108 / 30 = 3.6 per day), now 2 devices for a year (1690 / 365)
+    credit = change_credit(
+        old_expire_at=NOW + timedelta(days=55),
+        now=NOW,
+        old_durations=ONE,
+        new_durations=TWO,
+        new_days=365,
+        old_days=30,
+    )
+    assert credit is not None
+    assert credit.days == 42  # 55 * 3.6 / 4.630 = 42.76
 
 
 def test_missing_tier_falls_back_to_closest_duration() -> None:
@@ -50,6 +65,7 @@ def test_missing_tier_falls_back_to_closest_duration() -> None:
         old_durations=ONE,
         new_durations=TWO,
         new_days=7,
+        old_days=7,
     )
     assert credit is not None
     assert credit.days == 11  # 10 * (54/7) / (199/30) = 11.63
@@ -62,6 +78,7 @@ def test_downgrade_gives_more_days() -> None:
         old_durations=TWO,
         new_durations=ONE,
         new_days=30,
+        old_days=30,
     )
     assert credit is not None
     assert credit.days == 55  # 30 * 199 / 108 = 55.27
@@ -79,6 +96,7 @@ def test_no_credit(expire: datetime, new_days: int) -> None:
             old_durations=ONE,
             new_durations=TWO,
             new_days=new_days,
+            old_days=30,
         )
         is None
     )
@@ -93,6 +111,7 @@ def test_free_old_plan_gives_no_credit() -> None:
             old_durations=free,
             new_durations=TWO,
             new_days=30,
+            old_days=30,
         )
         is None
     )

@@ -1,18 +1,20 @@
 """Credit for the unused part of a subscription when the customer switches plans.
 
-Formula (the support bot uses the same one):
+Formula (the way support recalculated by hand; the support bot shows the same numbers):
 
-    credit_days = floor(remaining_days * rate(old_plan, D) / rate(new_plan, D))
+    credit_days = floor(remaining_days * rate(old_plan, D_old) / rate(new_plan, D_new))
 
-    remaining_days  time left on the current subscription, in days (fractional)
-    D               duration of the new purchase, in days
-    rate(plan, D)   price per day of `plan` for duration D in the reference currency (RUB):
-                    price(plan, D) / D; if the plan has no duration D, the duration closest
-                    to D is used (price of that duration / its days)
+    remaining_days  time left on the current subscription, in days (fractional; referral
+                    bonus days are part of it and are valued the same way)
+    D_old           duration the customer bought last time (subscription plan snapshot)
+    D_new           duration of the new purchase
+    rate(plan, D)   price per day in RUB: price(plan, D) / D; if the plan no longer has
+                    duration D, the duration closest to D is used
 
-New expiry = now + D + credit_days. With the same duration on both plans this is just
-remaining_days * price(old, D) / price(new, D). No credit for trials, unlimited or lifetime
-subscriptions, a lifetime purchase, an expired/disabled subscription or a free old plan.
+So the unused days are valued at what a day cost the customer, and that value is turned
+into days of the new plan. New expiry = now + D_new + credit_days. No credit for trials,
+unlimited or lifetime subscriptions, a lifetime purchase, an expired/disabled subscription
+or a free old plan.
 """
 
 from dataclasses import dataclass
@@ -103,6 +105,7 @@ async def quote_change_credit(
             old_durations=old_plan.durations,
             new_durations=new_plan.durations,
             new_days=new_days,
+            old_days=old.duration,
         ),
     )
 
@@ -114,13 +117,14 @@ def change_credit(
     old_durations: Sequence,
     new_durations: Sequence,
     new_days: int,
+    old_days: int,
 ) -> Optional[ChangeCredit]:
-    if new_days <= 0:
+    if new_days <= 0 or old_days <= 0:
         return None
     remaining = Decimal((old_expire_at - now).total_seconds()) / SECONDS_PER_DAY
     if remaining <= 0:
         return None
-    old_rate = daily_rate(old_durations, new_days)
+    old_rate = daily_rate(old_durations, old_days)
     new_rate = daily_rate(new_durations, new_days)
     if not old_rate or not new_rate or old_rate <= 0 or new_rate <= 0:
         return None
