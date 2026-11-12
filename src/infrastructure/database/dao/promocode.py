@@ -1,5 +1,6 @@
 from datetime import timedelta
 from typing import Optional
+from uuid import UUID
 
 from adaptix.conversion import ConversionRetort
 from loguru import logger
@@ -9,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.application.common.dao import PromocodeDao
 from src.application.dto import (
+    GiftDto,
     PromocodeActivationDto,
     PromocodeDetailStatisticsDto,
     PromocodeDto,
@@ -40,6 +42,8 @@ class PromocodeDaoImpl(PromocodeDao):
             expires_at=promocode.expires_at,
             max_activations=promocode.max_activations,
             is_reusable=promocode.is_reusable,
+            gift_payment_id=promocode.gift_payment_id,
+            gift_buyer_id=promocode.gift_buyer_id,
         )
         self.session.add(db)
         try:
@@ -84,6 +88,54 @@ class PromocodeDaoImpl(PromocodeDao):
         stmt = select(Promocode).where(Promocode.code == code.upper())
         db = await self.session.scalar(stmt)
         return self._to_dto(db) if db else None
+
+    async def get_by_gift_payment_id(self, payment_id: UUID) -> Optional[PromocodeDto]:
+        stmt = select(Promocode).where(Promocode.gift_payment_id == payment_id)
+        db = await self.session.scalar(stmt)
+        return self._to_dto(db) if db else None
+
+    async def get_gifts_by_buyer(self, buyer_id: int, limit: int = 100) -> list[GiftDto]:
+        # A gift code is single-use, so its first activation is the redemption.
+        activated_at = (
+            select(func.min(PromocodeActivation.activated_at))
+            .where(PromocodeActivation.promocode_id == Promocode.id)
+            .correlate(Promocode)
+            .scalar_subquery()
+        )
+        stmt = (
+            select(Promocode, activated_at)
+            .where(
+                Promocode.gift_buyer_id == buyer_id,
+                Promocode.gift_payment_id.is_not(None),
+            )
+            .order_by(Promocode.created_at.desc(), Promocode.id.desc())
+            .limit(limit)
+        )
+        rows = (await self.session.execute(stmt)).all()
+        return [
+            GiftDto(
+                code=promo.code,
+                payment_id=promo.gift_payment_id,
+                plan_snapshot=promo.plan_snapshot or {},
+                created_at=promo.created_at,
+                expires_at=promo.expires_at,
+                activated_at=redeemed_at,
+            )
+            for promo, redeemed_at in rows
+            if promo.gift_payment_id is not None
+        ]
+
+    async def delete_activation(self, promocode_id: int, user_id: int) -> bool:
+        stmt = (
+            delete(PromocodeActivation)
+            .where(
+                PromocodeActivation.promocode_id == promocode_id,
+                PromocodeActivation.user_id == user_id,
+            )
+            .returning(PromocodeActivation.id)
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none() is not None
 
     async def get_list(self, limit: int = 100, offset: int = 0) -> list[PromocodeDto]:
         stmt = select(Promocode).order_by(Promocode.created_at.desc()).limit(limit).offset(offset)

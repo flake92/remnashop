@@ -58,6 +58,7 @@ from src.application.services.payment_recovery_snapshot import (
     build_resolved_payment_snapshot,
 )
 from src.application.use_cases.gateways.queries.providers import GetPaymentGatewayInstance
+from src.application.use_cases.promocode.commands.gift import IssueGift, IssueGiftDto
 from src.application.use_cases.referral.commands.rewards import (
     AssignReferralRewards,
     AssignReferralRewardsDto,
@@ -426,6 +427,7 @@ class ProcessPayment(Interactor[ProcessPaymentDto, None]):
         redirect: Redirect,
         assign_referral_rewards: AssignReferralRewards,
         purchase_subscription: PurchaseSubscription,
+        issue_gift: IssueGift,
     ) -> None:
         self.uow = uow
         self.user_dao = user_dao
@@ -437,6 +439,7 @@ class ProcessPayment(Interactor[ProcessPaymentDto, None]):
         self.redirect = redirect
         self.assign_referral_rewards = assign_referral_rewards
         self.purchase_subscription = purchase_subscription
+        self.issue_gift = issue_gift
 
     async def _execute(  # noqa: C901
         self, actor: UserDto, data: ProcessPaymentDto
@@ -888,6 +891,10 @@ class ProcessPayment(Interactor[ProcessPaymentDto, None]):
             await self.notifier.notify_user(user, i18n_key="ntf-gateway.test-payment-confirmed")
             return
 
+        if transaction.purchase_type == PurchaseType.GIFT:
+            await self._handle_gift_success(user, transaction)
+            return
+
         subscription = await self.subscription_dao.get_current(user.id)
         old_plan = subscription.plan_snapshot if subscription else None
 
@@ -953,6 +960,56 @@ class ProcessPayment(Interactor[ProcessPaymentDto, None]):
 
         if user.telegram_id is not None:
             await self.redirect.to_success_payment(user.telegram_id, transaction.purchase_type)
+
+    async def _handle_gift_success(self, user: UserDto, transaction: TransactionDto) -> None:
+        # A gift never touches the buyer's own subscription and needs no panel call,
+        # so there is nothing to defer: the code is issued in the local database.
+        # Referral rewards are not accrued: the paid time goes to the recipient.
+        try:
+            gift = await self.issue_gift.system(IssueGiftDto(buyer=user, transaction=transaction))
+        except Exception as e:
+            await self._report_purchase_failure(user, transaction)
+            raise PurchaseError(e)
+
+        plan = transaction.plan_snapshot
+        await self.event_publisher.publish(
+            UserPurchaseEvent(
+                user_id=user.id,
+                telegram_id=user.telegram_id,
+                name=user.name,
+                email=user.email,
+                username=user.username,
+                #
+                purchase_type=transaction.purchase_type,
+                is_trial_plan=plan.is_trial,
+                payment_id=transaction.payment_id,
+                gateway_type=transaction.gateway_type,
+                final_amount=transaction.pricing.final_amount,
+                discount_percent=transaction.pricing.discount_percent,
+                original_amount=transaction.pricing.original_amount,
+                currency=transaction.currency.symbol,
+                #
+                plan_name=i18n_key_or_text(plan.name),
+                plan_type=plan.type,
+                plan_traffic_limit=i18n_format_traffic_limit(plan.traffic_limit),
+                plan_device_limit=i18n_format_device_limit(plan.device_limit),
+                plan_duration=i18n_format_days(plan.duration),
+            )
+        )
+
+        if user.telegram_id is not None:
+            await self.notifier.notify_user(
+                user,
+                payload=MessagePayloadDto(
+                    i18n_key="ntf-gift.purchased",
+                    i18n_kwargs={
+                        "code": gift.code,
+                        "plan_name": i18n_key_or_text(plan.name),
+                        "duration": i18n_format_days(plan.duration),
+                    },
+                    delete_after=None,
+                ),
+            )
 
     async def _report_purchase_failure(
         self,

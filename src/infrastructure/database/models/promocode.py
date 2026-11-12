@@ -1,5 +1,6 @@
 from datetime import datetime
 from typing import Any, Optional
+from uuid import UUID
 
 from sqlalchemy import DateTime, ForeignKey, Integer, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB
@@ -13,6 +14,7 @@ from .timestamp import TimestampMixin
 
 class Promocode(BaseSql, TimestampMixin):
     __tablename__ = "promocodes"
+    __table_args__ = (UniqueConstraint("gift_payment_id", name="uq_promocodes_gift_payment_id"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     code: Mapped[str] = mapped_column(unique=True, index=True, nullable=False)
@@ -27,6 +29,19 @@ class Promocode(BaseSql, TimestampMixin):
     expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     max_activations: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     is_reusable: Mapped[bool] = mapped_column(nullable=False, server_default=text("false"))
+
+    # Set only on gift codes: the paid transaction that issued the code (one code
+    # per payment) and the buyer who may list it in the cabinet.
+    gift_payment_id: Mapped[Optional[UUID]] = mapped_column(nullable=True)
+    gift_buyer_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey(
+            "users.id",
+            ondelete="SET NULL",
+            name="fk_promocodes_gift_buyer_id_users",
+        ),
+        nullable=True,
+        index=True,
+    )
 
     activations: Mapped[list["PromocodeActivation"]] = relationship(
         back_populates="promocode",

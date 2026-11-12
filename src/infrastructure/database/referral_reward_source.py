@@ -9,6 +9,7 @@ from src.core.constants import (
 )
 from src.core.enums import (
     PaymentGatewayType,
+    PurchaseType,
     TransactionFulfillmentStatus,
     TransactionStatus,
 )
@@ -147,6 +148,9 @@ def paid_nontrial_referral_source_predicate(
         transaction.status.in_(statuses),
         fulfillment,
         transaction.is_test.is_(False),
+        # A gift pays for someone else's time: it is never the buyer's own
+        # (first) referral-eligible payment.
+        transaction.purchase_type != PurchaseType.GIFT,
         transaction.pricing["final_amount"].astext.cast(Numeric) > 0,
         transaction.plan_snapshot["is_trial"].astext == "false",
     )
@@ -164,6 +168,7 @@ def provider_succeeded_local_failed_source_predicate(transaction: Any) -> tuple[
         transaction.fulfillment_token_hash.is_(None),
         transaction.fulfillment_lease_expires_at.is_(None),
         transaction.is_test.is_(False),
+        transaction.purchase_type != PurchaseType.GIFT,
         transaction.pricing["final_amount"].astext.cast(Numeric) > 0,
         transaction.plan_snapshot["is_trial"].astext == "false",
     )

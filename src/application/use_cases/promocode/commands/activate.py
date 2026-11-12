@@ -76,6 +76,11 @@ class ActivatePromocode(Interactor[ActivatePromocodeDto, PromocodeDto]):
             actor, ValidatePromocodeDto(code=data.code, user=user)
         )
 
+        if promo.is_gift:
+            await self._activate_gift(actor, user, promo)
+            await self._publish_activated(user, promo)
+            return promo
+
         subscription = await self.subscription_dao.get_current(user.id)
 
         # Remnawave calls happen OUTSIDE the transaction: if any raises, the
@@ -101,6 +106,10 @@ class ActivatePromocode(Interactor[ActivatePromocodeDto, PromocodeDto]):
 
         logger.info(f"{actor.log} Activated promocode id='{promo.id}'")
 
+        await self._publish_activated(user, promo)
+        return promo
+
+    async def _publish_activated(self, user: UserDto, promo: PromocodeDto) -> None:
         event = PromocodeActivatedEvent(
             user_id=user.id,
             telegram_id=user.telegram_id,
@@ -115,7 +124,94 @@ class ActivatePromocode(Interactor[ActivatePromocodeDto, PromocodeDto]):
         )
         await self.event_publisher.publish(event)
 
-        return promo
+    async def _activate_gift(self, actor: UserDto, user: UserDto, promo: PromocodeDto) -> None:
+        """Redeem a paid gift code exactly once.
+
+        Unlike ordinary promocodes the activation is claimed BEFORE the panel is
+        touched: two people racing for one paid code must not both receive time.
+        If the panel call fails the claim is released so the code stays usable.
+        """
+        if promo.id is None:
+            raise RuntimeError("A persisted promocode must have an id")
+
+        async with self.uow:
+            await self.promocode_dao.create_activation(
+                PromocodeActivationDto(
+                    promocode_id=promo.id,
+                    user_id=user.id,
+                    activated_at=datetime_now(),
+                ),
+                max_activations=1,
+                is_reusable=False,
+            )
+            await self.uow.commit()
+
+        try:
+            subscription = await self.subscription_dao.get_current(user.id)
+            pending = await self._apply_gift_remote(actor, user, promo, subscription)
+        except BaseException:
+            async with self.uow:
+                await self.promocode_dao.delete_activation(promo.id, user.id)
+                await self.uow.commit()
+            raise
+
+        async with self.uow:
+            await self._persist_reward(user, pending)
+            await self.uow.commit()
+
+        logger.info(f"{actor.log} Redeemed gift code id='{promo.id}'")
+
+    async def _apply_gift_remote(
+        self,
+        actor: UserDto,
+        user: UserDto,
+        promo: PromocodeDto,
+        subscription: Optional[SubscriptionDto],
+    ) -> _PendingReward:
+        if not promo.plan_snapshot:
+            raise ValueError(f"Gift code id='{promo.id}' has no plan")
+        plan = self.retort.load(promo.plan_snapshot, PlanSnapshotDto)
+
+        if subscription is None:
+            # No subscription yet: the gift creates one, exactly like a SUBSCRIPTION code.
+            return await self._apply_subscription(actor, user, promo, None)
+
+        # An existing subscription is extended by the gifted term, never shortened:
+        # the remaining paid time is kept, a trial or lapsed one starts from now.
+        # The subscription takes the gifted plan's limits.
+        if plan.duration == 0:
+            new_expire = days_to_datetime(0)
+        else:
+            keeps_remaining = (
+                not subscription.is_trial
+                and subscription.grace_until is None
+                and subscription.is_active
+            )
+            now = datetime_now()
+            base = max(subscription.expire_at, now) if keeps_remaining else now
+            new_expire = base + timedelta(days=plan.duration)
+
+        subscription.expire_at = new_expire
+        subscription.is_trial = False
+        subscription.device_limit = plan.device_limit
+        subscription.traffic_limit = plan.traffic_limit
+        subscription.traffic_limit_strategy = plan.traffic_limit_strategy
+        subscription.tag = plan.tag
+        subscription.internal_squads = plan.internal_squads
+        subscription.external_squad = plan.external_squad
+        subscription.grace_until = None
+        subscription.status = SubscriptionStatus.ACTIVE
+
+        updated = await self.remnawave.update_user(
+            user=user,
+            uuid=subscription.user_remna_id,
+            subscription=subscription,
+            reset_traffic=True,
+        )
+        subscription.url = updated.subscription_url
+        subscription.plan_snapshot = plan
+        logger.info(f"{actor.log} Gift extended subscription until {new_expire.isoformat()}")
+        return _PendingReward(subscription_update=subscription)
 
     async def _apply_reward_remote(
         self,

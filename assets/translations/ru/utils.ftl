@@ -407,6 +407,7 @@ purchase-type = { $purchase_type ->
     [NEW] Покупка
     [RENEW] Продление
     [CHANGE] Изменение
+    [GIFT] Подарок
     *[OTHER] { $purchase_type }
 }
 

@@ -103,6 +103,9 @@ class PurchaseType(UpperStrEnum):
     NEW = auto()
     RENEW = auto()
     CHANGE = auto()
+    # Paid for someone else: fulfillment issues a one-time gift code instead of
+    # touching the buyer's own subscription.
+    GIFT = auto()
 
 
 class TransactionStatus(UpperStrEnum):

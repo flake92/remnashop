@@ -5,6 +5,7 @@ from typing import Optional
 from urllib.parse import urlsplit
 from uuid import UUID
 
+from adaptix import Retort
 from dishka import FromDishka
 from dishka.integrations.fastapi import inject
 from fastapi import APIRouter, Header, HTTPException, Query, Response, status
@@ -54,6 +55,7 @@ from src.application.use_cases.promocode.commands.activate import (
     ActivatePromocode,
     ActivatePromocodeDto,
 )
+from src.application.use_cases.promocode.commands.gift import GetUserGifts, GetUserGiftsDto
 from src.application.use_cases.remnawave.commands.management import (
     DeleteUserAllDevices,
     DeleteUserDevice,
@@ -79,6 +81,7 @@ from src.core.exceptions import (
     PromocodeNotFoundError,
     TrialNotAvailableError,
 )
+from src.core.utils.time import datetime_now
 from src.web.schemas import (
     DeviceDeleteResponse,
     DeviceResponse,
@@ -88,6 +91,9 @@ from src.web.schemas import (
     DurationOfferResponse,
     ExtendRequest,
     GatewayOfferResponse,
+    GiftPurchaseRequest,
+    GiftResponse,
+    GiftsResponse,
     PaymentInitResponse,
     PaymentOperationResponse,
     PaymentTransactionResponse,
@@ -153,7 +159,7 @@ def _payment_operation_name(operation: str) -> str:
 
 def _payment_request_hash(
     operation: str,
-    body: PurchaseRequest | ExtendRequest,
+    body: PurchaseRequest | ExtendRequest | GiftPurchaseRequest,
 ) -> str:
     canonical = json.dumps(
         {"operation": operation, "request": body.model_dump(mode="json")},
@@ -168,7 +174,7 @@ async def _start_payment_operation(
     *,
     idempotency_key: Optional[str],
     operation: str,
-    body: PurchaseRequest | ExtendRequest,
+    body: PurchaseRequest | ExtendRequest | GiftPurchaseRequest,
     user: UserDto,
     idempotency: PaymentIdempotencyService,
 ) -> tuple[Optional[PaymentOperationStart], Optional[PaymentInitResponse]]:
@@ -898,6 +904,142 @@ async def purchase_subscription(
         )
         _raise_unknown_outcome_if_needed(payment_operation, side_effect_started, e)
         raise
+
+
+@router.post("/gift/purchase", response_model=PaymentInitResponse)
+@inject
+async def purchase_gift(
+    body: GiftPurchaseRequest,
+    user: CurrentUser,
+    payment_gateway_dao: FromDishka[PaymentGatewayDao],
+    pricing_service: FromDishka[PricingService],
+    get_available_plans: FromDishka[GetAvailablePlans],
+    create_payment: FromDishka[CreatePayment],
+    idempotency: FromDishka[PaymentIdempotencyService],
+    config: FromDishka[AppConfig],
+    idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
+) -> PaymentInitResponse:
+    """Pay for a subscription that someone else redeems with the issued code."""
+    return_url = _validated_payment_return_url(body.return_url, config)
+    payment_operation, replay = await _start_payment_operation(
+        idempotency_key=idempotency_key,
+        # Registered as a PURCHASE so the existing reconciliation and recovery
+        # paths find it; GiftPurchaseRequest.gift keeps its request hash distinct.
+        operation=_PURCHASE_OPERATION,
+        body=body,
+        user=user,
+        idempotency=idempotency,
+    )
+    if replay is not None:
+        return replay
+
+    side_effect_started = False
+    try:
+        _assert_web_purchase_email_verified(user)
+        await _validate_gateway_for_web(body.gateway_type, payment_gateway_dao)
+
+        plan = await _get_available_plan_by_code(user, body.plan_code, get_available_plans)
+        if not plan or plan.is_trial:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Plan not found")
+
+        duration = plan.get_duration(body.duration_days)
+        if not duration:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Plan duration not found",
+            )
+
+        gateway = await payment_gateway_dao.get_by_type(body.gateway_type)
+        if not gateway:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Gateway not found")
+
+        # The buyer's personal and one-time discounts are for their own subscription;
+        # a gift is always sold at the list price and is never free.
+        pricing = pricing_service.calculate(
+            user,
+            duration.get_price(gateway.currency),
+            gateway.currency,
+            apply_discount=False,
+        )
+        if pricing.is_free:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="A free plan cannot be bought as a gift",
+            )
+
+        if payment_operation is not None:
+            side_effect_started = True
+
+        payment = await create_payment(
+            user,
+            CreatePaymentDto(
+                plan_snapshot=PlanSnapshotDto.from_plan(plan, duration.days),
+                pricing=pricing,
+                purchase_type=PurchaseType.GIFT,
+                gateway_type=body.gateway_type,
+                provider_idempotency_key=(
+                    payment_operation.provider_key if payment_operation is not None else None
+                ),
+                payment_operation_id=(
+                    payment_operation.operation_id if payment_operation is not None else None
+                ),
+                return_url=return_url,
+            ),
+        )
+
+        return PaymentInitResponse(
+            payment_id=str(payment.id),
+            payment_url=payment.url,
+            purchase_type=PurchaseType.GIFT.value,
+            status=TransactionStatus.PENDING.value,
+            is_free=False,
+            final_amount=str(pricing.final_amount),
+            currency=gateway.currency.symbol,
+            return_url=return_url,
+        )
+    except BaseException as e:
+        await _record_payment_operation_failure(
+            idempotency=idempotency,
+            payment_operation=payment_operation,
+            side_effect_started=side_effect_started,
+        )
+        _raise_unknown_outcome_if_needed(payment_operation, side_effect_started, e)
+        raise
+
+
+@router.get("/gifts", response_model=GiftsResponse)
+@inject
+async def get_my_gifts(
+    user: CurrentUser,
+    get_user_gifts: FromDishka[GetUserGifts],
+    retort: FromDishka[Retort],
+) -> GiftsResponse:
+    """Gift codes the current user has bought, newest first."""
+    now = datetime_now()
+    gifts: list[GiftResponse] = []
+    for gift in await get_user_gifts.system(GetUserGiftsDto(user=user)):
+        plan = retort.load(gift.plan_snapshot, PlanSnapshotDto)
+        if gift.activated_at is not None:
+            gift_status = "ACTIVATED"
+        elif gift.expires_at is not None and gift.expires_at <= now:
+            gift_status = "EXPIRED"
+        else:
+            gift_status = "AVAILABLE"
+        gifts.append(
+            GiftResponse(
+                code=gift.code,
+                payment_id=str(gift.payment_id),
+                status=gift_status,
+                plan_name=plan.name,
+                duration_days=plan.duration,
+                traffic_limit=plan.traffic_limit,
+                device_limit=plan.device_limit,
+                created_at=gift.created_at,
+                expires_at=gift.expires_at,
+                activated_at=gift.activated_at,
+            )
+        )
+    return GiftsResponse(gifts=gifts)
 
 
 @router.post("/extend", response_model=PaymentInitResponse)

@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Optional
+from uuid import UUID
 
 from src.core.enums import PromocodeAvailability, PromocodeRewardType
 
@@ -18,6 +19,24 @@ class PromocodeDto(BaseDto, TrackableMixin, TimestampMixin):
     expires_at: Optional[datetime] = None
     max_activations: Optional[int] = None
     is_reusable: bool = False
+    gift_payment_id: Optional[UUID] = None
+    gift_buyer_id: Optional[int] = None
+
+    @property
+    def is_gift(self) -> bool:
+        return self.gift_payment_id is not None
+
+
+@dataclass(kw_only=True)
+class GiftDto:
+    """A gift code as its buyer sees it in the cabinet."""
+
+    code: str
+    payment_id: UUID
+    plan_snapshot: dict[str, Any]
+    created_at: Optional[datetime]
+    expires_at: Optional[datetime]
+    activated_at: Optional[datetime] = None
 
 
 @dataclass(kw_only=True)

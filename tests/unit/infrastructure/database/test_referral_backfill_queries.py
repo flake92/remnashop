@@ -4,7 +4,7 @@ from uuid import UUID
 import pytest
 from sqlalchemy.dialects import postgresql
 
-from src.core.enums import TransactionFulfillmentStatus, TransactionStatus
+from src.core.enums import PurchaseType, TransactionFulfillmentStatus, TransactionStatus
 from src.infrastructure.database.dao.referral import ReferralDaoImpl
 from src.infrastructure.database.dao.transaction import TransactionDaoImpl
 
@@ -66,7 +66,10 @@ async def test_historical_inventory_selects_only_successful_paid_nontrial_source
     assert "is_trial" in values
     assert "false" in values
     where_sql = sql.split(" WHERE ", 1)[1].split(" ORDER BY", 1)[0]
-    assert "PURCHASE_TYPE" not in where_sql
+    # Every paid purchase type counts; only gifts (paid for someone else) are excluded.
+    assert where_sql.count("TRANSACTIONS.PURCHASE_TYPE") == 1
+    assert "TRANSACTIONS.PURCHASE_TYPE !=" in where_sql
+    assert PurchaseType.GIFT in values
     assert "ORDER BY TRANSACTIONS.FULFILLMENT_COMPLETED_AT, TRANSACTIONS.ID" in sql
 
 
@@ -110,7 +113,10 @@ async def test_first_paid_history_excludes_trial_but_includes_refunded_first_pur
     assert "FULFILLMENT_TOKEN_HASH IS NULL" in sql
     assert "FULFILLMENT_LEASE_EXPIRES_AT IS NULL" in sql
     where_sql = sql.split(" WHERE ", 1)[1].split(" ORDER BY", 1)[0]
-    assert "PURCHASE_TYPE" not in where_sql
+    # Every paid purchase type counts; only gifts (paid for someone else) are excluded.
+    assert where_sql.count("TRANSACTIONS.PURCHASE_TYPE") == 1
+    assert "TRANSACTIONS.PURCHASE_TYPE !=" in where_sql
+    assert PurchaseType.GIFT in values
     assert "ORDER BY CASE" in sql
     assert "TRANSACTIONS.FULFILLMENT_STARTED_AT" in sql
     assert "TRANSACTIONS.UPDATED_AT" not in sql

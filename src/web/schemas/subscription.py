@@ -70,6 +70,35 @@ class PurchaseRequest(BaseModel):
     return_url: Optional[AnyHttpUrl] = None
 
 
+class GiftPurchaseRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    # Gifts share the PURCHASE idempotency namespace; this constant field keeps
+    # a gift and an ordinary purchase of the same offer from hashing alike.
+    gift: Literal[True] = True
+    plan_code: str = Field(min_length=3, max_length=64)
+    duration_days: int = Field(ge=0)
+    gateway_type: PaymentGatewayType
+    return_url: Optional[AnyHttpUrl] = None
+
+
+class GiftResponse(BaseModel):
+    code: str
+    payment_id: str
+    status: Literal["AVAILABLE", "ACTIVATED", "EXPIRED"]
+    plan_name: str
+    duration_days: int
+    traffic_limit: int
+    device_limit: int
+    created_at: Optional[datetime] = None
+    expires_at: Optional[datetime] = None
+    activated_at: Optional[datetime] = None
+
+
+class GiftsResponse(BaseModel):
+    gifts: list[GiftResponse]
+
+
 class ExtendRequest(BaseModel):
     duration_days: int = Field(ge=0)
     gateway_type: PaymentGatewayType
