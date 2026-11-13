@@ -1573,6 +1573,14 @@ msg-subscription-main =
    *[0] { "" }
     }
 msg-subscription-plans = <b>📦 Выберите план</b>
+msg-subscription-gift =
+    <b>💝 Подарить подписку</b>
+
+    Вы оплачиваете подписку, а получаете код <code>GIFT-XXXX-XXXX-XXXX</code>. Передайте его другу: он активирует код в боте или в личном кабинете как промокод. Код действует 1 год и активируется один раз.
+
+    Цена подарка — полная, без ваших личных скидок. Бесплатные и пробные тарифы подарить нельзя.
+
+    <b>Должен ли получатель видеть, от кого подарок?</b>
 msg-subscription-new-success = Чтобы начать пользоваться нашим сервисом, нажмите кнопку <code>`{ btn-subscription.connect }`</code> и следуйте инструкциям!
 msg-subscription-renew-success = Ваша подписка продлена на { $added_duration }.
 
@@ -1651,6 +1659,7 @@ msg-subscription-confirm =
     <b>🛒 Подтверждение { $purchase_type ->
     [RENEW] продления
     [CHANGE] изменения
+    [GIFT] покупки подарочной
     *[OTHER] покупки
     } подписки</b>
 
@@ -1659,6 +1668,10 @@ msg-subscription-confirm =
     { $purchase_type ->
     [RENEW] <i>⚠️ Текущая подписка будет <u>продлена</u> на выбранный срок.</i>
     [CHANGE] <i>⚠️ Текущая подписка будет <u>заменена</u> выбранной без пересчета оставшегося срока.</i>
+    [GIFT] <i>🎁 Ваша подписка не изменится: после оплаты бот пришлёт код подарка. { $gift_anonymous ->
+        [1] Подарок анонимный.
+        *[0] Получатель увидит ваше имя.
+        }</i>
     *[OTHER] { empty }
     }
 
@@ -1988,4 +2001,81 @@ msg-ad-link-stats =
     <b>С первых покупок:</b>
     <blockquote>
     { $first_revenue_lines }
+    </blockquote>
+
+# Gifts (dashboard)
+msg-gifts-main =
+    <b>💝 Подарочные подписки</b>
+
+    Всего кодов: <b>{ $total }</b>. Сначала новые покупки.
+    <i>✅ активирован · 🟢 доступен · ⌛ истёк · ⛔ выключен</i>
+
+msg-gift-not-found = <b>❌ Подарочный код не найден</b> — возможно, его уже удалили.
+
+msg-gift-details =
+    <b>💝 Подарок <code>{ $code }</code></b>
+
+    <blockquote>
+    • <b>Статус</b>: { $status ->
+        [ACTIVATED] ✅ активирован { $activated_at }
+        [EXPIRED] ⌛ истёк
+        [INACTIVE] ⛔ выключен
+        *[AVAILABLE] 🟢 доступен
+    }
+    • <b>Куплен</b>: { $created_at }
+    • <b>Действует до</b>: { $expires_at }
+    • <b>Даритель</b>: { $anonymous ->
+        [1] скрыт от получателя (анонимно)
+        *[0] виден получателю
+    }
+    </blockquote>
+
+    <b>📦 План</b>:
+    <blockquote>
+    • <b>Название</b>: { $plan_name }
+    • <b>Длительность</b>: { $plan_duration }
+    • <b>Трафик</b>: { $plan_traffic }
+    • <b>Устройства</b>: { $plan_devices }
+    </blockquote>
+
+    <b>💰 Платёж</b>:
+    <blockquote>
+    • <b>ID</b>: <code>{ $payment_id }</code>
+    • <b>Сумма</b>: { $payment_amount }{ $payment_currency }
+    • <b>Шлюз</b>: { $payment_gateway }
+    • <b>Статус</b>: { $payment_status }
+    • <b>Создан</b>: { $payment_created_at }
+    </blockquote>
+
+    <b>💝 Покупатель</b>:
+    <blockquote>
+    { $buyer_exists ->
+        [0] Аккаунт покупателя удалён
+        *[1] • <b>Имя</b>: { $buyer_name } { $buyer_username ->
+            [0] { empty }
+            *[HAS] (@{ $buyer_username })
+        }
+        • <b>Telegram ID</b>: { $buyer_telegram_id ->
+            [0] —
+            *[HAS] <code>{ NUMBER($buyer_telegram_id, useGrouping: 0) }</code>
+        }
+        • <b>Почта</b>: { $buyer_email }
+    }
+    </blockquote>
+
+    <b>🎁 Получатель</b>:
+    <blockquote>
+    { $recipient_exists ->
+        [0] Код ещё не активирован
+        *[1] • <b>Имя</b>: { $recipient_name } { $recipient_username ->
+            [0] { empty }
+            *[HAS] (@{ $recipient_username })
+        }
+        • <b>Telegram ID</b>: { $recipient_telegram_id ->
+            [0] —
+            *[HAS] <code>{ NUMBER($recipient_telegram_id, useGrouping: 0) }</code>
+        }
+        • <b>Почта</b>: { $recipient_email }
+        • <b>Активирован</b>: { $activated_at }
+    }
     </blockquote>

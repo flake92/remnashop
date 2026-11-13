@@ -227,7 +227,7 @@ def activate_use_case(
     use_case = ActivatePromocode(
         FakeUnitOfWork(),  # type: ignore[arg-type]
         dao,  # type: ignore[arg-type]
-        SimpleNamespace(update=AsyncMock()),  # type: ignore[arg-type]
+        SimpleNamespace(update=AsyncMock(), get_by_id=AsyncMock(return_value=buyer())),  # type: ignore[arg-type]
         subscription_dao,  # type: ignore[arg-type]
         remnawave,
         AsyncMock(return_value=gift_promo()),  # type: ignore[arg-type]
@@ -239,7 +239,9 @@ def activate_use_case(
 
 
 def recipient() -> Any:
-    return SimpleNamespace(id=11, telegram_id=None, username=None, name="Friend", log="friend")
+    return SimpleNamespace(
+        id=11, telegram_id=None, username=None, name="Friend", email=None, log="friend"
+    )
 
 
 @pytest.mark.asyncio

@@ -524,6 +524,11 @@ class UserPurchaseEvent(UserEvent):
     previous_plan_device_limit: Any = None
     previous_plan_duration: Any = None
 
+    # Set for GIFT only: lets the operator match this purchase to the later
+    # "promocode activated" event of the recipient.
+    gift_code: Optional[str] = None
+    gift_anonymous: int = 0
+
     def as_payload(self) -> "MessagePayloadDto":
         return MessagePayloadDto(
             i18n_key=self.event_key,
@@ -615,9 +620,20 @@ class PromocodeActivatedEvent(SystemEvent):
     reward_type: str
     reward: Optional[int]
     plan_name: Any
+    email: Optional[str] = None
+
+    # A paid gift code: who bought it and with which payment.
+    gift_payment_id: Optional[UUID] = None
+    gift_buyer_id: Optional[int] = None
+    gift_buyer_telegram_id: Optional[int] = None
+    gift_buyer_username: Optional[str] = None
+    gift_buyer_name: Optional[str] = None
+    gift_buyer_email: Optional[str] = None
 
     @property
     def event_key(self) -> str:
+        if self.gift_payment_id is not None:
+            return "event-promocode.gift-activated"
         return "event-promocode.activated"
 
     def as_payload(self) -> "MessagePayloadDto":
@@ -627,10 +643,16 @@ class PromocodeActivatedEvent(SystemEvent):
                 "telegram_id": self.telegram_id or 0,
                 "username": self.username or 0,
                 "name": self.name,
+                "email": self.email or "—",
                 "promocode_code": self.promocode_code,
                 "promocode_type": self.reward_type,  # used by promocode-type term + reward branch
                 "reward": self.reward if self.reward is not None else 0,
                 "plan_name": self.plan_name or "—",
+                "gift_payment_id": str(self.gift_payment_id or "—"),
+                "gift_buyer_telegram_id": self.gift_buyer_telegram_id or 0,
+                "gift_buyer_username": self.gift_buyer_username or 0,
+                "gift_buyer_name": self.gift_buyer_name or "—",
+                "gift_buyer_email": self.gift_buyer_email or "—",
             },
             disable_default_markup=False,
             delete_after=None,

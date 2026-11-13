@@ -97,6 +97,7 @@ btn-dashboard =
     .users = 👥 Пользователи
     .broadcast = 📢 Рассылка
     .promocodes = 🎟 Промокоды
+    .gifts = 💝 Подарки
     .access = 🔓 Режим доступа
     .remnawave = 🌊 RemnaWave
     .remnashop = 🛍 RemnaShop
@@ -589,6 +590,9 @@ btn-subscription =
     .renew = 🔄 Продлить
     .change = 🔃 Изменить
     .promocode = 🎟 Активировать промокод
+    .gift = 💝 Подарить подписку
+    .gift-named = 👤 От моего имени
+    .gift-anonymous = 🕶 Анонимно
     .promocode-confirm = ✅ Подтвердить
     .pay = 💳 Оплатить
     .get = 🎁 Получить бесплатно
@@ -627,3 +631,18 @@ btn-ad-links =
     [1] 🟢 Включена
     *[0] 🔴 Выключена
     }
+
+btn-gifts =
+    .item = { $status ->
+        [ACTIVATED] ✅
+        [EXPIRED] ⌛
+        [INACTIVE] ⛔
+        *[AVAILABLE] 🟢
+    } { $code } · { $created_at }
+    .copy-code = 📋 Скопировать код
+    .edit = ✏️ Изменить код и параметры
+    .anonymous-toggle = { $anonymous ->
+        [1] 🕶 Анонимный → показать имя
+        *[0] 👤 С именем → сделать анонимным
+    }
+    .delete = 🗑 Удалить

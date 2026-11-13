@@ -30,6 +30,16 @@ from src.core.constants import PAYMENT_PREFIX, USER_KEY
 from src.core.enums import PaymentGatewayType, PurchaseType, TransactionStatus
 from src.telegram.states import Subscription
 
+from .gift_flow import (
+    GIFT_ANONYMOUS,
+    GIFT_ANONYMOUS_KEY,
+    GIFT_NAMED,
+    applies_discount,
+    gift_anonymous,
+    giftable_plans,
+    is_gift,
+)
+
 
 async def on_subscription_start(start_data: Any, manager: DialogManager) -> None:
     if not start_data or "trial_plan" not in start_data:
@@ -57,9 +67,12 @@ class CachedPaymentData(TypedDict):
 
 
 def _get_cache_key(
-    duration: int, gateway_type: PaymentGatewayType, purchase_type: PurchaseType
+    duration: int, gateway_type: PaymentGatewayType, dialog_manager: DialogManager
 ) -> str:
-    return f"{purchase_type}:{duration}:{gateway_type.value}"
+    purchase_type: PurchaseType = dialog_manager.dialog_data["purchase_type"]
+    # A named and an anonymous gift are different payments.
+    privacy = ":anonymous" if gift_anonymous(dialog_manager) else ""
+    return f"{purchase_type}{privacy}:{duration}:{gateway_type.value}"
 
 
 def _load_payment_data(dialog_manager: DialogManager) -> dict[str, CachedPaymentData]:
@@ -96,8 +109,15 @@ async def _create_payment_and_get_data(
 
     transaction_plan = PlanSnapshotDto.from_plan(plan, duration.days)
     pricing = pricing_service.calculate_for_duration(
-        user, duration, payment_gateway.currency, apply_discount=not plan.is_trial
+        user,
+        duration,
+        payment_gateway.currency,
+        apply_discount=applies_discount(dialog_manager, plan),
     )
+    if is_gift(dialog_manager) and pricing.is_free:
+        logger.warning(f"{user.log} Tried to buy a free plan '{plan.id}' as a gift")
+        await notifier.notify_user(user, i18n_key="ntf-gift.free-plan")
+        return None
 
     try:
         result = await create_payment(
@@ -107,6 +127,7 @@ async def _create_payment_and_get_data(
                 pricing=pricing,
                 purchase_type=purchase_type,
                 gateway_type=gateway_type,
+                gift_anonymous=gift_anonymous(dialog_manager),
             ),
         )
 
@@ -228,7 +249,13 @@ async def on_subscription_plans(  # noqa: C901
     if not callback.data:
         raise ValueError("Callback data is empty")
 
-    purchase_type = PurchaseType(callback.data.removeprefix(PAYMENT_PREFIX))
+    action = callback.data.removeprefix(PAYMENT_PREFIX)
+    if action in (GIFT_NAMED, GIFT_ANONYMOUS):
+        purchase_type = PurchaseType.GIFT
+        dialog_manager.dialog_data[GIFT_ANONYMOUS_KEY] = action == GIFT_ANONYMOUS
+    else:
+        purchase_type = PurchaseType(action)
+        dialog_manager.dialog_data.pop(GIFT_ANONYMOUS_KEY, None)
     dialog_manager.dialog_data["purchase_type"] = purchase_type
 
     current_subscription: Optional[SubscriptionDto] = None
@@ -236,6 +263,8 @@ async def on_subscription_plans(  # noqa: C901
         renewal_context = await get_renewal_plan_context.system(user)
         plans = renewal_context.renewal_plans
         current_subscription = renewal_context.current_subscription
+    elif purchase_type == PurchaseType.GIFT:
+        plans = giftable_plans(await get_available_plans.system(user))
     else:
         plans = await get_available_plans.system(user)
 
@@ -296,9 +325,9 @@ async def on_subscription_plans(  # noqa: C901
                     create_payment=create_payment,
                 )
 
-                if payment_data:
-                    _save_payment_data(dialog_manager, payment_data)
-
+                if not payment_data:
+                    return
+                _save_payment_data(dialog_manager, payment_data)
                 await dialog_manager.switch_to(state=Subscription.CONFIRM)
                 return
 
@@ -385,7 +414,12 @@ async def on_duration_select(
         user,
         price=duration.get_price(currency),
         currency=currency,
+        apply_discount=applies_discount(dialog_manager, plan),
     )
+    if is_gift(dialog_manager) and price.is_free:
+        logger.warning(f"{user.log} Tried to buy a free duration as a gift")
+        await notifier.notify_user(user, i18n_key="ntf-gift.free-plan")
+        return
     dialog_manager.dialog_data["is_free"] = price.is_free
 
     if len(gateways) == 1 or price.is_free:
@@ -401,9 +435,8 @@ async def on_duration_select(
         selected_payment_method = gateways[0].type
         dialog_manager.dialog_data[CURRENT_METHOD_KEY] = selected_payment_method
 
-        purchase_type: PurchaseType = dialog_manager.dialog_data["purchase_type"]
         cache = _load_payment_data(dialog_manager)
-        cache_key = _get_cache_key(selected_duration, selected_payment_method, purchase_type)
+        cache_key = _get_cache_key(selected_duration, selected_payment_method, dialog_manager)
 
         if cache_key in cache:
             logger.info(f"{user.log} Re-selected same duration and single gateway")
@@ -464,9 +497,8 @@ async def on_payment_method_select(
 
     selected_duration = dialog_manager.dialog_data[CURRENT_DURATION_KEY]
     dialog_manager.dialog_data[CURRENT_METHOD_KEY] = selected_payment_method
-    purchase_type: PurchaseType = dialog_manager.dialog_data["purchase_type"]
     cache = _load_payment_data(dialog_manager)
-    cache_key = _get_cache_key(selected_duration, selected_payment_method, purchase_type)
+    cache_key = _get_cache_key(selected_duration, selected_payment_method, dialog_manager)
 
     if cache_key in cache:
         logger.info(f"{user.log} Re-selected same method and duration")
@@ -497,10 +529,10 @@ async def on_payment_method_select(
         create_payment=create_payment,
     )
 
-    if payment_data:
-        cache[cache_key] = payment_data
-        _save_payment_data(dialog_manager, payment_data)
-
+    if not payment_data:
+        return
+    cache[cache_key] = payment_data
+    _save_payment_data(dialog_manager, payment_data)
     await dialog_manager.switch_to(state=Subscription.CONFIRM)
 
 

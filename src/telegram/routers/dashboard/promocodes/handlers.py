@@ -25,7 +25,7 @@ from src.application.use_cases.user.queries.plans import GetAvailablePlans
 from src.core.constants import TIMEZONE, USER_KEY
 from src.core.enums import PromocodeAvailability, PromocodeRewardType
 from src.core.utils.time import datetime_now
-from src.telegram.states import DashboardPromocodes
+from src.telegram.states import DashboardGifts, DashboardPromocodes
 from src.telegram.utils import is_double_click
 
 PROMO_PLAN_ID_KEY = "promo_plan_id"
@@ -66,6 +66,34 @@ def _load(dialog_manager: DialogManager, retort: Retort) -> PromocodeDto:
 
 def _save(dialog_manager: DialogManager, retort: Retort, promo: PromocodeDto) -> None:
     dialog_manager.dialog_data[_PROMO_KEY] = retort.dump(promo)
+
+
+# Start data from the gift dashboard: edit this code, then return to the gifts.
+EDIT_PROMO_KEY = "edit_promo"
+RETURN_TO_GIFTS_KEY = "return_to_gifts"
+
+
+async def on_promocodes_start(start_data: object, dialog_manager: DialogManager) -> None:
+    if not isinstance(start_data, dict) or EDIT_PROMO_KEY not in start_data:
+        return
+    dialog_manager.dialog_data[_PROMO_KEY] = start_data[EDIT_PROMO_KEY]
+    dialog_manager.dialog_data["is_edit"] = True
+    dialog_manager.dialog_data[RETURN_TO_GIFTS_KEY] = bool(start_data.get(RETURN_TO_GIFTS_KEY))
+
+
+async def _return_to_list(dialog_manager: DialogManager) -> None:
+    if dialog_manager.dialog_data.get(RETURN_TO_GIFTS_KEY):
+        await dialog_manager.start(state=DashboardGifts.MAIN, mode=StartMode.RESET_STACK)
+        return
+    await dialog_manager.start(state=DashboardPromocodes.MAIN, mode=StartMode.RESET_STACK)
+
+
+async def on_configurator_back(
+    callback: CallbackQuery,
+    widget: Button,
+    dialog_manager: DialogManager,
+) -> None:
+    await _return_to_list(dialog_manager)
 
 
 @inject
@@ -153,7 +181,7 @@ async def on_promo_confirm(
         logger.info(f"{user.log} Updated promocode id='{promo.id}'")
         await notifier.notify_user(user, i18n_key="ntf-promocode.updated")
 
-    await dialog_manager.start(state=DashboardPromocodes.MAIN, mode=StartMode.RESET_STACK)
+    await _return_to_list(dialog_manager)
 
 
 @inject
@@ -196,7 +224,7 @@ async def on_delete_promo(
         await delete_promocode(user, promo.id)
         dialog_manager.dialog_data.pop(_PROMO_KEY, None)
         await notifier.notify_user(user, i18n_key="ntf-promocode.deleted")
-        await dialog_manager.start(state=DashboardPromocodes.MAIN, mode=StartMode.RESET_STACK)
+        await _return_to_list(dialog_manager)
         return
 
     await notifier.notify_user(user, i18n_key="ntf-common.double-click-confirm")

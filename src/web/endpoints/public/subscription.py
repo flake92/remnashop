@@ -19,6 +19,7 @@ from src.application.common.dao import (
     SettingsDao,
     SubscriptionDao,
     TransactionDao,
+    UserDao,
 )
 from src.application.common.dao.payment_operation import PaymentOperationOwnerMergedError
 from src.application.dto import PlanDto, PlanSnapshotDto, TransactionDto, UserDto
@@ -55,7 +56,12 @@ from src.application.use_cases.promocode.commands.activate import (
     ActivatePromocode,
     ActivatePromocodeDto,
 )
-from src.application.use_cases.promocode.commands.gift import GetUserGifts, GetUserGiftsDto
+from src.application.use_cases.promocode.commands.gift import (
+    GetReceivedGifts,
+    GetUserGifts,
+    GetUserGiftsDto,
+    load_gift_giver_name,
+)
 from src.application.use_cases.remnawave.commands.management import (
     DeleteUserAllDevices,
     DeleteUserDevice,
@@ -102,6 +108,7 @@ from src.web.schemas import (
     PromocodeActivateRequest,
     PromocodeActivateResponse,
     PurchaseRequest,
+    ReceivedGiftResponse,
     ReissueResponse,
     SubscriptionCapabilitiesResponse,
     SubscriptionInfoResponse,
@@ -637,6 +644,7 @@ async def activate_promocode_web(
     body: PromocodeActivateRequest,
     user: CurrentUser,
     activate_promocode: FromDishka[ActivatePromocode],
+    user_dao: FromDishka[UserDao],
 ) -> PromocodeActivateResponse:
     _assert_web_purchase_email_verified(user)
     try:
@@ -649,7 +657,12 @@ async def activate_promocode_web(
         PromocodeNotAvailableError,
     ) as e:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e)) from e
-    return PromocodeActivateResponse(success=True, reward_type=promo.reward_type.value)
+    return PromocodeActivateResponse(
+        success=True,
+        reward_type=promo.reward_type.value,
+        is_gift=promo.is_gift,
+        gifted_by=await load_gift_giver_name(user_dao, promo) if promo.is_gift else None,
+    )
 
 
 @router.post("/trial", response_model=TrialActivateResponse)
@@ -977,6 +990,7 @@ async def purchase_gift(
                 pricing=pricing,
                 purchase_type=PurchaseType.GIFT,
                 gateway_type=body.gateway_type,
+                gift_anonymous=body.anonymous,
                 provider_idempotency_key=(
                     payment_operation.provider_key if payment_operation is not None else None
                 ),
@@ -1012,9 +1026,13 @@ async def purchase_gift(
 async def get_my_gifts(
     user: CurrentUser,
     get_user_gifts: FromDishka[GetUserGifts],
+    get_received_gifts: FromDishka[GetReceivedGifts],
     retort: FromDishka[Retort],
 ) -> GiftsResponse:
-    """Gift codes the current user has bought, newest first."""
+    """Gift codes the user has bought and the ones they have activated, newest first.
+
+    The buyer learns only whether a code was activated, never by whom.
+    """
     now = datetime_now()
     gifts: list[GiftResponse] = []
     for gift in await get_user_gifts.system(GetUserGiftsDto(user=user)):
@@ -1037,9 +1055,25 @@ async def get_my_gifts(
                 created_at=gift.created_at,
                 expires_at=gift.expires_at,
                 activated_at=gift.activated_at,
+                anonymous=gift.gift_anonymous,
             )
         )
-    return GiftsResponse(gifts=gifts)
+    received: list[ReceivedGiftResponse] = []
+    for gift in await get_received_gifts.system(GetUserGiftsDto(user=user)):
+        plan = retort.load(gift.plan_snapshot, PlanSnapshotDto)
+        received.append(
+            ReceivedGiftResponse(
+                code=gift.code,
+                plan_name=plan.name,
+                duration_days=plan.duration,
+                traffic_limit=plan.traffic_limit,
+                device_limit=plan.device_limit,
+                activated_at=gift.activated_at,
+                gifted_by=gift.gifted_by,
+                anonymous=gift.gift_anonymous,
+            )
+        )
+    return GiftsResponse(gifts=gifts, received=received)
 
 
 @router.post("/extend", response_model=PaymentInitResponse)

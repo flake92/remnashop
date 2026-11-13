@@ -22,6 +22,7 @@ from .getters import (
     subscription_getter,
     success_payment_getter,
 )
+from .gift_flow import GIFT_ANONYMOUS, GIFT_NAMED
 from .handlers import (
     on_duration_select,
     on_get_subscription,
@@ -62,10 +63,42 @@ subscription = Window(
             on_click=lambda c, w, m: m.switch_to(Subscription.PROMOCODE),
         ),
     ),
+    Row(
+        SwitchTo(
+            text=I18nFormat("btn-subscription.gift"),
+            id="goto_gift",
+            state=Subscription.GIFT,
+        ),
+    ),
     *back_main_menu_button,
     IgnoreUpdate(),
     state=Subscription.MAIN,
     getter=subscription_getter,
+)
+
+gift = Window(
+    Banner(BannerName.SUBSCRIPTION),
+    I18nFormat("msg-subscription-gift"),
+    Row(
+        Button(
+            text=I18nFormat("btn-subscription.gift-named"),
+            id=f"{PAYMENT_PREFIX}{GIFT_NAMED}",
+            on_click=on_subscription_plans,
+        ),
+        Button(
+            text=I18nFormat("btn-subscription.gift-anonymous"),
+            id=f"{PAYMENT_PREFIX}{GIFT_ANONYMOUS}",
+            on_click=on_subscription_plans,
+        ),
+    ),
+    SwitchTo(
+        text=I18nFormat("btn-back.general"),
+        id="back_from_gift",
+        state=Subscription.MAIN,
+    ),
+    *back_main_menu_button,
+    IgnoreUpdate(),
+    state=Subscription.GIFT,
 )
 
 plan = Window(
@@ -297,6 +330,7 @@ promocode_window = Window(
 
 router = Dialog(
     subscription,
+    gift,
     promocode_window,
     plan,
     plans,

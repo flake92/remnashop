@@ -24,6 +24,7 @@ from src.core.utils.i18n_helpers import (
     i18n_format_expire_time,
     i18n_format_traffic_limit,
 )
+from src.telegram.routers.subscription.gift_flow import applies_discount, gift_getter_data
 
 
 def _get_gateway_title(i18n: TranslatorRunner, gateway: PaymentGatewayDto) -> str:
@@ -150,9 +151,12 @@ async def duration_getter(
     dialog_manager.dialog_data["is_free"] = False
     durations = []
 
+    discounted = applies_discount(dialog_manager, plan)
     for duration in plan.durations:
         key, kw = i18n_format_days(duration.days)
-        price = pricing_service.calculate(user, duration.get_price(currency), currency)
+        price = pricing_service.calculate(
+            user, duration.get_price(currency), currency, apply_discount=discounted
+        )
         durations.append(
             {
                 "days": duration.days,
@@ -177,9 +181,12 @@ async def duration_getter(
         "final_amount": 0,
         "currency": "",
         "only_single_plan": only_single_plan,
-        "discount_percent": pricing_service.get_effective_discount(user),
-        "is_personal_discount": pricing_service.is_largest_discount_personal(user),
+        "discount_percent": pricing_service.get_effective_discount(user) if discounted else 0,
+        "is_personal_discount": (
+            pricing_service.is_largest_discount_personal(user) if discounted else False
+        ),
         "plan_is_modified": plan_is_modified,
+        **gift_getter_data(dialog_manager),
     }
 
 
@@ -207,11 +214,12 @@ async def payment_method_getter(
     if not duration:
         raise ValueError(f"Duration '{selected_duration}' not found in plan '{plan.name}'")
 
+    discounted = applies_discount(dialog_manager, plan)
     payment_methods = []
     for gateway in gateways:
         raw_price = duration.get_price(gateway.currency)
         price = pricing_service.calculate(
-            user, raw_price, gateway.currency, apply_discount=not plan.is_trial
+            user, raw_price, gateway.currency, apply_discount=discounted
         )
         payment_methods.append(
             {
@@ -239,11 +247,12 @@ async def payment_method_getter(
         "final_amount": 0,
         "currency": "",
         "only_single_duration": only_single_duration,
-        "discount_percent": 0 if plan.is_trial else pricing_service.get_effective_discount(user),
+        "discount_percent": pricing_service.get_effective_discount(user) if discounted else 0,
         "is_personal_discount": (
-            False if plan.is_trial else pricing_service.is_largest_discount_personal(user)
+            pricing_service.is_largest_discount_personal(user) if discounted else False
         ),
         "plan_is_modified": plan_is_modified,
+        **gift_getter_data(dialog_manager),
     }
 
 
@@ -288,6 +297,7 @@ async def confirm_getter(
     plan_is_modified = 1 if dialog_manager.dialog_data.get("plan_is_modified", False) else 0
 
     return {
+        **gift_getter_data(dialog_manager),
         "purchase_type": purchase_type,
         "plan": i18n.get_or_raw(plan.name),
         "description": i18n.get_or_raw(plan.description) if plan.description else False,

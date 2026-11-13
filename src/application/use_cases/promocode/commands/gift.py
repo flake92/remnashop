@@ -1,15 +1,15 @@
 import secrets
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Final
+from typing import Final, Optional
 
 from adaptix import Retort
 from loguru import logger
 
 from src.application.common import Interactor
-from src.application.common.dao import PromocodeDao
+from src.application.common.dao import PromocodeDao, UserDao
 from src.application.common.uow import UnitOfWork
-from src.application.dto import GiftDto, PromocodeDto, TransactionDto, UserDto
+from src.application.dto import GiftDto, PromocodeDto, TransactionDto, UserDto, gift_party_name
 from src.core.enums import PromocodeAvailability, PromocodeRewardType, PurchaseType
 from src.core.utils.time import datetime_now
 
@@ -80,6 +80,7 @@ class IssueGift(Interactor[IssueGiftDto, PromocodeDto]):
                             is_reusable=False,
                             gift_payment_id=transaction.payment_id,
                             gift_buyer_id=data.buyer.id,
+                            gift_anonymous=transaction.gift_anonymous,
                         )
                     )
                     await self.uow.commit()
@@ -115,3 +116,30 @@ class GetUserGifts(Interactor[GetUserGiftsDto, list[GiftDto]]):
 
     async def _execute(self, actor: UserDto, data: GetUserGiftsDto) -> list[GiftDto]:
         return await self.promocode_dao.get_gifts_by_buyer(data.user.id, limit=data.limit)
+
+
+class GetReceivedGifts(Interactor[GetUserGiftsDto, list[GiftDto]]):
+    """Gift codes the user has activated, with the buyer's display name."""
+
+    required_permission = None
+
+    def __init__(self, promocode_dao: PromocodeDao) -> None:
+        self.promocode_dao = promocode_dao
+
+    async def _execute(self, actor: UserDto, data: GetUserGiftsDto) -> list[GiftDto]:
+        return await self.promocode_dao.get_gifts_received(data.user.id, limit=data.limit)
+
+
+async def load_gift_giver_name(user_dao: UserDao, promo: PromocodeDto) -> Optional[str]:
+    """Display name of the person who bought ``promo``, for its recipient.
+
+    None for an anonymous gift: the buyer chose not to be named.
+    """
+    if not promo.is_gift or promo.gift_anonymous or promo.gift_buyer_id is None:
+        return None
+    try:
+        buyer = await user_dao.get_by_id(promo.gift_buyer_id)
+    except Exception:
+        logger.exception(f"Could not load the buyer of gift code id='{promo.id}'")
+        return None
+    return gift_party_name(buyer.name, buyer.username) if buyer else None

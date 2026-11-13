@@ -27,6 +27,7 @@ from .handlers import (
     on_availability_select,
     on_code_input,
     on_code_regenerate,
+    on_configurator_back,
     on_create_promo,
     on_delete_promo,
     on_expires_input,
@@ -40,6 +41,7 @@ from .handlers import (
     on_plan_select,
     on_promo_confirm,
     on_promo_select,
+    on_promocodes_start,
     on_reward_input,
     on_toggle_active,
     on_toggle_reusable,
@@ -194,11 +196,10 @@ configurator = Window(
         ),
     ),
     Row(
-        Start(
+        Button(
             text=I18nFormat("btn-back.general"),
             id="back_list",
-            state=DashboardPromocodes.MAIN,
-            mode=StartMode.RESET_STACK,
+            on_click=on_configurator_back,
         ),
     ),
     IgnoreUpdate(),
@@ -412,4 +413,5 @@ router = Dialog(
     availability_select,
     expires_input,
     max_activations_input,
+    on_start=on_promocodes_start,
 )

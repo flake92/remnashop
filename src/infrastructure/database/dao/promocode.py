@@ -15,11 +15,13 @@ from src.application.dto import (
     PromocodeDetailStatisticsDto,
     PromocodeDto,
     PromocodeStatisticsDto,
+    gift_party_name,
 )
 from src.core.enums import PromocodeRewardType
 from src.core.exceptions import PromocodeAlreadyActivatedError, PromocodeNotAvailableError
 from src.core.utils.time import datetime_now
 from src.infrastructure.database.models.promocode import Promocode, PromocodeActivation
+from src.infrastructure.database.models.user import User
 
 
 class PromocodeDaoImpl(PromocodeDao):
@@ -44,6 +46,7 @@ class PromocodeDaoImpl(PromocodeDao):
             is_reusable=promocode.is_reusable,
             gift_payment_id=promocode.gift_payment_id,
             gift_buyer_id=promocode.gift_buyer_id,
+            gift_anonymous=promocode.gift_anonymous,
         )
         self.session.add(db)
         try:
@@ -96,6 +99,7 @@ class PromocodeDaoImpl(PromocodeDao):
 
     async def get_gifts_by_buyer(self, buyer_id: int, limit: int = 100) -> list[GiftDto]:
         # A gift code is single-use, so its first activation is the redemption.
+        # The buyer sees THAT the code was used, never by whom.
         activated_at = (
             select(func.min(PromocodeActivation.activated_at))
             .where(PromocodeActivation.promocode_id == Promocode.id)
@@ -122,6 +126,62 @@ class PromocodeDaoImpl(PromocodeDao):
                 activated_at=redeemed_at,
             )
             for promo, redeemed_at in rows
+            if promo.gift_payment_id is not None
+        ]
+
+    async def get_gift_list(self, limit: int = 20, offset: int = 0) -> list[PromocodeDto]:
+        # Newest purchase first: a gift code is created when its payment succeeds.
+        stmt = (
+            select(Promocode)
+            .where(Promocode.gift_payment_id.is_not(None))
+            .order_by(Promocode.created_at.desc(), Promocode.id.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        return self._to_dto_list(list(await self.session.scalars(stmt)))
+
+    async def get_gift_count(self) -> int:
+        stmt = (
+            select(func.count())
+            .select_from(Promocode)
+            .where(Promocode.gift_payment_id.is_not(None))
+        )
+        return int(await self.session.scalar(stmt) or 0)
+
+    async def get_activations(self, promocode_id: int) -> list[PromocodeActivationDto]:
+        stmt = (
+            select(PromocodeActivation)
+            .where(PromocodeActivation.promocode_id == promocode_id)
+            .order_by(PromocodeActivation.activated_at, PromocodeActivation.id)
+        )
+        rows = await self.session.scalars(stmt)
+        return [self._act_to_dto(row) for row in rows]
+
+    async def get_gifts_received(self, user_id: int, limit: int = 100) -> list[GiftDto]:
+        stmt = (
+            select(Promocode, PromocodeActivation.activated_at, User.name, User.username)
+            .join(PromocodeActivation, PromocodeActivation.promocode_id == Promocode.id)
+            .outerjoin(User, User.id == Promocode.gift_buyer_id)
+            .where(
+                PromocodeActivation.user_id == user_id,
+                Promocode.gift_payment_id.is_not(None),
+            )
+            .order_by(PromocodeActivation.activated_at.desc(), Promocode.id.desc())
+            .limit(limit)
+        )
+        rows = (await self.session.execute(stmt)).all()
+        return [
+            GiftDto(
+                code=promo.code,
+                payment_id=promo.gift_payment_id,
+                plan_snapshot=promo.plan_snapshot or {},
+                created_at=promo.created_at,
+                expires_at=promo.expires_at,
+                activated_at=redeemed_at,
+                gifted_by=None if promo.gift_anonymous else gift_party_name(name, username),
+                gift_anonymous=promo.gift_anonymous,
+            )
+            for promo, redeemed_at, name, username in rows
             if promo.gift_payment_id is not None
         ]
 

@@ -51,6 +51,9 @@ class PromocodeActivateRequest(BaseModel):
 class PromocodeActivateResponse(BaseModel):
     success: bool
     reward_type: str
+    is_gift: bool = False
+    # Display name of the gift's buyer; never an id or an e-mail.
+    gifted_by: Optional[str] = None
 
 
 class TrialPurchaseRequest(BaseModel):
@@ -76,6 +79,8 @@ class GiftPurchaseRequest(BaseModel):
     # Gifts share the PURCHASE idempotency namespace; this constant field keeps
     # a gift and an ordinary purchase of the same offer from hashing alike.
     gift: Literal[True] = True
+    # Hide the buyer's name from the recipient.
+    anonymous: bool = False
     plan_code: str = Field(min_length=3, max_length=64)
     duration_days: int = Field(ge=0)
     gateway_type: PaymentGatewayType
@@ -93,10 +98,24 @@ class GiftResponse(BaseModel):
     created_at: Optional[datetime] = None
     expires_at: Optional[datetime] = None
     activated_at: Optional[datetime] = None
+    anonymous: bool = False
+
+
+class ReceivedGiftResponse(BaseModel):
+    code: str
+    plan_name: str
+    duration_days: int
+    traffic_limit: int
+    device_limit: int
+    activated_at: Optional[datetime] = None
+    # Display name of the buyer; None for an anonymous gift or a deleted buyer.
+    gifted_by: Optional[str] = None
+    anonymous: bool = False
 
 
 class GiftsResponse(BaseModel):
     gifts: list[GiftResponse]
+    received: list[ReceivedGiftResponse] = Field(default_factory=list)
 
 
 class ExtendRequest(BaseModel):
