@@ -103,6 +103,10 @@ class ReferralDao(Protocol):
         error_code: str,
     ) -> bool: ...
 
+    async def wake_rewards_waiting_for_subscription(self, user_id: int) -> int:
+        """Make the recipient's rewards that wait for a paid subscription due now."""
+        ...
+
     async def mark_reward_manual_required(
         self,
         reward_id: int,
