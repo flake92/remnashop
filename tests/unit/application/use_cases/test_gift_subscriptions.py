@@ -210,7 +210,7 @@ def subscription(*, expire_at: datetime, is_trial: bool = False) -> Any:
         internal_squads=[],
         external_squad=None,
         url="https://sub.example.com/old",
-        plan_snapshot=None,
+        plan_snapshot=plan(),
     )
 
 
@@ -234,6 +234,7 @@ def activate_use_case(
         SimpleNamespace(publish=AsyncMock()),  # type: ignore[arg-type]
         SimpleNamespace(load=lambda data, _type: plan(data["duration"])),  # type: ignore[arg-type]
         FakeMutationLock(),  # type: ignore[arg-type]
+        SimpleNamespace(get_by_id=AsyncMock(return_value=None)),  # type: ignore[arg-type]
     )
     return use_case, subscription_dao
 

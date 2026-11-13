@@ -7,6 +7,7 @@ from .commands.gift import GetReceivedGifts, GetUserGifts, IssueGift
 from .commands.manage import CreatePromocode, DeletePromocode, UpdatePromocode
 from .queries.generate import GeneratePromocodeCode
 from .queries.get import GetPromocode, GetPromocodeList
+from .queries.gift_outcome import PreviewGift
 from .queries.gifts import GetGiftDetails, GetGiftList
 from .queries.validate import ValidatePromocode
 
@@ -24,4 +25,5 @@ PROMOCODE_USE_CASES: Final[tuple[type[Interactor], ...]] = (
     GetReceivedGifts,
     GetGiftList,
     GetGiftDetails,
+    PreviewGift,
 )

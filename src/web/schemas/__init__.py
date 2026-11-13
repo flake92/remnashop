@@ -52,6 +52,7 @@ from .health import (
 from .plans import PublicPlanLandingListResponse, PublicPlanLandingResponse
 from .referral import ReferralProgramResponse, ReferralRewardLevelResponse
 from .subscription import (
+    ChangeQuoteResponse,
     DeviceDeleteResponse,
     DeviceResponse,
     DevicesDeleteAllResponse,
@@ -60,6 +61,7 @@ from .subscription import (
     DurationOfferResponse,
     ExtendRequest,
     GatewayOfferResponse,
+    GiftOutcomeResponse,
     GiftPurchaseRequest,
     GiftResponse,
     GiftsResponse,
@@ -70,6 +72,7 @@ from .subscription import (
     PlanOfferResponse,
     PromocodeActivateRequest,
     PromocodeActivateResponse,
+    PromocodePreviewResponse,
     PurchaseRequest,
     ReceivedGiftResponse,
     ReissueResponse,
@@ -153,7 +156,10 @@ __all__ = [
     "PromocodeActivateResponse",
     "PurchaseRequest",
     "GiftPurchaseRequest",
+    "ChangeQuoteResponse",
+    "GiftOutcomeResponse",
     "GiftResponse",
+    "PromocodePreviewResponse",
     "ReceivedGiftResponse",
     "GiftsResponse",
     "ReissueResponse",

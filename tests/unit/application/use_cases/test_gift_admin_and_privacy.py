@@ -327,8 +327,9 @@ def test_new_gift_messages_render_in_russian() -> None:
     assert "Активация подарка" in activated
     assert "Alice" in activated and str(PAYMENT_ID) in activated
 
-    activated_message = str(translator.get("ntf-promocode.gift-activated"))
+    activated_message = str(translator.get("ntf-promocode.gift-activated", expire="01.12.2026"))
     assert "Подарок активирован" in activated_message and "Alice" not in activated_message
+    assert "01.12.2026" in activated_message
     purchased = str(
         translator.get("ntf-gift.purchased", code="GIFT-X", plan_name="Basic", duration="30 дней")
     )

@@ -6,13 +6,14 @@ from adaptix import Retort
 from loguru import logger
 
 from src.application.common import EventPublisher, Interactor, SubscriptionMutationLock
-from src.application.common.dao import PromocodeDao, SubscriptionDao, UserDao
+from src.application.common.dao import PlanDao, PromocodeDao, SubscriptionDao, UserDao
 from src.application.common.policy import Permission
 from src.application.common.remnawave import Remnawave
 from src.application.common.uow import UnitOfWork
 from src.application.dto import PlanSnapshotDto, PromocodeDto, SubscriptionDto, UserDto
 from src.application.dto.promocode import PromocodeActivationDto
 from src.application.events.system import PromocodeActivatedEvent
+from src.application.use_cases.promocode.queries.gift_outcome import resolve_gift_outcome
 from src.application.use_cases.promocode.queries.validate import (
     ValidatePromocode,
     ValidatePromocodeDto,
@@ -50,6 +51,7 @@ class ActivatePromocode(Interactor[ActivatePromocodeDto, PromocodeDto]):
         event_publisher: EventPublisher,
         retort: Retort,
         subscription_mutation_lock: SubscriptionMutationLock,
+        plan_dao: PlanDao,
     ) -> None:
         self.uow = uow
         self.promocode_dao = promocode_dao
@@ -60,6 +62,7 @@ class ActivatePromocode(Interactor[ActivatePromocodeDto, PromocodeDto]):
         self.event_publisher = event_publisher
         self.retort = retort
         self.subscription_mutation_lock = subscription_mutation_lock
+        self.plan_dao = plan_dao
 
     async def _execute(self, actor: UserDto, data: ActivatePromocodeDto) -> PromocodeDto:
         async with self.subscription_mutation_lock.hold(data.user.id):
@@ -191,20 +194,12 @@ class ActivatePromocode(Interactor[ActivatePromocodeDto, PromocodeDto]):
             # No subscription yet: the gift creates one, exactly like a SUBSCRIPTION code.
             return await self._apply_subscription(actor, user, promo, None)
 
-        # An existing subscription is extended by the gifted term, never shortened:
-        # the remaining paid time is kept, a trial or lapsed one starts from now.
-        # The subscription takes the gifted plan's limits.
-        if plan.duration == 0:
-            new_expire = days_to_datetime(0)
-        else:
-            keeps_remaining = (
-                not subscription.is_trial
-                and subscription.grace_until is None
-                and subscription.is_active
-            )
-            now = datetime_now()
-            base = max(subscription.expire_at, now) if keeps_remaining else now
-            new_expire = base + timedelta(days=plan.duration)
+        # The same rules as the confirmation the recipient saw: remaining paid time
+        # on another plan is converted at the price per day, never just dropped.
+        outcome = await resolve_gift_outcome(
+            promo=promo, subscription=subscription, plan_dao=self.plan_dao, retort=self.retort
+        )
+        new_expire = outcome.expire_at
 
         subscription.expire_at = new_expire
         subscription.is_trial = False
@@ -225,7 +220,10 @@ class ActivatePromocode(Interactor[ActivatePromocodeDto, PromocodeDto]):
         )
         subscription.url = updated.subscription_url
         subscription.plan_snapshot = plan
-        logger.info(f"{actor.log} Gift extended subscription until {new_expire.isoformat()}")
+        logger.info(
+            f"{actor.log} Gift {outcome.kind} subscription until {new_expire.isoformat()} "
+            f"(credit {outcome.credit_days} days)"
+        )
         return _PendingReward(subscription_update=subscription)
 
     async def _apply_reward_remote(

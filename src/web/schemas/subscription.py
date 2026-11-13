@@ -48,6 +48,41 @@ class PromocodeActivateRequest(BaseModel):
     code: str
 
 
+class GiftOutcomeResponse(BaseModel):
+    """What a gift code will do to the current subscription (see gift_outcome)."""
+
+    # NEW, RESTART, EXTEND, CONVERT, KEEP_DAYS or UNLIMITED (GiftOutcomeKind).
+    kind: str
+    plan_name: str
+    gift_days: int
+    # None for an unlimited result.
+    expire_at: Optional[datetime] = None
+    current_plan_name: Optional[str] = None
+    remaining_days: int = 0
+    credit_days: int = 0
+
+
+class PromocodePreviewResponse(BaseModel):
+    reward_type: str
+    reward: Optional[int] = None
+    is_gift: bool = False
+    gift: Optional[GiftOutcomeResponse] = None
+
+
+class ChangeQuoteResponse(BaseModel):
+    """What switching to a plan does to the remaining paid time.
+
+    NEW: no current subscription. OFF: the credit switch is off, the term starts
+    at payment. NONE: nothing left to credit. CREDIT: remaining days converted.
+    """
+
+    mode: Literal["NEW", "OFF", "NONE", "CREDIT"]
+    left_days: int = 0
+    credit_days: int = 0
+    # None for an unlimited duration.
+    expire_at: Optional[datetime] = None
+
+
 class PromocodeActivateResponse(BaseModel):
     success: bool
     reward_type: str
