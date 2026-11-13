@@ -527,7 +527,6 @@ class UserPurchaseEvent(UserEvent):
     # Set for GIFT only: lets the operator match this purchase to the later
     # "promocode activated" event of the recipient.
     gift_code: Optional[str] = None
-    gift_anonymous: int = 0
 
     def as_payload(self) -> "MessagePayloadDto":
         return MessagePayloadDto(

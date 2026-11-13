@@ -357,10 +357,7 @@ event-subscription =
     { hdr-plan }
     { frg-plan-snapshot }
 
-    <b>🎁 Код подарка</b>: <code>{ $gift_code }</code> { $gift_anonymous ->
-        [1] (анонимный)
-        *[0] { empty }
-    }
+    <b>🎁 Код подарка</b>: <code>{ $gift_code }</code>
     <i>Когда получатель его активирует, придёт событие «Активация подарка» с этим кодом.</i>
 
     .expiring =

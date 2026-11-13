@@ -14,7 +14,6 @@ from src.application.dto import (
     PromocodeActivationDto,
     PromocodeDto,
     TransactionDto,
-    gift_party_name,
 )
 from src.application.events.system import PromocodeActivatedEvent, UserPurchaseEvent
 from src.application.use_cases.gateways.commands.payment import ProcessPayment
@@ -22,7 +21,6 @@ from src.application.use_cases.promocode.commands.activate import ActivatePromoc
 from src.application.use_cases.promocode.commands.gift import (
     IssueGift,
     IssueGiftDto,
-    load_gift_giver_name,
 )
 from src.application.use_cases.promocode.queries.gifts import (
     GetGiftDetails,
@@ -42,7 +40,6 @@ from src.infrastructure.services.i18n import LayeredFileStorage
 from src.telegram.routers.dashboard.gifts.getters import gift_status
 from src.telegram.routers.subscription.gift_flow import (
     applies_discount,
-    gift_anonymous,
     giftable_plans,
     is_gift,
 )
@@ -69,13 +66,12 @@ def plan(*, is_trial: bool = False) -> PlanSnapshotDto:
     )
 
 
-def gift_transaction(*, anonymous: bool) -> TransactionDto:
+def gift_transaction() -> TransactionDto:
     return TransactionDto(
         payment_id=PAYMENT_ID,
         user_id=7,
         status=TransactionStatus.COMPLETED,
         purchase_type=PurchaseType.GIFT,
-        gift_anonymous=anonymous,
         gateway_type=PaymentGatewayType.YOOKASSA,
         pricing=PriceDetailsDto(
             original_amount=Decimal("300"),
@@ -87,7 +83,7 @@ def gift_transaction(*, anonymous: bool) -> TransactionDto:
     )
 
 
-def gift_promo(*, anonymous: bool = False) -> PromocodeDto:
+def gift_promo() -> PromocodeDto:
     return PromocodeDto(
         id=5,
         code="GIFT-AAAA-BBBB-CCCC",
@@ -98,7 +94,6 @@ def gift_promo(*, anonymous: bool = False) -> PromocodeDto:
         max_activations=1,
         gift_payment_id=PAYMENT_ID,
         gift_buyer_id=7,
-        gift_anonymous=anonymous,
     )
 
 
@@ -120,32 +115,8 @@ def recipient() -> Any:
     )
 
 
-def test_party_name_shows_name_and_username_but_never_contact_details() -> None:
-    assert gift_party_name("Alice", "alice") == "Alice (@alice)"
-    assert gift_party_name("Alice", None) == "Alice"
-    assert gift_party_name("  ", "alice") == "@alice"
-    assert gift_party_name(None, None) is None
-
-
 @pytest.mark.asyncio
-async def test_recipient_sees_the_buyer_only_when_the_gift_is_not_anonymous() -> None:
-    user_dao = SimpleNamespace(get_by_id=AsyncMock(return_value=buyer()))
-
-    assert await load_gift_giver_name(user_dao, gift_promo()) == "Alice (@alice)"  # type: ignore[arg-type]
-    assert await load_gift_giver_name(user_dao, gift_promo(anonymous=True)) is None  # type: ignore[arg-type]
-    user_dao.get_by_id.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_giver_lookup_failure_never_breaks_the_redemption() -> None:
-    user_dao = SimpleNamespace(get_by_id=AsyncMock(side_effect=RuntimeError("db")))
-
-    assert await load_gift_giver_name(user_dao, gift_promo()) is None  # type: ignore[arg-type]
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("anonymous", [False, True])
-async def test_issued_code_keeps_the_buyer_privacy_choice(anonymous: bool) -> None:
+async def test_issued_code_never_carries_a_privacy_choice() -> None:
     created: list[PromocodeDto] = []
 
     async def create(promo: PromocodeDto) -> PromocodeDto:
@@ -166,15 +137,14 @@ async def test_issued_code_keeps_the_buyer_privacy_choice(anonymous: bool) -> No
     dao = SimpleNamespace(get_by_gift_payment_id=AsyncMock(return_value=None), create=create)
     issue = IssueGift(Uow(), dao, SimpleNamespace(dump=lambda snapshot: {"name": "Basic"}))  # type: ignore[arg-type]
 
-    await issue.system(
-        IssueGiftDto(buyer=buyer(), transaction=gift_transaction(anonymous=anonymous))
-    )
+    await issue.system(IssueGiftDto(buyer=buyer(), transaction=gift_transaction()))
 
-    assert created[0].gift_anonymous is anonymous
+    assert created[0].gift_anonymous is False
+    assert created[0].gift_buyer_id == 7
 
 
 @pytest.mark.asyncio
-async def test_operator_purchase_notice_carries_the_code_and_privacy() -> None:
+async def test_operator_purchase_notice_carries_the_code() -> None:
     events = SimpleNamespace(publish=AsyncMock())
     notifier = SimpleNamespace(notify_user=AsyncMock(), notify_system=AsyncMock())
     process = ProcessPayment(
@@ -188,16 +158,16 @@ async def test_operator_purchase_notice_carries_the_code_and_privacy() -> None:
         SimpleNamespace(to_success_payment=AsyncMock()),  # type: ignore[arg-type]
         SimpleNamespace(system=AsyncMock()),  # type: ignore[arg-type]
         SimpleNamespace(system=AsyncMock()),  # type: ignore[arg-type]
-        SimpleNamespace(system=AsyncMock(return_value=gift_promo(anonymous=True))),  # type: ignore[arg-type]
+        SimpleNamespace(system=AsyncMock(return_value=gift_promo())),  # type: ignore[arg-type]
     )
 
-    await process._handle_gift_success(buyer(), gift_transaction(anonymous=True))
+    await process._handle_gift_success(buyer(), gift_transaction())
 
     event = events.publish.await_args.args[0]
     assert isinstance(event, UserPurchaseEvent)
     assert event.as_payload().i18n_kwargs["gift_code"] == "GIFT-AAAA-BBBB-CCCC"
-    assert event.as_payload().i18n_kwargs["gift_anonymous"] == 1
-    assert notifier.notify_user.await_args.kwargs["payload"].i18n_kwargs["anonymous"] == 1
+    assert "gift_anonymous" not in event.as_payload().i18n_kwargs
+    assert "anonymous" not in notifier.notify_user.await_args.kwargs["payload"].i18n_kwargs
 
 
 @pytest.mark.asyncio
@@ -207,8 +177,8 @@ async def test_gift_activation_notice_names_the_buyer_and_the_payment() -> None:
     use_case.user_dao = SimpleNamespace(get_by_id=AsyncMock(return_value=buyer()))  # type: ignore[assignment]
     use_case.event_publisher = events  # type: ignore[assignment]
 
-    # Even an anonymous gift is fully visible to the operator.
-    await use_case._publish_activated(recipient(), gift_promo(anonymous=True))
+    # The recipient never learns the buyer, but the operator sees everything.
+    await use_case._publish_activated(recipient(), gift_promo())
 
     event = events.publish.await_args.args[0]
     assert isinstance(event, PromocodeActivatedEvent)
@@ -235,14 +205,15 @@ def test_ordinary_promocode_keeps_the_old_activation_notice() -> None:
     assert event.event_key == "event-promocode.activated"
 
 
-def test_anonymous_and_named_gifts_never_share_an_idempotency_hash() -> None:
+def test_old_clean_pay_anonymous_flag_is_accepted_and_ignored() -> None:
     fields = {"plan_code": "basic", "duration_days": 30, "gateway_type": "YOOKASSA"}
 
-    named = _payment_request_hash("PURCHASE", GiftPurchaseRequest(**fields))
-    anonymous = _payment_request_hash("PURCHASE", GiftPurchaseRequest(**fields, anonymous=True))
+    # Clean Pay 0.6.1 may still send it; the request must keep validating.
+    request = GiftPurchaseRequest(**fields, anonymous=True)
 
-    assert named != anonymous
+    assert request.anonymous is True
     assert GiftPurchaseRequest(**fields).anonymous is False
+    assert _payment_request_hash("PURCHASE", request)
 
 
 def _manager(**data: Any) -> Any:
@@ -250,13 +221,12 @@ def _manager(**data: Any) -> Any:
 
 
 def test_bot_gift_flow_charges_list_price_and_skips_trials() -> None:
-    gift = _manager(purchase_type=PurchaseType.GIFT, gift_anonymous=True)
-    purchase = _manager(purchase_type=PurchaseType.NEW, gift_anonymous=True)
+    gift = _manager(purchase_type=PurchaseType.GIFT)
+    purchase = _manager(purchase_type=PurchaseType.NEW)
     paid = SimpleNamespace(is_trial=False)
     trial = SimpleNamespace(is_trial=True)
 
     assert is_gift(gift) and not is_gift(purchase)
-    assert gift_anonymous(gift) and not gift_anonymous(purchase)
     assert not applies_discount(gift, paid)  # type: ignore[arg-type]
     assert applies_discount(purchase, paid)  # type: ignore[arg-type]
     assert not applies_discount(purchase, trial)  # type: ignore[arg-type]
@@ -282,10 +252,10 @@ async def test_admin_gift_card_joins_buyer_payment_and_recipient() -> None:
     )
     users = {7: buyer(), 11: recipient()}
     dao = SimpleNamespace(
-        get_by_id=AsyncMock(return_value=gift_promo(anonymous=True)),
+        get_by_id=AsyncMock(return_value=gift_promo()),
         get_activations=AsyncMock(return_value=[activation]),
     )
-    transaction = gift_transaction(anonymous=True)
+    transaction = gift_transaction()
     details = await GetGiftDetails(
         dao,  # type: ignore[arg-type]
         SimpleNamespace(get_by_id=AsyncMock(side_effect=lambda user_id: users[user_id])),  # type: ignore[arg-type]
@@ -357,8 +327,12 @@ def test_new_gift_messages_render_in_russian() -> None:
     assert "Активация подарка" in activated
     assert "Alice" in activated and str(PAYMENT_ID) in activated
 
-    named = str(translator.get("ntf-promocode.gift-activated", gifted_by="Alice (@alice)"))
-    assert "от <b>Alice (@alice)</b>" in named
+    activated_message = str(translator.get("ntf-promocode.gift-activated"))
+    assert "Подарок активирован" in activated_message and "Alice" not in activated_message
+    purchased = str(
+        translator.get("ntf-gift.purchased", code="GIFT-X", plan_name="Basic", duration="30 дней")
+    )
+    assert "не увидит, от кого подарок" in purchased
 
     details = str(
         translator.get(
@@ -368,7 +342,6 @@ def test_new_gift_messages_render_in_russian() -> None:
             activated_at="01.11.2026 10:00",
             created_at="31.10.2026 09:00",
             expires_at="31.10.2027 09:00",
-            anonymous=1,
             plan_name="Basic",
             plan_duration="30 дней",
             plan_traffic="∞",
@@ -391,7 +364,6 @@ def test_new_gift_messages_render_in_russian() -> None:
             recipient_email="f@example.com",
         )
     )
-    assert "анонимно" in details
     assert "Alice" in details and "Friend" in details
 
     item = str(

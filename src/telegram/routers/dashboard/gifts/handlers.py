@@ -7,7 +7,7 @@ from dishka.integrations.aiogram_dialog import inject
 from loguru import logger
 
 from src.application.common import Notifier
-from src.application.use_cases.promocode.commands.manage import DeletePromocode, UpdatePromocode
+from src.application.use_cases.promocode.commands.manage import DeletePromocode
 from src.application.use_cases.promocode.queries.get import GetPromocode
 from src.core.constants import USER_KEY
 from src.telegram.routers.dashboard.promocodes.handlers import (
@@ -63,23 +63,6 @@ async def on_gift_edit(
         data={EDIT_PROMO_KEY: retort.dump(promo), RETURN_TO_GIFTS_KEY: True},
         mode=StartMode.RESET_STACK,
     )
-
-
-@inject
-async def on_gift_toggle_anonymous(
-    callback: CallbackQuery,
-    widget: Button,
-    dialog_manager: DialogManager,
-    get_promocode: FromDishka[GetPromocode],
-    update_promocode: FromDishka[UpdatePromocode],
-) -> None:
-    user = dialog_manager.middleware_data[USER_KEY]
-    promo = await get_promocode(user, int(dialog_manager.dialog_data[GIFT_ID_KEY]))
-    if promo is None or not promo.is_gift:
-        return
-    promo.gift_anonymous = not promo.gift_anonymous
-    await update_promocode(user, promo)
-    logger.info(f"{user.log} Set gift id='{promo.id}' anonymous={promo.gift_anonymous}")
 
 
 @inject

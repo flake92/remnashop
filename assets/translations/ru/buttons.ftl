@@ -596,8 +596,7 @@ btn-subscription =
     .change = 🔃 Изменить
     .promocode = 🎟 Активировать промокод
     .gift = 💝 Подарить подписку
-    .gift-named = 👤 От моего имени
-    .gift-anonymous = 🕶 Анонимно
+    .gift-choose = 📦 Выбрать тариф
     .promocode-confirm = ✅ Подтвердить
     .pay = 💳 Оплатить
     .get = 🎁 Получить бесплатно
@@ -646,8 +645,4 @@ btn-gifts =
     } { $code } · { $created_at }
     .copy-code = 📋 Скопировать код
     .edit = ✏️ Изменить код и параметры
-    .anonymous-toggle = { $anonymous ->
-        [1] 🕶 Анонимный → показать имя
-        *[0] 👤 С именем → сделать анонимным
-    }
     .delete = 🗑 Удалить

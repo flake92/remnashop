@@ -15,7 +15,6 @@ from .handlers import (
     on_gift_delete,
     on_gift_edit,
     on_gift_select,
-    on_gift_toggle_anonymous,
     on_page_next,
     on_page_prev,
 )
@@ -84,12 +83,6 @@ gift_detail = Window(
             text=I18nFormat("btn-gifts.edit"),
             id="gift_edit",
             on_click=on_gift_edit,
-            when=F["found"] & F["can_manage"],
-        ),
-        Button(
-            text=I18nFormat("btn-gifts.anonymous-toggle", anonymous=F["anonymous"]),
-            id="gift_anonymous",
-            on_click=on_gift_toggle_anonymous,
             when=F["found"] & F["can_manage"],
         ),
     ),
