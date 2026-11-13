@@ -20,13 +20,13 @@ from src.application.use_cases.subscription.change_credit import quote_change_cr
 from src.application.use_cases.user.queries.plans import GetAvailablePlans
 from src.core.config import AppConfig
 from src.core.enums import PurchaseType
-from src.core.utils.time import datetime_now
 from src.core.utils.i18n_helpers import (
     i18n_format_days,
     i18n_format_device_limit,
     i18n_format_expire_time,
     i18n_format_traffic_limit,
 )
+from src.core.utils.time import datetime_now
 from src.telegram.routers.subscription.gift_flow import applies_discount, gift_getter_data
 
 
@@ -44,7 +44,12 @@ async def _change_quote_data(
 
     Uses the same function as fulfillment, so the screen and the result always match.
     """
-    data: dict[str, Any] = {"change_mode": "OFF", "credit_days": 0, "left_days": 0, "new_expire": ""}
+    data: dict[str, Any] = {
+        "change_mode": "OFF",
+        "credit_days": 0,
+        "left_days": 0,
+        "new_expire": "",
+    }
     if purchase_type != PurchaseType.CHANGE:
         return data
     now = datetime_now()

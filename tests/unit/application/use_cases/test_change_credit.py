@@ -146,7 +146,9 @@ def make_purchase(subscription, plans, enabled=True):  # type: ignore[no-untyped
         expire_at=datetime(2027, 1, 1, tzinfo=timezone.utc),
         subscription_url="https://sub.example.com/x",
     )
-    remnawave = SimpleNamespace(create_user=AsyncMock(), update_user=AsyncMock(return_value=updated_user))
+    remnawave = SimpleNamespace(
+        create_user=AsyncMock(), update_user=AsyncMock(return_value=updated_user)
+    )
     purchase = PurchaseSubscription(
         uow=FakeUnitOfWork(),  # type: ignore[arg-type]
         user_dao=SimpleNamespace(update=AsyncMock()),  # type: ignore[arg-type]
@@ -157,7 +159,9 @@ def make_purchase(subscription, plans, enabled=True):  # type: ignore[no-untyped
         subscription_mutation_lock=FakeMutationLock(),  # type: ignore[arg-type]
         plan_dao=SimpleNamespace(get_by_id=AsyncMock(side_effect=lambda i: plans.get(i))),  # type: ignore[arg-type]
         settings_dao=SimpleNamespace(  # type: ignore[arg-type]
-            get=AsyncMock(return_value=SimpleNamespace(extra=SimpleNamespace(change_credit=enabled)))
+            get=AsyncMock(
+                return_value=SimpleNamespace(extra=SimpleNamespace(change_credit=enabled))
+            )
         ),
     )
     return purchase, remnawave
@@ -178,7 +182,7 @@ def snapshot(plan_id: int, duration: int, devices: int, trial: bool = False) -> 
 
 
 def subscription_with(old_plan: SimpleNamespace, expire_in_days: float, **kw):  # type: ignore[no-untyped-def]
-    base = dict(
+    base = dict(  # noqa: C408 - keyword overrides read best as a call
         id=1,
         is_trial=old_plan.is_trial,
         user_remna_id=UUID("00000000-0000-0000-0000-000000000001"),
@@ -232,7 +236,10 @@ async def test_trial_change_has_no_credit() -> None:
 
 @pytest.mark.asyncio
 async def test_grace_or_disabled_has_no_credit() -> None:
-    for kw in ({"grace_until": datetime.now(timezone.utc)}, {"status": SubscriptionStatus.DISABLED}):
+    for kw in (
+        {"grace_until": datetime.now(timezone.utc)},
+        {"status": SubscriptionStatus.DISABLED},
+    ):
         subscription = subscription_with(snapshot(1, 365, 1), 56.5, **kw)
         sent_plan, _ = await run_change(subscription)
         assert sent_plan.duration == 365
