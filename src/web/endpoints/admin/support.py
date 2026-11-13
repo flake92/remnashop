@@ -101,7 +101,7 @@ async def change_quote(
                 and current_plan_id == plan.id
                 and not (current and current.is_trial)
             )
-            if renew:
+            if renew and subscription is not None:
                 # same plan in the Telegram bot = renewal: days are simply added on top
                 base = max(subscription.expire_at, now) if subscription.grace_until is None else now
                 credit_days = 0
