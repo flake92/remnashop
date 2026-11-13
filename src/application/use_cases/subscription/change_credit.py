@@ -22,7 +22,7 @@ from datetime import datetime
 from decimal import ROUND_FLOOR, Decimal
 from typing import Optional, Sequence
 
-from src.core.enums import Currency
+from src.core.enums import Currency, SubscriptionStatus
 
 REFERENCE_CURRENCY = Currency.RUB
 SECONDS_PER_DAY = Decimal(86400)
@@ -36,7 +36,9 @@ class ChangeCredit:
     new_rate: Decimal
 
 
-def daily_rate(durations: Sequence, days: int, currency: Currency = REFERENCE_CURRENCY) -> Optional[Decimal]:
+def daily_rate(
+    durations: Sequence, days: int, currency: Currency = REFERENCE_CURRENCY
+) -> Optional[Decimal]:
     """Price per day for `days`, falling back to the closest priced duration."""
     priced = []
     for duration in durations:
@@ -75,9 +77,6 @@ async def quote_change_credit(
     settings = await settings_dao.get()
     if not settings.extra.change_credit:
         return ChangeCreditQuote(enabled=False, credit=None)
-
-    # local import: avoid a dto <-> use-case import cycle
-    from src.core.enums import SubscriptionStatus
 
     old = subscription.plan_snapshot if subscription else None
     if (

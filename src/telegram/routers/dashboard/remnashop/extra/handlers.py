@@ -8,10 +8,10 @@ from dishka.integrations.aiogram_dialog import inject
 from src.application.common import Notifier
 from src.application.dto import TelegramUserDto
 from src.application.use_cases.settings.commands.extra import (
+    ToggleChangeCredit,
     ToggleMiniAppReserve,
     ToggleResetFeature,
     ToggleResetFeatureDto,
-    ToggleChangeCredit,
     ToggleStarsPaidRequirement,
     ToggleTrialChannelGuard,
     UpdateResetCooldown,

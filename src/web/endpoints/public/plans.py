@@ -75,6 +75,8 @@ async def get_public_landing_plans(
             )
         )
 
-    payload = PublicPlanLandingListResponse(plans=result, change_credit_enabled=change_credit_enabled)
+    payload = PublicPlanLandingListResponse(
+        plans=result, change_credit_enabled=change_credit_enabled
+    )
     await redis.setex(_CACHE_KEY, PUBLIC_LANDING_PLANS_CACHE_TTL_SECONDS, payload.model_dump_json())
     return payload
