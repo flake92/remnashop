@@ -1,6 +1,7 @@
 import hashlib
 import json
 import re
+from datetime import timedelta
 from typing import Optional
 from urllib.parse import urlsplit
 from uuid import UUID
@@ -16,6 +17,7 @@ from remnapy.models.hwid import HwidDeviceDto
 from src.application.common import Remnawave
 from src.application.common.dao import (
     PaymentGatewayDao,
+    PlanDao,
     SettingsDao,
     SubscriptionDao,
     TransactionDao,
@@ -60,12 +62,14 @@ from src.application.use_cases.promocode.commands.gift import (
     GetUserGifts,
     GetUserGiftsDto,
 )
+from src.application.use_cases.promocode.queries.gift_outcome import PreviewGift, PreviewGiftDto
 from src.application.use_cases.remnawave.commands.management import (
     DeleteUserAllDevices,
     DeleteUserDevice,
     DeleteUserDeviceDto,
     ReissueSubscription,
 )
+from src.application.use_cases.subscription.change_credit import quote_change_credit
 from src.application.use_cases.subscription.commands.purchase import (
     ActivateTrialSubscription,
     ActivateTrialSubscriptionDto,
@@ -87,6 +91,7 @@ from src.core.exceptions import (
 )
 from src.core.utils.time import datetime_now
 from src.web.schemas import (
+    ChangeQuoteResponse,
     DeviceDeleteResponse,
     DeviceResponse,
     DevicesDeleteAllResponse,
@@ -95,6 +100,7 @@ from src.web.schemas import (
     DurationOfferResponse,
     ExtendRequest,
     GatewayOfferResponse,
+    GiftOutcomeResponse,
     GiftPurchaseRequest,
     GiftResponse,
     GiftsResponse,
@@ -105,6 +111,7 @@ from src.web.schemas import (
     PlanOfferResponse,
     PromocodeActivateRequest,
     PromocodeActivateResponse,
+    PromocodePreviewResponse,
     PurchaseRequest,
     ReceivedGiftResponse,
     ReissueResponse,
@@ -658,6 +665,86 @@ async def activate_promocode_web(
         success=True,
         reward_type=promo.reward_type.value,
         is_gift=promo.is_gift,
+    )
+
+
+@router.post("/promocode/preview", response_model=PromocodePreviewResponse)
+@inject
+async def preview_promocode_web(
+    body: PromocodeActivateRequest,
+    user: CurrentUser,
+    preview_gift: FromDishka[PreviewGift],
+) -> PromocodePreviewResponse:
+    """Validate a code without redeeming it; for a gift, say what it will do."""
+    try:
+        preview = await preview_gift(user, PreviewGiftDto(code=body.code, user=user))
+    except PromocodeNotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
+    except (
+        PromocodeExpiredError,
+        PromocodeAlreadyActivatedError,
+        PromocodeNotAvailableError,
+    ) as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e)) from e
+    outcome = preview.outcome
+    return PromocodePreviewResponse(
+        reward_type=preview.promo.reward_type.value,
+        reward=preview.promo.reward,
+        is_gift=preview.promo.is_gift,
+        gift=GiftOutcomeResponse(
+            kind=outcome.kind.value,
+            plan_name=outcome.plan_name,
+            gift_days=outcome.gift_days,
+            expire_at=None if outcome.is_unlimited else outcome.expire_at,
+            current_plan_name=outcome.current_plan_name,
+            remaining_days=outcome.remaining_days,
+            credit_days=outcome.credit_days,
+        )
+        if outcome is not None
+        else None,
+    )
+
+
+@router.get("/change-quote", response_model=ChangeQuoteResponse)
+@inject
+async def get_change_quote(
+    user: CurrentUser,
+    subscription_dao: FromDishka[SubscriptionDao],
+    plan_dao: FromDishka[PlanDao],
+    settings_dao: FromDishka[SettingsDao],
+    get_available_plans: FromDishka[GetAvailablePlans],
+    plan_code: str = Query(min_length=3, max_length=64),
+    duration_days: int = Query(ge=0),
+) -> ChangeQuoteResponse:
+    """The plan-change credit for buying `plan_code` now, exactly as fulfillment applies it."""
+    plan = await _get_available_plan_by_code(user, plan_code, get_available_plans)
+    if not plan or not plan.get_duration(duration_days):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Plan not found")
+    now = datetime_now()
+    subscription = await subscription_dao.get_current(user.id)
+    if subscription is None:
+        return ChangeQuoteResponse(
+            mode="NEW",
+            expire_at=now + timedelta(days=duration_days) if duration_days else None,
+        )
+    quote = await quote_change_credit(
+        subscription=subscription,
+        new_plan_id=plan.id,
+        new_days=duration_days,
+        plan_dao=plan_dao,
+        settings_dao=settings_dao,
+        now=now,
+    )
+    expire_at = now + timedelta(days=duration_days + quote.days) if duration_days else None
+    if not quote.enabled:
+        return ChangeQuoteResponse(mode="OFF", expire_at=expire_at)
+    if quote.credit is None:
+        return ChangeQuoteResponse(mode="NONE", expire_at=expire_at)
+    return ChangeQuoteResponse(
+        mode="CREDIT",
+        left_days=int(quote.credit.remaining_days),
+        credit_days=quote.credit.days,
+        expire_at=expire_at,
     )
 
 

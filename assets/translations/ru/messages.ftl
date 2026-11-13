@@ -1929,6 +1929,41 @@ msg-promocode-input =
 
     Введите промокод.
 
+msg-promocode-gift-confirm =
+    <b>🎁 Подарочный код <code>{ $promo_code }</code></b>
+
+    Подарок: тариф <b>{ $gift_plan }</b>{ $gift_kind ->
+        [UNLIMITED] { space }<b>бессрочно</b>.
+        *[OTHER] { space }на <b>{ $gift_days } дн.</b>
+    }
+
+    { $gift_kind ->
+        [NEW] У вас пока нет подписки — будет создана новая.
+        [RESTART] Текущая подписка (пробная или закончившаяся) будет заменена подарком — срок считается с момента активации.
+        [EXTEND] Ваша подписка продлится на срок подарка.
+        [CONVERT] 🔄 Тариф изменится с <b>{ $gift_current_plan }</b> на <b>{ $gift_plan }</b> с перерасчётом.
+        [KEEP_DAYS] 🔄 Тариф изменится с <b>{ $gift_current_plan }</b> на <b>{ $gift_plan }</b>, оставшиеся дни сохранятся.
+        *[UNLIMITED] Подписка станет бессрочной.
+    }
+    <blockquote>
+    { $gift_kind ->
+        [CONVERT] • <b>Осталось</b>: { $gift_left_days } дн. по текущему тарифу
+        • <b>Перерасчёт</b>: +{ $gift_credit_days } дн. по стоимости тарифа подарка
+        • <b>Подарок</b>: +{ $gift_days } дн.
+        [EXTEND] • <b>Осталось</b>: { $gift_left_days } дн.
+        • <b>Подарок</b>: +{ $gift_days } дн.
+        [KEEP_DAYS] • <b>Осталось</b>: { $gift_left_days } дн.
+        • <b>Подарок</b>: +{ $gift_days } дн.
+        *[OTHER] • <b>Подарок</b>: { $gift_days } дн.
+    }
+    { $gift_kind ->
+        [UNLIMITED] • <b>Срок</b>: бессрочно
+        *[OTHER] • <b>Подписка будет действовать до</b>: { $gift_expire }
+    }
+    </blockquote>
+
+    Нажмите <b>Подтвердить</b> для активации.
+
 msg-promocode-confirm =
     <b>🎟 Промокод <code>{ $promo_code }</code></b>
 
