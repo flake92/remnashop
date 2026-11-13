@@ -15,13 +15,11 @@ from src.application.dto import (
     PromocodeDetailStatisticsDto,
     PromocodeDto,
     PromocodeStatisticsDto,
-    gift_party_name,
 )
 from src.core.enums import PromocodeRewardType
 from src.core.exceptions import PromocodeAlreadyActivatedError, PromocodeNotAvailableError
 from src.core.utils.time import datetime_now
 from src.infrastructure.database.models.promocode import Promocode, PromocodeActivation
-from src.infrastructure.database.models.user import User
 
 
 class PromocodeDaoImpl(PromocodeDao):
@@ -159,9 +157,8 @@ class PromocodeDaoImpl(PromocodeDao):
 
     async def get_gifts_received(self, user_id: int, limit: int = 100) -> list[GiftDto]:
         stmt = (
-            select(Promocode, PromocodeActivation.activated_at, User.name, User.username)
+            select(Promocode, PromocodeActivation.activated_at)
             .join(PromocodeActivation, PromocodeActivation.promocode_id == Promocode.id)
-            .outerjoin(User, User.id == Promocode.gift_buyer_id)
             .where(
                 PromocodeActivation.user_id == user_id,
                 Promocode.gift_payment_id.is_not(None),
@@ -178,10 +175,8 @@ class PromocodeDaoImpl(PromocodeDao):
                 created_at=promo.created_at,
                 expires_at=promo.expires_at,
                 activated_at=redeemed_at,
-                gifted_by=None if promo.gift_anonymous else gift_party_name(name, username),
-                gift_anonymous=promo.gift_anonymous,
             )
-            for promo, redeemed_at, name, username in rows
+            for promo, redeemed_at in rows
             if promo.gift_payment_id is not None
         ]
 

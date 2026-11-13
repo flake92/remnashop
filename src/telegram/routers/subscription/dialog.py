@@ -22,7 +22,6 @@ from .getters import (
     subscription_getter,
     success_payment_getter,
 )
-from .gift_flow import GIFT_ANONYMOUS, GIFT_NAMED
 from .handlers import (
     on_duration_select,
     on_get_subscription,
@@ -81,13 +80,8 @@ gift = Window(
     I18nFormat("msg-subscription-gift"),
     Row(
         Button(
-            text=I18nFormat("btn-subscription.gift-named"),
-            id=f"{PAYMENT_PREFIX}{GIFT_NAMED}",
-            on_click=on_subscription_plans,
-        ),
-        Button(
-            text=I18nFormat("btn-subscription.gift-anonymous"),
-            id=f"{PAYMENT_PREFIX}{GIFT_ANONYMOUS}",
+            text=I18nFormat("btn-subscription.gift-choose"),
+            id=f"{PAYMENT_PREFIX}{PurchaseType.GIFT}",
             on_click=on_subscription_plans,
         ),
     ),

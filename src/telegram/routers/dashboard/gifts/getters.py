@@ -91,7 +91,7 @@ async def getter_gift_detail(
     gift_id = int(dialog_manager.dialog_data[GIFT_ID_KEY])
     details = await get_gift_details(user, gift_id)
     if details is None:
-        return {"found": 0, "can_manage": False, "code": "—", "anonymous": 0}
+        return {"found": 0, "can_manage": False, "code": "—"}
 
     promo = details.promo
     plan = retort.load(promo.plan_snapshot, PlanSnapshotDto) if promo.plan_snapshot else None
@@ -106,7 +106,6 @@ async def getter_gift_detail(
         "code": promo.code,
         "status": gift_status(promo, details.activated_at is not None),
         "is_active": 1 if promo.is_active else 0,
-        "anonymous": 1 if promo.gift_anonymous else 0,
         "created_at": format_moment(promo.created_at),
         "expires_at": format_moment(promo.expires_at),
         "activated_at": format_moment(details.activated_at),

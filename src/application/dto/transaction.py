@@ -43,7 +43,7 @@ class TransactionDto(BaseDto, TrackableMixin, TimestampMixin):
     status: TransactionStatus
     cancellation_reason: Optional[str] = None
     is_test: bool = False
-    # GIFT only: the buyer asked not to be named to the recipient.
+    # Unused since gifts never name the buyer; kept for the 0063 column.
     gift_anonymous: bool = False
 
     purchase_type: PurchaseType

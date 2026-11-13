@@ -9,14 +9,13 @@ from dishka.integrations.aiogram_dialog import inject
 from loguru import logger
 
 from src.application.common import EventPublisher, Notifier
-from src.application.common.dao import SubscriptionDao, UserDao
-from src.application.dto import MessagePayloadDto, TelegramUserDto
+from src.application.common.dao import SubscriptionDao
+from src.application.dto import TelegramUserDto
 from src.application.events import ErrorEvent
 from src.application.use_cases.promocode.commands.activate import (
     ActivatePromocode,
     ActivatePromocodeDto,
 )
-from src.application.use_cases.promocode.commands.gift import load_gift_giver_name
 from src.application.use_cases.promocode.queries.validate import (
     ValidatePromocode,
     ValidatePromocodeDto,
@@ -94,7 +93,6 @@ async def on_promocode_confirm(
     notifier: FromDishka[Notifier],
     event_publisher: FromDishka[EventPublisher],
     config: FromDishka[AppConfig],
-    user_dao: FromDishka[UserDao],
 ) -> None:
     if is_double_click(dialog_manager, key="promo_confirm"):
         return
@@ -134,17 +132,10 @@ async def on_promocode_confirm(
         return
 
     logger.info(f"{user.log} Activated promocode")
-    if promo.is_gift:
-        gifted_by = await load_gift_giver_name(user_dao, promo)
-        await notifier.notify_user(
-            user,
-            payload=MessagePayloadDto(
-                i18n_key="ntf-promocode.gift-activated",
-                i18n_kwargs={"gifted_by": gifted_by or 0},
-            ),
-        )
-    else:
-        await notifier.notify_user(user, i18n_key="ntf-promocode.activated")
+    await notifier.notify_user(
+        user,
+        i18n_key="ntf-promocode.gift-activated" if promo.is_gift else "ntf-promocode.activated",
+    )
     await dialog_manager.start(MainMenu.MAIN, mode=StartMode.RESET_STACK)
 
 
