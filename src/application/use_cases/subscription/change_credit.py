@@ -20,9 +20,13 @@ or a free old plan.
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import ROUND_FLOOR, Decimal
-from typing import Optional, Sequence
+from typing import TYPE_CHECKING, Optional, Sequence
 
 from src.core.enums import Currency, SubscriptionStatus
+
+if TYPE_CHECKING:
+    from src.application.common.dao import PlanDao, SettingsDao
+    from src.application.dto import SubscriptionDto
 
 REFERENCE_CURRENCY = Currency.RUB
 SECONDS_PER_DAY = Decimal(86400)
@@ -66,11 +70,11 @@ class ChangeCreditQuote:
 
 async def quote_change_credit(
     *,
-    subscription,  # SubscriptionDto (current) or None
+    subscription: Optional["SubscriptionDto"],
     new_plan_id: int,
     new_days: int,
-    plan_dao,
-    settings_dao,
+    plan_dao: "PlanDao",
+    settings_dao: "SettingsDao",
     now: datetime,
 ) -> ChangeCreditQuote:
     """Single source of truth for the confirm screen and for fulfillment."""
@@ -78,10 +82,11 @@ async def quote_change_credit(
     if not settings.extra.change_credit:
         return ChangeCreditQuote(enabled=False, credit=None)
 
-    old = subscription.plan_snapshot if subscription else None
+    if subscription is None or subscription.plan_snapshot is None:
+        return ChangeCreditQuote(enabled=True, credit=None)
+    old = subscription.plan_snapshot
     if (
-        old is None
-        or subscription.is_trial
+        subscription.is_trial
         or old.is_trial
         or old.duration == 0
         or new_days == 0
