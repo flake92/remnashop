@@ -2,7 +2,15 @@ from datetime import datetime
 from typing import Any, Optional
 from uuid import UUID
 
-from sqlalchemy import CheckConstraint, ForeignKey, Index, Integer, String, UniqueConstraint
+from sqlalchemy import (
+    CheckConstraint,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.core.enums import (
@@ -68,6 +76,9 @@ class Transaction(BaseSql, TimestampMixin):
     status: Mapped[TransactionStatus] = mapped_column(index=True)
     cancellation_reason: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     is_test: Mapped[bool]
+    gift_anonymous: Mapped[bool] = mapped_column(
+        nullable=False, default=False, server_default=text("false")
+    )
 
     purchase_type: Mapped[PurchaseType]
     gateway_type: Mapped[PaymentGatewayType]

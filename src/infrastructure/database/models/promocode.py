@@ -42,6 +42,8 @@ class Promocode(BaseSql, TimestampMixin):
         nullable=True,
         index=True,
     )
+    # The buyer asked not to be named to the recipient.
+    gift_anonymous: Mapped[bool] = mapped_column(nullable=False, server_default=text("false"))
 
     activations: Mapped[list["PromocodeActivation"]] = relationship(
         back_populates="promocode",

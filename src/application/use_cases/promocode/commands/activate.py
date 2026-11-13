@@ -110,11 +110,26 @@ class ActivatePromocode(Interactor[ActivatePromocodeDto, PromocodeDto]):
         return promo
 
     async def _publish_activated(self, user: UserDto, promo: PromocodeDto) -> None:
+        buyer: Optional[UserDto] = None
+        if promo.is_gift and promo.gift_buyer_id is not None:
+            try:
+                buyer = await self.user_dao.get_by_id(promo.gift_buyer_id)
+            except Exception:
+                # The gift is already redeemed; a lookup failure only drops the
+                # buyer details from the operator notice.
+                logger.exception(f"Could not load the buyer of gift code id='{promo.id}'")
         event = PromocodeActivatedEvent(
             user_id=user.id,
             telegram_id=user.telegram_id,
             username=user.username,
             name=user.name,
+            email=user.email,
+            gift_payment_id=promo.gift_payment_id,
+            gift_buyer_id=promo.gift_buyer_id,
+            gift_buyer_telegram_id=buyer.telegram_id if buyer else None,
+            gift_buyer_username=buyer.username if buyer else None,
+            gift_buyer_name=buyer.name if buyer else None,
+            gift_buyer_email=buyer.email if buyer else None,
             promocode_code=promo.code,
             reward_type=promo.reward_type.value,
             reward=promo.reward,

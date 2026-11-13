@@ -357,6 +357,12 @@ event-subscription =
     { hdr-plan }
     { frg-plan-snapshot }
 
+    <b>🎁 Код подарка</b>: <code>{ $gift_code }</code> { $gift_anonymous ->
+        [1] (анонимный)
+        *[0] { empty }
+    }
+    <i>Когда получатель его активирует, придёт событие «Активация подарка» с этим кодом.</i>
+
     .expiring =
     { $is_trial ->
     [0]
@@ -547,6 +553,30 @@ event-promocode =
     • <b>Тип</b>: { promocode-type }
     • <b>Награда</b>: { frg-promocode-reward }
     </blockquote>
+
+    .gift-activated =
+    #PromocodeActivatedEvent
+
+    <b>🔅 Событие: Активация подарка!</b>
+
+    <b>🎁 Получатель</b>:
+    { frg-user-info }
+
+    <b>💝 Подарил</b>:
+    <blockquote>
+    { $gift_buyer_telegram_id ->
+        [0] • <b>Почта</b>: <code>{ $gift_buyer_email }</code>
+        *[HAS] • <b>ID</b>: <code>{ NUMBER($gift_buyer_telegram_id, useGrouping: 0) }</code>
+    }
+    • <b>Имя</b>: { $gift_buyer_name } { $gift_buyer_username ->
+        [0] { empty }
+        *[HAS] (<a href="tg://user?id={ $gift_buyer_telegram_id }">@{ $gift_buyer_username }</a>)
+    }
+    • <b>Платёж</b>: <code>{ $gift_payment_id }</code>
+    </blockquote>
+
+    <b>🎟 Код</b>: <code>{ $promocode_code }</code>
+    • <b>План</b>: { $plan_name }
 
 event-payment =
     .refunded =

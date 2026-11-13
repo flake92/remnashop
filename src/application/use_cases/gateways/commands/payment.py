@@ -165,6 +165,8 @@ class CreatePaymentDto:
     provider_idempotency_key: Optional[str] = None
     payment_operation_id: Optional[int] = None
     return_url: Optional[str] = None
+    # GIFT only: hide the buyer's name from the recipient.
+    gift_anonymous: bool = False
 
 
 class CreatePayment(Interactor[CreatePaymentDto, PaymentResultDto]):
@@ -200,6 +202,13 @@ class CreatePayment(Interactor[CreatePaymentDto, PaymentResultDto]):
             duration=i18n.get(key, **kw),
         )
 
+        if data.purchase_type == PurchaseType.GIFT and (
+            data.pricing.is_free or data.plan_snapshot.is_trial
+        ):
+            # A free gift would mint paid time for nothing; every entry point
+            # filters these plans, this is the last line of defence.
+            raise ValueError("A free or trial plan cannot be bought as a gift")
+
         operation_id = data.payment_operation_id
         provider_key = data.provider_idempotency_key
         if (operation_id is None) != (provider_key is None):
@@ -228,6 +237,7 @@ class CreatePayment(Interactor[CreatePaymentDto, PaymentResultDto]):
             user_id=actor.id,
             status=TransactionStatus.PENDING,
             purchase_type=data.purchase_type,
+            gift_anonymous=data.purchase_type == PurchaseType.GIFT and data.gift_anonymous,
             gateway_type=gateway_instance.data.type,
             gateway_display_name=(
                 gateway_instance.data.settings.display_name
@@ -994,6 +1004,8 @@ class ProcessPayment(Interactor[ProcessPaymentDto, None]):
                 plan_traffic_limit=i18n_format_traffic_limit(plan.traffic_limit),
                 plan_device_limit=i18n_format_device_limit(plan.device_limit),
                 plan_duration=i18n_format_days(plan.duration),
+                gift_code=gift.code,
+                gift_anonymous=1 if transaction.gift_anonymous else 0,
             )
         )
 
@@ -1006,6 +1018,7 @@ class ProcessPayment(Interactor[ProcessPaymentDto, None]):
                         "code": gift.code,
                         "plan_name": i18n_key_or_text(plan.name),
                         "duration": i18n_format_days(plan.duration),
+                        "anonymous": 1 if transaction.gift_anonymous else 0,
                     },
                     delete_after=None,
                 ),

@@ -29,6 +29,7 @@ class Subscription(StatesGroup):
     SUCCESS = State()
     FAILED = State()
     TRIAL = State()
+    GIFT = State()
 
 
 class Dashboard(StatesGroup):
@@ -67,6 +68,11 @@ class DashboardPromocodes(StatesGroup):
     PLAN_DURATION = State()
     EXPIRES = State()
     MAX_ACTIVATIONS = State()
+
+
+class DashboardGifts(StatesGroup):
+    MAIN = State()
+    DETAIL = State()
 
 
 class DashboardAccess(StatesGroup):
