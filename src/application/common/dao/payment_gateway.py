@@ -17,6 +17,8 @@ class PaymentGatewayDao(Protocol):
 
     async def get_active(self) -> list[PaymentGatewayDto]: ...
 
+    async def get_active_for_bot(self) -> list[PaymentGatewayDto]: ...
+
     async def get_all(
         self,
         only_active: bool = False,

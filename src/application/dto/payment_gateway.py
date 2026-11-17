@@ -23,6 +23,7 @@ class PaymentGatewayDto(BaseDto, TrackableMixin):
     currency: Currency
 
     is_active: bool = False
+    web_only: bool = False
     settings: Optional["AnyGatewaySettingsDto"] = None
 
     @property

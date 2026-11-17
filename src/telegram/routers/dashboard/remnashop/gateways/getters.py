@@ -23,6 +23,7 @@ async def gateways_getter(
             "id": gateway.id,
             "gateway_type": gateway.type,
             "is_active": gateway.is_active,
+            "web_only": gateway.web_only,
         }
         for gateway in gateways
     ]

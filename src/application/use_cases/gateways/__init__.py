@@ -6,6 +6,7 @@ from .commands.configuration import (
     MovePaymentGatewayUp,
     ResetPaymentGatewaySettingsField,
     TogglePaymentGatewayActive,
+    TogglePaymentGatewayWebOnly,
     UpdatePaymentGatewaySettings,
 )
 from .commands.payment import (
@@ -23,6 +24,7 @@ GATEWAYS_USE_CASES: Final[tuple[type[Interactor], ...]] = (
     IsStarsPaymentBlocked,
     MovePaymentGatewayUp,
     TogglePaymentGatewayActive,
+    TogglePaymentGatewayWebOnly,
     UpdatePaymentGatewaySettings,
     ResetPaymentGatewaySettingsField,
     CreateDefaultPaymentGateway,

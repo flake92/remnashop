@@ -1254,7 +1254,10 @@ msg-menu-editor-button-color =
 
 
 # Gateways
-msg-gateways-main = <b>🌐 Платежные системы</b>
+msg-gateways-main =
+    <b>🌐 Платежные системы</b>
+
+    «В боте: показан/скрыт» — видимость способа оплаты в боте. Скрытый шлюз продолжает работать в веб-кабинете. По правилам Telegram в боте цифровые товары продаются только за Telegram Stars.
 msg-gateways-settings = <b>🌐 Конфигурация { gateway-type }</b>
 msg-gateways-default-currency = <b>💸 Валюта по умолчанию</b>
 msg-gateways-placement = <b>🔢 Изменить позиционирование</b>

@@ -119,7 +119,7 @@ ntf-gateway =
 
 ntf-subscription =
     .plans-unavailable = ❌ <i>В данный момент нет доступных планов.</i>
-    .gateways-unavailable = ❌ <i>В данный момент нет доступных платежных систем.</i>
+    .gateways-unavailable = 💳 <i>Оплата доступна в личном кабинете: кнопка «🌐 Личный кабинет» в главном меню бота.</i>
     .renew-plan-unavailable = ❌ <i>Текущий план устарел и недоступен для продления.</i>
     .payment-creation-failed = ❌ <i>Ошибка при создании платежа. Попробуйте позже.</i>
     .stars-requires-paid = ❌ <i>Оплата через Telegram Stars доступна только после покупки другим способом.</i>

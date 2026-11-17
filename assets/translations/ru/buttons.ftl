@@ -434,6 +434,11 @@ btn-gateway =
     *[0] 🔴 Выключено
     }
 
+    .bot-toggle = { $web_only ->
+    [1] 🤖 В боте: скрыт
+    *[0] 🤖 В боте: показан
+    }
+
     .default-currency-choice = { $enabled ->
     [1] 🔘
     *[0] ⚪

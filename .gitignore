@@ -12,6 +12,7 @@ logs/*
 CLAUDE.md
 docs/*
 !docs/email-expiration-reminders-design.md
+!docs/telegram-stars-bot-payments.md
 
 # Environment
 .venv/
