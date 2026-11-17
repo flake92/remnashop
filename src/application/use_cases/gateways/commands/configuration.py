@@ -83,6 +83,43 @@ class TogglePaymentGatewayActive(Interactor[int, None]):
         )
 
 
+class TogglePaymentGatewayWebOnly(Interactor[int, None]):
+    """Hide or show an active gateway in the bot without touching the web cabinet.
+
+    Telegram requires digital goods inside bots to be sold for Telegram Stars
+    only, so a non-Stars gateway can stay available in Clean Pay (web) while
+    the bot stops listing it as a payment method.
+    """
+
+    required_permission = Permission.REMNASHOP_GATEWAYS
+
+    def __init__(
+        self,
+        uow: UnitOfWork,
+        gateway_dao: PaymentGatewayDao,
+    ) -> None:
+        self.uow = uow
+        self.gateway_dao = gateway_dao
+
+    async def _execute(self, actor: UserDto, gateway_id: int) -> None:
+        async with self.uow:
+            gateway = await self.gateway_dao.get_by_id(gateway_id)
+
+            if not gateway:
+                raise ValueError(f"Payment gateway with id '{gateway_id}' not found")
+
+            old_status = gateway.web_only
+            gateway.web_only = not old_status
+
+            await self.gateway_dao.update(gateway)
+            await self.uow.commit()
+
+        logger.info(
+            f"{actor.log} Updated payment gateway '{gateway_id}' "
+            f"bot visibility: web_only from '{old_status}' to '{gateway.web_only}'"
+        )
+
+
 @dataclass(frozen=True)
 class UpdatePaymentGatewaySettingsDto:
     gateway_id: int

@@ -14,6 +14,7 @@ from src.application.use_cases.gateways.commands.configuration import (
     ResetPaymentGatewaySettingsDto,
     ResetPaymentGatewaySettingsField,
     TogglePaymentGatewayActive,
+    TogglePaymentGatewayWebOnly,
     UpdatePaymentGatewaySettings,
     UpdatePaymentGatewaySettingsDto,
 )
@@ -105,6 +106,19 @@ async def on_active_toggle(
         await toggle_payment_gateway_active(user, gateway_id)
     except GatewayNotConfiguredError:
         await notifier.notify_user(user, i18n_key="ntf-gateway.not-configured")
+
+
+@inject
+async def on_web_only_toggle(
+    callback: CallbackQuery,
+    widget: Button,
+    dialog_manager: DialogManager,
+    toggle_payment_gateway_web_only: FromDishka[TogglePaymentGatewayWebOnly],
+) -> None:
+    user: TelegramUserDto = dialog_manager.middleware_data[USER_KEY]
+    gateway_id = int(dialog_manager.item_id)  # type: ignore[attr-defined]
+
+    await toggle_payment_gateway_web_only(user, gateway_id)
 
 
 async def on_field_select(

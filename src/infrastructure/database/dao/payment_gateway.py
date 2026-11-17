@@ -89,6 +89,21 @@ class PaymentGatewayDaoImpl(PaymentGatewayDao, BaseDaoImpl):
         logger.debug(f"Retrieved '{len(db_gateways)}' active gateways")
         return self._convert_to_dto_list(db_gateways)
 
+    async def get_active_for_bot(self) -> list[PaymentGatewayDto]:
+        stmt = (
+            select(PaymentGateway)
+            .where(
+                PaymentGateway.is_active.is_(True),
+                PaymentGateway.web_only.is_(False),
+            )
+            .order_by(PaymentGateway.order_index.asc())
+        )
+        result = await self.session.scalars(stmt)
+        db_gateways = cast(list, result.all())
+
+        logger.debug(f"Retrieved '{len(db_gateways)}' active gateways available in the bot")
+        return self._convert_to_dto_list(db_gateways)
+
     async def get_all(
         self,
         only_active: bool = False,

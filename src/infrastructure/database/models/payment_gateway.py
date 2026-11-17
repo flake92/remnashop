@@ -1,5 +1,6 @@
 from typing import Any, Optional
 
+from sqlalchemy import text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from src.core.enums import Currency, PaymentGatewayType
@@ -17,4 +18,7 @@ class PaymentGateway(BaseSql):
     currency: Mapped[Currency]
 
     is_active: Mapped[bool]
+    web_only: Mapped[bool] = mapped_column(
+        nullable=False, default=False, server_default=text("false")
+    )
     settings: Mapped[Optional[dict[str, Any]]]

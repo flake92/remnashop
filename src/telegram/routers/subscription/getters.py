@@ -254,7 +254,7 @@ async def payment_method_getter(
         raise UnknownIntent("PlanDto not found in subscription dialog data")
 
     plan = retort.load(raw_plan, PlanDto)
-    gateways = await payment_gateway_dao.get_active()
+    gateways = await payment_gateway_dao.get_active_for_bot()
     selected_duration = dialog_manager.dialog_data["selected_duration"]
     only_single_duration = dialog_manager.dialog_data.get("only_single_duration", False)
     duration = plan.get_duration(selected_duration)
@@ -343,7 +343,7 @@ async def confirm_getter(
     pricing = retort.load(pricing_data, PriceDetailsDto)
 
     key, kw = i18n_format_days(duration.days)
-    gateways = await payment_gateway_dao.get_active()
+    gateways = await payment_gateway_dao.get_active_for_bot()
 
     plan_is_modified = 1 if dialog_manager.dialog_data.get("plan_is_modified", False) else 0
     change_data = await _change_quote_data(

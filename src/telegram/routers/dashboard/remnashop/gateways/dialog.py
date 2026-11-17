@@ -36,6 +36,7 @@ from .handlers import (
     on_gateway_move,
     on_gateway_select,
     on_gateway_test,
+    on_web_only_toggle,
 )
 
 gateways = Window(
@@ -59,14 +60,19 @@ gateways = Window(
                     id="active_toggle",
                     on_click=on_active_toggle,
                 ),
+                Button(
+                    text=I18nFormat("btn-gateway.bot-toggle", web_only=F["item"]["web_only"]),
+                    id="web_only_toggle",
+                    on_click=on_web_only_toggle,
+                ),
             ),
             id="gateways_list",
             item_id_getter=lambda item: item["id"],
             items="gateways",
         ),
         id="scroll",
-        width=3,
-        height=7,
+        width=2,
+        height=8,
         hide_on_single_page=True,
     ),
     Row(

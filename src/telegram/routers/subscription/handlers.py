@@ -185,7 +185,7 @@ async def on_purchase_type_select(
     else:
         plans = await get_available_plans.system(user)
 
-    gateways = await payment_gateway_dao.get_active()
+    gateways = await payment_gateway_dao.get_active_for_bot()
     dialog_manager.dialog_data["purchase_type"] = purchase_type
     dialog_manager.dialog_data.pop(CURRENT_DURATION_KEY, None)
     dialog_manager.dialog_data.pop(PAYMENT_CACHE_KEY, None)
@@ -251,7 +251,7 @@ async def on_subscription_plans(  # noqa: C901
     else:
         plans = await get_available_plans.system(user)
 
-    gateways = await payment_gateway_dao.get_active()
+    gateways = await payment_gateway_dao.get_active_for_bot()
 
     dialog_manager.dialog_data.pop(CURRENT_DURATION_KEY, None)
     dialog_manager.dialog_data.pop(PAYMENT_CACHE_KEY, None)
@@ -391,7 +391,7 @@ async def on_duration_select(
         await dialog_manager.start(state=Subscription.MAIN)
         return
     settings = await settings_dao.get()
-    gateways = await payment_gateway_dao.get_active()
+    gateways = await payment_gateway_dao.get_active_for_bot()
     currency = settings.default_currency
     price = pricing_service.calculate(
         user,
