@@ -232,6 +232,32 @@ def _create_file_handler(config: AppConfig) -> ConcurrentRetentionRotatingFileHa
     return handler
 
 
+# Clean Pay readiness proves the API contract every ~10 seconds by POSTing `{}` to
+# these routes and expecting exactly these refusals. Those lines were ~36% of the
+# log; any other status on the same routes (a real user, or a broken contract)
+# is still logged.
+READINESS_PROBE_RESPONSES: Final[frozenset[tuple[str, int]]] = frozenset(
+    {
+        ("/api/v1/public/auth/email/start", 422),
+        ("/api/v1/public/auth/identify", 422),
+        ("/api/v1/public/auth/service-session", 422),
+        ("/api/v1/public/auth/notification-preferences", 405),
+    }
+)
+
+
+class ReadinessProbeAccessFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        # uvicorn.access args: (client_addr, method, full_path, http_version, status_code)
+        args = record.args
+        if not isinstance(args, tuple) or len(args) != 5:
+            return True
+        _, method, full_path, _, status_code = args
+        if method != "POST" or not isinstance(full_path, str):
+            return True
+        return (full_path.split("?", 1)[0], status_code) not in READINESS_PROBE_RESPONSES
+
+
 class InterceptHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
         try:
@@ -293,6 +319,13 @@ def setup_logger(config: AppConfig) -> None:
         "fastapi",
     ):
         logging.getLogger(logger_name).handlers = [intercept_handler]
+    logging.getLogger("uvicorn.access").addFilter(ReadinessProbeAccessFilter())
+
+    # The scheduler and the receiver log every send and start of every periodic task
+    # (eight of them run each minute): ~23% of the log with no diagnostic value.
+    # Failures still come through at WARNING and above.
+    for logger_name in ("taskiq.cli.scheduler.run", "taskiq.receiver.receiver"):
+        logging.getLogger(logger_name).setLevel(logging.WARNING)
 
     # logging.getLogger("httpx").propagate = False
     # logging.getLogger("httpx").level = logging.WARNING

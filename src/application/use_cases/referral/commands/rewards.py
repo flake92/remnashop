@@ -27,6 +27,7 @@ from src.application.use_cases.referral.queries.calculations import (
     CalculateReferralReward,
     CalculateReferralRewardDto,
 )
+from src.core.constants import RECIPIENT_SUBSCRIPTION_ERROR_PREFIX
 from src.core.enums import (
     LegacyReferralRewardRecoveryAction,
     LegacyReferralRewardSourceValidation,
@@ -43,6 +44,16 @@ from src.core.utils.time import datetime_now
 REWARD_LEASE = timedelta(minutes=5)
 REWARD_RUN_LIMIT = 100
 MISSING_SUBSCRIPTION_RETRY = timedelta(minutes=30)
+# A recipient without a paid subscription may stay so for weeks. Back off instead of
+# re-checking every half hour forever; a purchase by the recipient wakes the reward
+# at once (AssignReferralRewards), so the cap only bounds other recoveries, such as
+# a subscription re-enabled by an admin.
+MISSING_SUBSCRIPTION_RETRY_MAX = timedelta(hours=6)
+
+
+def missing_subscription_retry_after(attempt_count: int) -> timedelta:
+    doublings = max(0, min(attempt_count - 1, 8))
+    return min(MISSING_SUBSCRIPTION_RETRY * (1 << doublings), MISSING_SUBSCRIPTION_RETRY_MAX)
 
 
 @dataclass(frozen=True)
@@ -104,7 +115,7 @@ class GiveReferrerReward(Interactor[GiveReferrerRewardDto, None]):
             )
             return
 
-        logger.info(
+        logger.debug(
             f"{actor.log} Start applying reward of '{reward.amount}' "
             f"'{reward.type}' to user '{user.remna_name}'"
         )
@@ -140,29 +151,27 @@ class GiveReferrerReward(Interactor[GiveReferrerRewardDto, None]):
             subscription = await self.subscription_dao.get_current(user.id)
 
             if not self._is_safe_extra_days_subscription(subscription):
+                retry_after = missing_subscription_retry_after(reward.attempt_count)
                 async with self.uow:
                     await self.referral_dao.defer_reward(
                         reward.id,
                         token_hash=data.token_hash,
-                        retry_after=MISSING_SUBSCRIPTION_RETRY,
-                        error_code=(
-                            "RECIPIENT_SUBSCRIPTION_TRIAL"
+                        retry_after=retry_after,
+                        error_code=RECIPIENT_SUBSCRIPTION_ERROR_PREFIX
+                        + (
+                            "TRIAL"
                             if subscription and subscription.is_trial
                             else (
-                                "RECIPIENT_SUBSCRIPTION_CHANNEL_DISABLED"
+                                "CHANNEL_DISABLED"
                                 if subscription and subscription.disabled_by_channel_leave
-                                else (
-                                    "RECIPIENT_SUBSCRIPTION_UNSAFE"
-                                    if subscription
-                                    else "RECIPIENT_SUBSCRIPTION_MISSING"
-                                )
+                                else ("UNSAFE" if subscription else "MISSING")
                             )
                         ),
                     )
                     await self.uow.commit()
                 logger.info(
                     f"{actor.log} Paid subscription not found for '{user.remna_name}'; "
-                    f"reward '{reward.id}' remains retryable"
+                    f"reward '{reward.id}' retries in {retry_after} or on the next purchase"
                 )
                 return
 
@@ -500,6 +509,15 @@ class AssignReferralRewards(Interactor[AssignReferralRewardsDto, None]):
             return
 
         async with self.uow:
+            # The payer now has a paid subscription: rewards they earned earlier as a
+            # referrer and that wait for one become due on the next worker run.
+            woken = await self.referral_dao.wake_rewards_waiting_for_subscription(data.user.id)
+            if woken:
+                logger.info(
+                    f"{data.user.log} paid; '{woken}' referral reward(s) waiting for a "
+                    "subscription are due now"
+                )
+
             initial_referral, initial_parent = await self.referral_dao.get_referral_chain(
                 data.user.id
             )

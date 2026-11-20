@@ -20,6 +20,7 @@ from src.application.use_cases.referral.commands.rewards import (
     ResolveManualReferralReward,
     ResolveManualReferralRewardDto,
     RetryPendingReferralRewards,
+    missing_subscription_retry_after,
 )
 from src.core.enums import (
     LegacyReferralRewardRecoveryAction,
@@ -270,6 +271,7 @@ async def test_first_payment_intents_ignore_purchase_type_and_keep_l1_l2_origin(
     direct_attribution = SimpleNamespace(id=101, referrer=direct_referrer)
     parent_attribution = SimpleNamespace(id=202, referrer=grandparent)
     referral_dao = SimpleNamespace(
+        wake_rewards_waiting_for_subscription=AsyncMock(return_value=0),
         lock_referral_attribution=AsyncMock(),
         get_referral_chain=AsyncMock(
             side_effect=[
@@ -320,6 +322,7 @@ async def test_normal_assignment_commits_when_rr65_source_level_is_already_recov
     direct_referrer = SimpleNamespace(id=62, remna_name="rr65-recipient")
     direct_attribution = SimpleNamespace(id=41, referrer=direct_referrer)
     referral_dao = SimpleNamespace(
+        wake_rewards_waiting_for_subscription=AsyncMock(return_value=0),
         lock_referral_attribution=AsyncMock(),
         get_referral_chain=AsyncMock(
             side_effect=[
@@ -362,6 +365,7 @@ async def test_reward_assignment_aborts_if_chain_changes_while_waiting_for_fence
     before = SimpleNamespace(id=101, referrer=direct_referrer)
     after = SimpleNamespace(id=101, referrer=moved_referrer)
     referral_dao = SimpleNamespace(
+        wake_rewards_waiting_for_subscription=AsyncMock(return_value=0),
         lock_referral_attribution=AsyncMock(),
         get_referral_chain=AsyncMock(side_effect=[(before, None), (after, None)]),
         create_reward=AsyncMock(),
@@ -709,6 +713,84 @@ async def test_unsafe_nontrial_subscription_waits_safely() -> None:
     assert (
         referral_dao.defer_reward.await_args.kwargs["error_code"] == "RECIPIENT_SUBSCRIPTION_UNSAFE"
     )
+
+
+@pytest.mark.parametrize(
+    ("attempt_count", "expected"),
+    [
+        (0, timedelta(minutes=30)),
+        (1, timedelta(minutes=30)),
+        (2, timedelta(hours=1)),
+        (3, timedelta(hours=2)),
+        (4, timedelta(hours=4)),
+        (5, timedelta(hours=6)),
+        (106, timedelta(hours=6)),
+    ],
+)
+def test_missing_subscription_retry_backs_off_to_a_cap(
+    attempt_count: int, expected: timedelta
+) -> None:
+    assert missing_subscription_retry_after(attempt_count) == expected
+
+
+@pytest.mark.asyncio
+async def test_missing_subscription_deferral_uses_the_backoff() -> None:
+    referral_dao = SimpleNamespace(defer_reward=AsyncMock(return_value=True))
+    use_case = GiveReferrerReward(
+        FakeUnitOfWork(),  # type: ignore[arg-type]
+        SimpleNamespace(get_by_id=AsyncMock(return_value=SimpleNamespace(id=2, remna_name="r"))),
+        SimpleNamespace(get_current=AsyncMock(return_value=None)),
+        referral_dao,
+        SimpleNamespace(publish=AsyncMock()),
+        SimpleNamespace(reactivate_referral_expiry=AsyncMock()),
+        FakeMutationLock(),  # type: ignore[arg-type]
+    )
+    reward = ReferralRewardDto(
+        id=8,
+        user_id=2,
+        type=ReferralRewardType.EXTRA_DAYS,
+        amount=14,
+        state=ReferralRewardState.PROCESSING,
+        attempt_count=4,
+    )
+
+    await use_case._execute(  # type: ignore[arg-type]
+        SimpleNamespace(log="system"),
+        GiveReferrerRewardDto(2, reward, "payer", "t" * 64),
+    )
+
+    kwargs = referral_dao.defer_reward.await_args.kwargs
+    assert kwargs["error_code"] == "RECIPIENT_SUBSCRIPTION_MISSING"
+    assert kwargs["retry_after"] == timedelta(hours=4)
+
+
+@pytest.mark.asyncio
+async def test_paid_purchase_wakes_the_payers_waiting_rewards_even_if_not_referred() -> None:
+    uow = FakeUnitOfWork()
+    referral_dao = SimpleNamespace(
+        wake_rewards_waiting_for_subscription=AsyncMock(return_value=2),
+        lock_referral_attribution=AsyncMock(),
+        get_referral_chain=AsyncMock(return_value=(None, None)),
+        create_reward=AsyncMock(),
+    )
+    use_case = AssignReferralRewards(
+        uow,  # type: ignore[arg-type]
+        SimpleNamespace(get=AsyncMock(return_value=_settings())),
+        referral_dao,
+        SimpleNamespace(system=AsyncMock()),
+    )
+
+    await use_case._execute(  # type: ignore[arg-type]
+        SimpleNamespace(),
+        AssignReferralRewardsDto(
+            user=SimpleNamespace(id=9, name="payer", log="payer"),
+            transaction=_transaction(PurchaseType.NEW),
+        ),
+    )
+
+    referral_dao.wake_rewards_waiting_for_subscription.assert_awaited_once_with(9)
+    referral_dao.create_reward.assert_not_awaited()
+    uow.commit.assert_awaited_once()
 
 
 @pytest.mark.parametrize(

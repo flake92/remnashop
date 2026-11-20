@@ -21,6 +21,7 @@ from src.application.dto import (
     ReferralStatisticsDto,
     UserReferralStatsDto,
 )
+from src.core.constants import RECIPIENT_SUBSCRIPTION_ERROR_PREFIX
 from src.core.enums import (
     LegacyReferralRewardRecoveryAction,
     LegacyReferralRewardSourceValidation,
@@ -1399,6 +1400,21 @@ class ReferralDaoImpl(ReferralDao):
             )
         )
         return bool(getattr(result, "rowcount", 0))
+
+    async def wake_rewards_waiting_for_subscription(self, user_id: int) -> int:
+        # Only the timer moves: the state stays RETRY_WAITING and the worker re-checks
+        # the subscription under its own fences, exactly as on a scheduled retry.
+        result = await self.session.execute(
+            update(ReferralReward)
+            .where(
+                ReferralReward.user_id == user_id,
+                ReferralReward.state == ReferralRewardState.RETRY_WAITING,
+                ReferralReward.last_error.like(f"{RECIPIENT_SUBSCRIPTION_ERROR_PREFIX}%"),
+                ReferralReward.next_attempt_at > datetime_now(),
+            )
+            .values(next_attempt_at=datetime_now())
+        )
+        return int(getattr(result, "rowcount", 0) or 0)
 
     async def mark_reward_manual_required(
         self,

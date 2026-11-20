@@ -15,6 +15,10 @@ ASSETS_DEFAULT_DIR: Final[Path] = BASE_DIR / "assets.default"
 BACKUP_DIR: Final[Path] = BASE_DIR / "backups"
 LOG_DIR: Final[Path] = BASE_DIR / "logs"
 
+# EXTRA_DAYS rewards deferred because the recipient has no paid subscription yet
+# carry an error code with this prefix; a purchase by the recipient wakes them.
+RECIPIENT_SUBSCRIPTION_ERROR_PREFIX: Final[str] = "RECIPIENT_SUBSCRIPTION_"
+
 # Per-currency default price for a freshly added plan duration (mirrors the
 # configurator's 30-day tier). Avoids the absurd USD=100 shared default.
 DEFAULT_DURATION_PRICES: Final[dict[Currency, Decimal]] = {

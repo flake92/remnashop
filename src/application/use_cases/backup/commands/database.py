@@ -1,6 +1,8 @@
+import asyncio
 import shutil
 import tempfile
 from pathlib import Path
+from typing import Final
 
 from loguru import logger
 
@@ -12,7 +14,26 @@ from src.core.constants import BACKUP_DIR, DATETIME_FILE_FORMAT
 from src.core.enums import MediaType, Role
 from src.core.utils.time import datetime_now
 
+from .archive import compress_dump, split_for_telegram
 from .dump import CreateDatabaseDump
+
+# Auto backups reach admins through the notification worker, so the parts must outlive
+# this task; the next run clears them.
+OUTGOING_DIR: Final[Path] = BACKUP_DIR / "outgoing"
+
+
+def _mb(path: Path) -> str:
+    return f"{path.stat().st_size / (1024 * 1024):.1f}"
+
+
+def _document_payload(file: Path, disable_default_markup: bool) -> MessagePayloadDto:
+    return MessagePayloadDto(
+        i18n_key="",
+        media=MediaDescriptorDto(kind="fs", value=str(file), filename=file.name),
+        media_type=MediaType.DOCUMENT,
+        delete_after=None,
+        disable_default_markup=disable_default_markup,
+    )
 
 
 class AutoBackupDatabase(Interactor[None, None]):
@@ -36,7 +57,8 @@ class AutoBackupDatabase(Interactor[None, None]):
             return
 
         BACKUP_DIR.mkdir(exist_ok=True)
-        existing = sorted(BACKUP_DIR.glob("db_backup_*.sql"), key=lambda f: f.stat().st_mtime)
+        # Both the old plain `.sql` files and the new `.sql.gz` archives take part in rotation.
+        existing = sorted(BACKUP_DIR.glob("db_backup_*.sql*"), key=lambda f: f.stat().st_mtime)
 
         if existing:
             elapsed_hours = (datetime_now().timestamp() - existing[-1].stat().st_mtime) / 3600
@@ -45,33 +67,35 @@ class AutoBackupDatabase(Interactor[None, None]):
 
         timestamp = datetime_now().strftime(DATETIME_FILE_FORMAT)
         tmp_dir = Path(tempfile.mkdtemp())
+        # Parts of the previous run were already handed to the notification worker long ago.
+        shutil.rmtree(OUTGOING_DIR, ignore_errors=True)
 
         try:
             dump_file = tmp_dir / f"db_backup_{timestamp}.sql"
             await self.create_database_dump.system(dump_file)
 
-            final_path = BACKUP_DIR / dump_file.name
-            shutil.copy2(dump_file, final_path)
+            final_path = BACKUP_DIR / f"{dump_file.name}.gz"
+            await asyncio.to_thread(compress_dump, dump_file, final_path)
 
             self._rotate(existing, backup_cfg.max_files)
-            logger.info(f"Auto backup created: {final_path.name}")
+            logger.info(
+                f"Auto backup created: {final_path.name} "
+                f"({_mb(dump_file)} MB dump, {_mb(final_path)} MB compressed)"
+            )
 
             if backup_cfg.send_to_chat:
                 try:
-                    await self.notifier.notify_admins(
-                        payload=MessagePayloadDto(
-                            i18n_key="",
-                            media=MediaDescriptorDto(
-                                kind="fs",
-                                value=str(final_path),
-                                filename=final_path.name,
-                            ),
-                            media_type=MediaType.DOCUMENT,
-                            delete_after=None,
-                            disable_default_markup=True,
-                        ),
-                        roles=[Role.OWNER, Role.DEV],
-                    )
+                    files = await asyncio.to_thread(split_for_telegram, final_path, OUTGOING_DIR)
+                    if len(files) > 1:
+                        logger.info(
+                            f"Backup {final_path.name} is sent in {len(files)} parts; "
+                            f"join them with: cat {final_path.name}.0* > {final_path.name}"
+                        )
+                    for file in files:
+                        await self.notifier.notify_admins(
+                            payload=_document_payload(file, disable_default_markup=True),
+                            roles=[Role.OWNER, Role.DEV],
+                        )
                 except Exception as e:
                     logger.warning(f"Failed to send backup to admins: {e}")
 
@@ -103,21 +127,23 @@ class BackupDatabase(Interactor[None, None]):
 
             await self.create_database_dump.system(dump_file)
 
-            await self.notifier.notify_user(
-                user=actor,
-                payload=MessagePayloadDto(
-                    i18n_key="",
-                    media=MediaDescriptorDto(
-                        kind="fs",
-                        value=str(dump_file),
-                        filename=dump_file.name,
+            archive = tmp_dir / f"{dump_file.name}.gz"
+            await asyncio.to_thread(compress_dump, dump_file, archive)
+            files = await asyncio.to_thread(split_for_telegram, archive, tmp_dir / "parts")
+
+            for index, file in enumerate(files):
+                await self.notifier.notify_user(
+                    user=actor,
+                    payload=_document_payload(
+                        file,
+                        # The menu keyboard goes under the last part only.
+                        disable_default_markup=index < len(files) - 1,
                     ),
-                    media_type=MediaType.DOCUMENT,
-                    delete_after=None,
-                    disable_default_markup=False,
-                ),
+                )
+            logger.info(
+                f"{actor.log} Database backup sent: {archive.name} "
+                f"({_mb(archive)} MB, {len(files)} file(s))"
             )
-            logger.info(f"{actor.log} Database backup sent: {dump_file.name}")
         except Exception as e:
             logger.exception(f"{actor.log} Failed to create database backup: {e}")
             await self.notifier.notify_user(actor, i18n_key="ntf-backup.error")

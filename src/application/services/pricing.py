@@ -57,7 +57,8 @@ class PricingService:
         if final_amount == price:
             discount_percent = 0
 
-        logger.info(
+        # Every plan list renders a dozen prices; at INFO this was ~4% of the log.
+        logger.debug(
             f"Price calculated: original='{price}', "
             f"discount_percent='{discount_percent}', final='{final_amount}'"
         )
